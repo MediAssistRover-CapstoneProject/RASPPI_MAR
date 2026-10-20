@@ -1,0 +1,8 @@
+{
+  "action": "SPEAK",
+  "data": {
+    "incident_id": "INC_DEMO"
+  },
+  "language": "vi-VN",
+  "prompt_key": "STAFF_ON_THE_WAY"
+}

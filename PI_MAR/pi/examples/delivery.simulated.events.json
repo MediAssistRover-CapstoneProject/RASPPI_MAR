@@ -1,0 +1,2216 @@
+[
+  {
+    "data": {
+      "simulation": true,
+      "version": 4,
+      "workflow_code": "WF_SECURE_MEDICAL_DELIVERY"
+    },
+    "event_id": "445e0728-7b41-4bc3-98a4-4b2b924c4766",
+    "event_type": "JOB_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.604895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 1,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "dead47bc-b8f1-4dc0-9978-ab8678a161d3",
+      "operation_key": "dead47bc-b8f1-4dc0-9978-ab8678a161d3",
+      "resolved_input": {
+        "endpoint_id": "EP_PICKUP",
+        "map_id": "opd-map-v1",
+        "max_speed_mps": 0.05,
+        "mode": "NORMAL"
+      },
+      "simulation": true,
+      "step_code": "PICKUP",
+      "task_code": "PICKUP",
+      "timeout_sec": 180,
+      "type": "MOVE",
+      "visit_no": 1
+    },
+    "event_id": "b4a5200c-2aa6-48d4-a784-569ef93424a7",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.604895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 2,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "dead47bc-b8f1-4dc0-9978-ab8678a161d3",
+      "operation_key": "dead47bc-b8f1-4dc0-9978-ab8678a161d3",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.604895+00:00",
+        "data": {
+          "action_status": 4,
+          "attempts": [],
+          "distance_remaining_m": 0.0,
+          "endpoint_group_id": null,
+          "endpoint_id": "EP_PICKUP",
+          "last_feedback_pose": null,
+          "reached": true
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.604895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "PICKUP",
+      "task_code": "PICKUP",
+      "timeout_sec": 180,
+      "visit_no": 1
+    },
+    "event_id": "d419f5f5-0a9f-4067-8bc1-af1b34761317",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.605895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 3,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "dead47bc-b8f1-4dc0-9978-ab8678a161d3",
+      "operation_key": "dead47bc-b8f1-4dc0-9978-ab8678a161d3",
+      "simulation": true,
+      "step_code": "PICKUP",
+      "task_code": "PICKUP",
+      "timeout_sec": 180,
+      "transition": {
+        "next": "AUTH_SENDER",
+        "on": "SUCCESS",
+        "priority": 100
+      },
+      "visit_no": 1
+    },
+    "event_id": "63898b25-6cba-4a63-96b3-e6db07ac9812",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.605895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 4,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "2dfb4bb9-3d44-4f03-bf49-bac78dbc030b",
+      "operation_key": "2dfb4bb9-3d44-4f03-bf49-bac78dbc030b",
+      "resolved_input": {
+        "method": "QR_CODE",
+        "purpose": "DELIVERY_SENDER",
+        "required_permission": "DELIVERY_SEND"
+      },
+      "simulation": true,
+      "step_code": "AUTH_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 120,
+      "type": "AUTHENTICATE",
+      "visit_no": 1
+    },
+    "event_id": "9e64f0bc-19ef-49f0-8f8d-2f983b81e356",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.605895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 5,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "2dfb4bb9-3d44-4f03-bf49-bac78dbc030b",
+      "operation_key": "2dfb4bb9-3d44-4f03-bf49-bac78dbc030b",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.605895+00:00",
+        "data": {
+          "actor_user_id": "SIM_STAFF",
+          "authenticated": true,
+          "purpose": "DELIVERY_SENDER",
+          "valid_until": "2026-09-27T11:57:24.605895+00:00",
+          "verification_id": "SIM_VER_AUTH_SENDER"
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.605895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "AUTH_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 120,
+      "visit_no": 1
+    },
+    "event_id": "08661b33-b13b-4164-b350-417254887f7f",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.605895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 6,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "2dfb4bb9-3d44-4f03-bf49-bac78dbc030b",
+      "operation_key": "2dfb4bb9-3d44-4f03-bf49-bac78dbc030b",
+      "simulation": true,
+      "step_code": "AUTH_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 120,
+      "transition": {
+        "next": "CHECK_AUTH_SENDER",
+        "on": "SUCCESS",
+        "priority": 100
+      },
+      "visit_no": 1
+    },
+    "event_id": "6c5c5550-d329-4504-bb06-2ce664e922c9",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.605895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 7,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "c6c41731-cac8-4967-8d5a-8b28d6cf9003",
+      "operation_key": "c6c41731-cac8-4967-8d5a-8b28d6cf9003",
+      "resolved_input": {
+        "expression": {
+          "var": "/outputs/AUTH_SENDER/authenticated"
+        }
+      },
+      "simulation": true,
+      "step_code": "CHECK_AUTH_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "type": "CHECK_CONDITION",
+      "visit_no": 1
+    },
+    "event_id": "16884c40-8d8e-4d34-9d79-288573c22243",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.605895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 8,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "c6c41731-cac8-4967-8d5a-8b28d6cf9003",
+      "operation_key": "c6c41731-cac8-4967-8d5a-8b28d6cf9003",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.605895+00:00",
+        "data": {
+          "value": true
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.605895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "CHECK_AUTH_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "visit_no": 1
+    },
+    "event_id": "a15ec567-aaa7-466c-88c3-2a65ff40c447",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.605895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 9,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "c6c41731-cac8-4967-8d5a-8b28d6cf9003",
+      "operation_key": "c6c41731-cac8-4967-8d5a-8b28d6cf9003",
+      "simulation": true,
+      "step_code": "CHECK_AUTH_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "transition": {
+        "next": "UNLOCK_SENDER",
+        "on": "SUCCESS",
+        "priority": 1,
+        "when": {
+          "args": [
+            {
+              "var": "/result/value"
+            },
+            true
+          ],
+          "op": "eq"
+        }
+      },
+      "visit_no": 1
+    },
+    "event_id": "9c255275-700e-4054-bd7d-999c83c6fefb",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.605895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 10,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "f96f88ba-b131-491f-991c-a7e0ad29fa3c",
+      "operation_key": "f96f88ba-b131-491f-991c-a7e0ad29fa3c",
+      "resolved_input": {
+        "action": "UNLOCK",
+        "device_id": "cargo_lock",
+        "purpose": "DELIVERY_SENDER",
+        "verification_id": "SIM_VER_AUTH_SENDER",
+        "verification_mode": "COMMAND_ONLY"
+      },
+      "simulation": true,
+      "step_code": "UNLOCK_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "type": "CONTROL_HARDWARE",
+      "visit_no": 1
+    },
+    "event_id": "fdca6d9e-7d4c-4678-bcb1-bc0e09348895",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.605895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 11,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "f96f88ba-b131-491f-991c-a7e0ad29fa3c",
+      "operation_key": "f96f88ba-b131-491f-991c-a7e0ad29fa3c",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.606895+00:00",
+        "data": {
+          "commanded_state": "UNLOCK",
+          "controller_ack": false,
+          "position_raw": 2400,
+          "published": true,
+          "ros_servo_id": 4,
+          "verified": false
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.605895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "UNLOCK_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "visit_no": 1
+    },
+    "event_id": "6d4a2bf0-6be5-4465-addd-a0e84952ce0d",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.606895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 12,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "f96f88ba-b131-491f-991c-a7e0ad29fa3c",
+      "operation_key": "f96f88ba-b131-491f-991c-a7e0ad29fa3c",
+      "simulation": true,
+      "step_code": "UNLOCK_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "transition": {
+        "next": "PAYLOAD_SENDER",
+        "on": "SUCCESS",
+        "priority": 100
+      },
+      "visit_no": 1
+    },
+    "event_id": "82d36e61-217a-4baa-a5b0-2664bc0be7ca",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.606895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 13,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "b3bfc29e-2353-453f-9ddf-02e5af520409",
+      "operation_key": "b3bfc29e-2353-453f-9ddf-02e5af520409",
+      "resolved_input": {
+        "action": "LOAD",
+        "delivery_id": "DEMO_DELIVERY",
+        "items": [
+          {
+            "item_code": "DEMO_DOCUMENT",
+            "quantity": 1
+          }
+        ],
+        "verification_mode": "STAFF_CONFIRMED"
+      },
+      "simulation": true,
+      "step_code": "PAYLOAD_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 180,
+      "type": "HANDLE_PAYLOAD",
+      "visit_no": 1
+    },
+    "event_id": "e20c3181-a4c2-4a66-a18c-6376c34db4ba",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.606895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 14,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "b3bfc29e-2353-453f-9ddf-02e5af520409",
+      "operation_key": "b3bfc29e-2353-453f-9ddf-02e5af520409",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.606895+00:00",
+        "data": {
+          "actor_user_id": "SIM_STAFF",
+          "confirmed": true,
+          "items": [
+            {
+              "item_code": "DEMO_DOCUMENT",
+              "quantity": 1
+            }
+          ],
+          "temperature_c": null,
+          "verification_mode": "STAFF_CONFIRMED",
+          "weight_kg": null
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.606895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "PAYLOAD_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 180,
+      "visit_no": 1
+    },
+    "event_id": "4d06f521-c789-4d6b-9a15-bb4ca83b4d2f",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.606895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 15,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "b3bfc29e-2353-453f-9ddf-02e5af520409",
+      "operation_key": "b3bfc29e-2353-453f-9ddf-02e5af520409",
+      "simulation": true,
+      "step_code": "PAYLOAD_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 180,
+      "transition": {
+        "next": "CHECK_PAYLOAD_SENDER",
+        "on": "SUCCESS",
+        "priority": 100
+      },
+      "visit_no": 1
+    },
+    "event_id": "c2ed738e-7ae1-481b-a5e4-c29723efac83",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.606895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 16,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "dda9d8a6-62ef-4777-883c-e146991713e8",
+      "operation_key": "dda9d8a6-62ef-4777-883c-e146991713e8",
+      "resolved_input": {
+        "expression": {
+          "var": "/outputs/PAYLOAD_SENDER/confirmed"
+        }
+      },
+      "simulation": true,
+      "step_code": "CHECK_PAYLOAD_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "type": "CHECK_CONDITION",
+      "visit_no": 1
+    },
+    "event_id": "ba53cdb3-a512-41d2-8ecb-2f834ca8cd0f",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.606895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 17,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "dda9d8a6-62ef-4777-883c-e146991713e8",
+      "operation_key": "dda9d8a6-62ef-4777-883c-e146991713e8",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.606895+00:00",
+        "data": {
+          "value": true
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.606895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "CHECK_PAYLOAD_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "visit_no": 1
+    },
+    "event_id": "326b6d2d-f532-48af-aab2-cf5c545d16d1",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.606895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 18,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "dda9d8a6-62ef-4777-883c-e146991713e8",
+      "operation_key": "dda9d8a6-62ef-4777-883c-e146991713e8",
+      "simulation": true,
+      "step_code": "CHECK_PAYLOAD_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "transition": {
+        "next": "CLOSE_SENDER",
+        "on": "SUCCESS",
+        "priority": 1,
+        "when": {
+          "args": [
+            {
+              "var": "/result/value"
+            },
+            true
+          ],
+          "op": "eq"
+        }
+      },
+      "visit_no": 1
+    },
+    "event_id": "b37cf62d-248a-4f43-8ea8-9fdeeb8c0043",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.606895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 19,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "07721dcc-d341-4724-a009-db2197924f27",
+      "operation_key": "07721dcc-d341-4724-a009-db2197924f27",
+      "resolved_input": {
+        "action": "CONFIRM",
+        "data": {
+          "delivery_id": "DEMO_DELIVERY",
+          "stage": "SENDER"
+        },
+        "language": "vi-VN",
+        "prompt_key": "STAFF_CLOSE_DOOR_AND_CLEAR_MECHANISM"
+      },
+      "simulation": true,
+      "step_code": "CLOSE_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 120,
+      "type": "INTERACT",
+      "visit_no": 1
+    },
+    "event_id": "1c6916cd-8705-4435-aa64-c7e97b890042",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.607895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 20,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "07721dcc-d341-4724-a009-db2197924f27",
+      "operation_key": "07721dcc-d341-4724-a009-db2197924f27",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.607895+00:00",
+        "data": {
+          "actor_user_id": "SIM_STAFF",
+          "completed": true,
+          "confirmed": true,
+          "input_data": {}
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.607895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "CLOSE_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 120,
+      "visit_no": 1
+    },
+    "event_id": "b2876523-5f3a-46a1-965b-5289c1c32eca",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.607895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 21,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "07721dcc-d341-4724-a009-db2197924f27",
+      "operation_key": "07721dcc-d341-4724-a009-db2197924f27",
+      "simulation": true,
+      "step_code": "CLOSE_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 120,
+      "transition": {
+        "next": "CHECK_CLOSE_SENDER",
+        "on": "SUCCESS",
+        "priority": 100
+      },
+      "visit_no": 1
+    },
+    "event_id": "966b9eec-db18-4852-bf29-d5f3b5c43f2c",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.607895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 22,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "2f2d9c40-48eb-4bc8-8c65-1ca42d717b23",
+      "operation_key": "2f2d9c40-48eb-4bc8-8c65-1ca42d717b23",
+      "resolved_input": {
+        "expression": {
+          "var": "/outputs/CLOSE_SENDER/confirmed"
+        }
+      },
+      "simulation": true,
+      "step_code": "CHECK_CLOSE_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "type": "CHECK_CONDITION",
+      "visit_no": 1
+    },
+    "event_id": "8e0b9672-869b-4393-ae9e-2afb1bc5683e",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.607895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 23,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "2f2d9c40-48eb-4bc8-8c65-1ca42d717b23",
+      "operation_key": "2f2d9c40-48eb-4bc8-8c65-1ca42d717b23",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.607895+00:00",
+        "data": {
+          "value": true
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.607895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "CHECK_CLOSE_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "visit_no": 1
+    },
+    "event_id": "cfe99a8b-286e-438d-8e5f-1cf4b11e1225",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.607895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 24,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "2f2d9c40-48eb-4bc8-8c65-1ca42d717b23",
+      "operation_key": "2f2d9c40-48eb-4bc8-8c65-1ca42d717b23",
+      "simulation": true,
+      "step_code": "CHECK_CLOSE_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "transition": {
+        "next": "LOCK_SENDER",
+        "on": "SUCCESS",
+        "priority": 1,
+        "when": {
+          "args": [
+            {
+              "var": "/result/value"
+            },
+            true
+          ],
+          "op": "eq"
+        }
+      },
+      "visit_no": 1
+    },
+    "event_id": "31b4d4cb-a983-4dd9-b97d-3f01a8c9f18c",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.607895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 25,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "8c7fb0f3-2b1a-485b-8ae4-16a93fe9491a",
+      "operation_key": "8c7fb0f3-2b1a-485b-8ae4-16a93fe9491a",
+      "resolved_input": {
+        "action": "LOCK",
+        "device_id": "cargo_lock",
+        "verification_mode": "COMMAND_ONLY"
+      },
+      "simulation": true,
+      "step_code": "LOCK_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "type": "CONTROL_HARDWARE",
+      "visit_no": 1
+    },
+    "event_id": "521bf7fd-ddb2-44e4-b2aa-b10d4101ba11",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.607895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 26,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "8c7fb0f3-2b1a-485b-8ae4-16a93fe9491a",
+      "operation_key": "8c7fb0f3-2b1a-485b-8ae4-16a93fe9491a",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.607895+00:00",
+        "data": {
+          "commanded_state": "LOCK",
+          "controller_ack": false,
+          "position_raw": 1500,
+          "published": true,
+          "ros_servo_id": 4,
+          "verified": false
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.607895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "LOCK_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "visit_no": 1
+    },
+    "event_id": "ff424abe-08de-4acc-9fff-2288f1e5a384",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.607895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 27,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "8c7fb0f3-2b1a-485b-8ae4-16a93fe9491a",
+      "operation_key": "8c7fb0f3-2b1a-485b-8ae4-16a93fe9491a",
+      "simulation": true,
+      "step_code": "LOCK_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "transition": {
+        "next": "VERIFY_SENDER",
+        "on": "SUCCESS",
+        "priority": 100
+      },
+      "visit_no": 1
+    },
+    "event_id": "74bbf9f8-aa43-4bd1-9a6f-3e46d6670557",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.607895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 28,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "9ef54e6b-6281-4493-b440-74b04eb40a47",
+      "operation_key": "9ef54e6b-6281-4493-b440-74b04eb40a47",
+      "resolved_input": {
+        "action": "CONFIRM",
+        "data": {
+          "delivery_id": "DEMO_DELIVERY",
+          "stage": "SENDER"
+        },
+        "language": "vi-VN",
+        "prompt_key": "STAFF_PHYSICALLY_VERIFY_LOCK"
+      },
+      "simulation": true,
+      "step_code": "VERIFY_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 120,
+      "type": "INTERACT",
+      "visit_no": 1
+    },
+    "event_id": "2bf25ea0-4520-4038-9ccc-f3405335cd6c",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.608895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 29,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "9ef54e6b-6281-4493-b440-74b04eb40a47",
+      "operation_key": "9ef54e6b-6281-4493-b440-74b04eb40a47",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.608895+00:00",
+        "data": {
+          "actor_user_id": "SIM_STAFF",
+          "completed": true,
+          "confirmed": true,
+          "input_data": {}
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.608895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "VERIFY_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 120,
+      "visit_no": 1
+    },
+    "event_id": "9e7d8db3-0bc5-4c0b-835d-18a8333f75aa",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.608895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 30,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "9ef54e6b-6281-4493-b440-74b04eb40a47",
+      "operation_key": "9ef54e6b-6281-4493-b440-74b04eb40a47",
+      "simulation": true,
+      "step_code": "VERIFY_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 120,
+      "transition": {
+        "next": "CHECK_LOCK_SENDER",
+        "on": "SUCCESS",
+        "priority": 100
+      },
+      "visit_no": 1
+    },
+    "event_id": "abf78044-4504-45c1-a29d-36c684459072",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.608895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 31,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "a26cdca0-2938-40f5-a19b-75f3cf0cf458",
+      "operation_key": "a26cdca0-2938-40f5-a19b-75f3cf0cf458",
+      "resolved_input": {
+        "expression": {
+          "var": "/outputs/VERIFY_SENDER/confirmed"
+        }
+      },
+      "simulation": true,
+      "step_code": "CHECK_LOCK_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "type": "CHECK_CONDITION",
+      "visit_no": 1
+    },
+    "event_id": "3fd09d3b-f471-4882-ae20-54fe03ee4a86",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.608895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 32,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "a26cdca0-2938-40f5-a19b-75f3cf0cf458",
+      "operation_key": "a26cdca0-2938-40f5-a19b-75f3cf0cf458",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.608895+00:00",
+        "data": {
+          "value": true
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.608895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "CHECK_LOCK_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "visit_no": 1
+    },
+    "event_id": "0e5f7ba7-f589-408c-99c1-2f984eb2afa2",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.608895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 33,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "a26cdca0-2938-40f5-a19b-75f3cf0cf458",
+      "operation_key": "a26cdca0-2938-40f5-a19b-75f3cf0cf458",
+      "simulation": true,
+      "step_code": "CHECK_LOCK_SENDER",
+      "task_code": "PICKUP",
+      "timeout_sec": 30,
+      "transition": {
+        "next": "TRANSIT",
+        "on": "SUCCESS",
+        "priority": 1,
+        "when": {
+          "args": [
+            {
+              "var": "/result/value"
+            },
+            true
+          ],
+          "op": "eq"
+        }
+      },
+      "visit_no": 1
+    },
+    "event_id": "ce8ba9a1-e7db-4e9b-8904-74a733651b23",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.608895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 34,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "8f896530-7b87-4903-aef5-f099bc53a8dc",
+      "operation_key": "8f896530-7b87-4903-aef5-f099bc53a8dc",
+      "resolved_input": {
+        "endpoint_id": "EP_305",
+        "map_id": "opd-map-v1",
+        "max_speed_mps": 0.05,
+        "mode": "NORMAL"
+      },
+      "simulation": true,
+      "step_code": "TRANSIT",
+      "task_code": "TRANSIT",
+      "timeout_sec": 180,
+      "type": "MOVE",
+      "visit_no": 1
+    },
+    "event_id": "29d7537b-e9db-437e-9634-0f22b2ed7a9a",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.608895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 35,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "8f896530-7b87-4903-aef5-f099bc53a8dc",
+      "operation_key": "8f896530-7b87-4903-aef5-f099bc53a8dc",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.608895+00:00",
+        "data": {
+          "action_status": 4,
+          "attempts": [],
+          "distance_remaining_m": 0.0,
+          "endpoint_group_id": null,
+          "endpoint_id": "EP_305",
+          "last_feedback_pose": null,
+          "reached": true
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.608895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "TRANSIT",
+      "task_code": "TRANSIT",
+      "timeout_sec": 180,
+      "visit_no": 1
+    },
+    "event_id": "d3c90214-c1e2-478a-9495-e6c96c865f79",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.609895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 36,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "8f896530-7b87-4903-aef5-f099bc53a8dc",
+      "operation_key": "8f896530-7b87-4903-aef5-f099bc53a8dc",
+      "simulation": true,
+      "step_code": "TRANSIT",
+      "task_code": "TRANSIT",
+      "timeout_sec": 180,
+      "transition": {
+        "next": "AUTH_RECEIVER",
+        "on": "SUCCESS",
+        "priority": 100
+      },
+      "visit_no": 1
+    },
+    "event_id": "3a2f2ecc-6159-4def-b28b-5ccacc1d2a78",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.609895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 37,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "98777af1-e7ee-47fb-ba57-8feae0d2052c",
+      "operation_key": "98777af1-e7ee-47fb-ba57-8feae0d2052c",
+      "resolved_input": {
+        "method": "QR_CODE",
+        "purpose": "DELIVERY_RECEIVER",
+        "required_permission": "DELIVERY_RECEIVE"
+      },
+      "simulation": true,
+      "step_code": "AUTH_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 120,
+      "type": "AUTHENTICATE",
+      "visit_no": 1
+    },
+    "event_id": "faed0965-779e-4992-8457-9f7362d70e6f",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.609895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 38,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "98777af1-e7ee-47fb-ba57-8feae0d2052c",
+      "operation_key": "98777af1-e7ee-47fb-ba57-8feae0d2052c",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.609895+00:00",
+        "data": {
+          "actor_user_id": "SIM_STAFF",
+          "authenticated": true,
+          "purpose": "DELIVERY_RECEIVER",
+          "valid_until": "2026-09-27T11:57:24.609895+00:00",
+          "verification_id": "SIM_VER_AUTH_RECEIVER"
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.609895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "AUTH_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 120,
+      "visit_no": 1
+    },
+    "event_id": "0c125b58-8918-4b3e-9e9d-8afb22ef12ce",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.609895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 39,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "98777af1-e7ee-47fb-ba57-8feae0d2052c",
+      "operation_key": "98777af1-e7ee-47fb-ba57-8feae0d2052c",
+      "simulation": true,
+      "step_code": "AUTH_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 120,
+      "transition": {
+        "next": "CHECK_AUTH_RECEIVER",
+        "on": "SUCCESS",
+        "priority": 100
+      },
+      "visit_no": 1
+    },
+    "event_id": "fbd46859-eabd-473a-a3d8-d95ee7517ed5",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.609895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 40,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "e0991691-cbe7-4004-b093-59041fec01d3",
+      "operation_key": "e0991691-cbe7-4004-b093-59041fec01d3",
+      "resolved_input": {
+        "expression": {
+          "var": "/outputs/AUTH_RECEIVER/authenticated"
+        }
+      },
+      "simulation": true,
+      "step_code": "CHECK_AUTH_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "type": "CHECK_CONDITION",
+      "visit_no": 1
+    },
+    "event_id": "b31f6f14-4928-4358-b34f-ac57c8f733bc",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.609895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 41,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "e0991691-cbe7-4004-b093-59041fec01d3",
+      "operation_key": "e0991691-cbe7-4004-b093-59041fec01d3",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.609895+00:00",
+        "data": {
+          "value": true
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.609895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "CHECK_AUTH_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "visit_no": 1
+    },
+    "event_id": "0fb0266d-6058-4967-85b9-15ae750f713a",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.609895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 42,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "e0991691-cbe7-4004-b093-59041fec01d3",
+      "operation_key": "e0991691-cbe7-4004-b093-59041fec01d3",
+      "simulation": true,
+      "step_code": "CHECK_AUTH_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "transition": {
+        "next": "UNLOCK_RECEIVER",
+        "on": "SUCCESS",
+        "priority": 1,
+        "when": {
+          "args": [
+            {
+              "var": "/result/value"
+            },
+            true
+          ],
+          "op": "eq"
+        }
+      },
+      "visit_no": 1
+    },
+    "event_id": "6dce196d-ea84-41c7-ae29-f9e0f0136e8e",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.609895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 43,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "52a5db7f-aa8c-4c2e-b6a3-a827ca0cf6fb",
+      "operation_key": "52a5db7f-aa8c-4c2e-b6a3-a827ca0cf6fb",
+      "resolved_input": {
+        "action": "UNLOCK",
+        "device_id": "cargo_lock",
+        "purpose": "DELIVERY_RECEIVER",
+        "verification_id": "SIM_VER_AUTH_RECEIVER",
+        "verification_mode": "COMMAND_ONLY"
+      },
+      "simulation": true,
+      "step_code": "UNLOCK_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "type": "CONTROL_HARDWARE",
+      "visit_no": 1
+    },
+    "event_id": "bddbf62b-0cf1-454d-a7b7-35078cc88b84",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.609895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 44,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "52a5db7f-aa8c-4c2e-b6a3-a827ca0cf6fb",
+      "operation_key": "52a5db7f-aa8c-4c2e-b6a3-a827ca0cf6fb",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.610896+00:00",
+        "data": {
+          "commanded_state": "UNLOCK",
+          "controller_ack": false,
+          "position_raw": 2400,
+          "published": true,
+          "ros_servo_id": 4,
+          "verified": false
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.609895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "UNLOCK_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "visit_no": 1
+    },
+    "event_id": "ed314623-c0e1-44e8-91a2-abdf7dcb8878",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.610896+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 45,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "52a5db7f-aa8c-4c2e-b6a3-a827ca0cf6fb",
+      "operation_key": "52a5db7f-aa8c-4c2e-b6a3-a827ca0cf6fb",
+      "simulation": true,
+      "step_code": "UNLOCK_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "transition": {
+        "next": "PAYLOAD_RECEIVER",
+        "on": "SUCCESS",
+        "priority": 100
+      },
+      "visit_no": 1
+    },
+    "event_id": "828da647-50c2-44dd-9e18-da67145d93d4",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.610896+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 46,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "0bcdd272-8e5c-424b-8c93-9d0e984caba5",
+      "operation_key": "0bcdd272-8e5c-424b-8c93-9d0e984caba5",
+      "resolved_input": {
+        "action": "UNLOAD",
+        "delivery_id": "DEMO_DELIVERY",
+        "items": [
+          {
+            "item_code": "DEMO_DOCUMENT",
+            "quantity": 1
+          }
+        ],
+        "verification_mode": "STAFF_CONFIRMED"
+      },
+      "simulation": true,
+      "step_code": "PAYLOAD_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 180,
+      "type": "HANDLE_PAYLOAD",
+      "visit_no": 1
+    },
+    "event_id": "6d058b86-1917-498d-86a6-f6b80dcc33da",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.610896+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 47,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "0bcdd272-8e5c-424b-8c93-9d0e984caba5",
+      "operation_key": "0bcdd272-8e5c-424b-8c93-9d0e984caba5",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.610896+00:00",
+        "data": {
+          "actor_user_id": "SIM_STAFF",
+          "confirmed": true,
+          "items": [
+            {
+              "item_code": "DEMO_DOCUMENT",
+              "quantity": 1
+            }
+          ],
+          "temperature_c": null,
+          "verification_mode": "STAFF_CONFIRMED",
+          "weight_kg": null
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.610896+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "PAYLOAD_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 180,
+      "visit_no": 1
+    },
+    "event_id": "d1661bbf-a79a-4ace-adb5-e27b20a3a111",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.610896+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 48,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "0bcdd272-8e5c-424b-8c93-9d0e984caba5",
+      "operation_key": "0bcdd272-8e5c-424b-8c93-9d0e984caba5",
+      "simulation": true,
+      "step_code": "PAYLOAD_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 180,
+      "transition": {
+        "next": "CHECK_PAYLOAD_RECEIVER",
+        "on": "SUCCESS",
+        "priority": 100
+      },
+      "visit_no": 1
+    },
+    "event_id": "da34c7dd-6db6-4bf0-a0e2-ae219209b85e",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.610896+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 49,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "2ffa20d5-2f90-44d6-9e97-f241bb579d84",
+      "operation_key": "2ffa20d5-2f90-44d6-9e97-f241bb579d84",
+      "resolved_input": {
+        "expression": {
+          "var": "/outputs/PAYLOAD_RECEIVER/confirmed"
+        }
+      },
+      "simulation": true,
+      "step_code": "CHECK_PAYLOAD_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "type": "CHECK_CONDITION",
+      "visit_no": 1
+    },
+    "event_id": "9723ae24-ba39-4ae0-8a57-c04edfde8e1e",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.610896+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 50,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "2ffa20d5-2f90-44d6-9e97-f241bb579d84",
+      "operation_key": "2ffa20d5-2f90-44d6-9e97-f241bb579d84",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.610896+00:00",
+        "data": {
+          "value": true
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.610896+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "CHECK_PAYLOAD_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "visit_no": 1
+    },
+    "event_id": "eff1d470-c872-440e-9966-b9017de215e2",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.610896+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 51,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "2ffa20d5-2f90-44d6-9e97-f241bb579d84",
+      "operation_key": "2ffa20d5-2f90-44d6-9e97-f241bb579d84",
+      "simulation": true,
+      "step_code": "CHECK_PAYLOAD_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "transition": {
+        "next": "CLOSE_RECEIVER",
+        "on": "SUCCESS",
+        "priority": 1,
+        "when": {
+          "args": [
+            {
+              "var": "/result/value"
+            },
+            true
+          ],
+          "op": "eq"
+        }
+      },
+      "visit_no": 1
+    },
+    "event_id": "93e457af-900c-4373-8529-12e482f1cfe3",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.610896+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 52,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "3d882d63-ca7c-472c-a76a-28d0e972f974",
+      "operation_key": "3d882d63-ca7c-472c-a76a-28d0e972f974",
+      "resolved_input": {
+        "action": "CONFIRM",
+        "data": {
+          "delivery_id": "DEMO_DELIVERY",
+          "stage": "RECEIVER"
+        },
+        "language": "vi-VN",
+        "prompt_key": "STAFF_CLOSE_DOOR_AND_CLEAR_MECHANISM"
+      },
+      "simulation": true,
+      "step_code": "CLOSE_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 120,
+      "type": "INTERACT",
+      "visit_no": 1
+    },
+    "event_id": "c5042d3b-72ee-44aa-af86-c140bed45898",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.610896+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 53,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "3d882d63-ca7c-472c-a76a-28d0e972f974",
+      "operation_key": "3d882d63-ca7c-472c-a76a-28d0e972f974",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.611895+00:00",
+        "data": {
+          "actor_user_id": "SIM_STAFF",
+          "completed": true,
+          "confirmed": true,
+          "input_data": {}
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.610896+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "CLOSE_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 120,
+      "visit_no": 1
+    },
+    "event_id": "54c7507d-d2d8-4042-a94e-598dc0a40b02",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.611895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 54,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "3d882d63-ca7c-472c-a76a-28d0e972f974",
+      "operation_key": "3d882d63-ca7c-472c-a76a-28d0e972f974",
+      "simulation": true,
+      "step_code": "CLOSE_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 120,
+      "transition": {
+        "next": "CHECK_CLOSE_RECEIVER",
+        "on": "SUCCESS",
+        "priority": 100
+      },
+      "visit_no": 1
+    },
+    "event_id": "6b5be947-6cc0-4172-958b-0aee2640f01c",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.611895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 55,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "621c795b-d59c-4881-baee-94e77698cdda",
+      "operation_key": "621c795b-d59c-4881-baee-94e77698cdda",
+      "resolved_input": {
+        "expression": {
+          "var": "/outputs/CLOSE_RECEIVER/confirmed"
+        }
+      },
+      "simulation": true,
+      "step_code": "CHECK_CLOSE_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "type": "CHECK_CONDITION",
+      "visit_no": 1
+    },
+    "event_id": "25f368b5-8df4-41f9-9820-8c8bb7b1a952",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.611895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 56,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "621c795b-d59c-4881-baee-94e77698cdda",
+      "operation_key": "621c795b-d59c-4881-baee-94e77698cdda",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.611895+00:00",
+        "data": {
+          "value": true
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.611895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "CHECK_CLOSE_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "visit_no": 1
+    },
+    "event_id": "45298738-c398-4a5e-8f22-f165d70f6c7b",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.611895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 57,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "621c795b-d59c-4881-baee-94e77698cdda",
+      "operation_key": "621c795b-d59c-4881-baee-94e77698cdda",
+      "simulation": true,
+      "step_code": "CHECK_CLOSE_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "transition": {
+        "next": "LOCK_RECEIVER",
+        "on": "SUCCESS",
+        "priority": 1,
+        "when": {
+          "args": [
+            {
+              "var": "/result/value"
+            },
+            true
+          ],
+          "op": "eq"
+        }
+      },
+      "visit_no": 1
+    },
+    "event_id": "b4aaff7a-031f-4b7b-a49e-4d334e585321",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.611895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 58,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "f7f3238f-d9c8-4042-a2a8-5a7b913873d1",
+      "operation_key": "f7f3238f-d9c8-4042-a2a8-5a7b913873d1",
+      "resolved_input": {
+        "action": "LOCK",
+        "device_id": "cargo_lock",
+        "verification_mode": "COMMAND_ONLY"
+      },
+      "simulation": true,
+      "step_code": "LOCK_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "type": "CONTROL_HARDWARE",
+      "visit_no": 1
+    },
+    "event_id": "14311512-a7b2-4a5b-aa84-190d29c5b8fb",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.611895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 59,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "f7f3238f-d9c8-4042-a2a8-5a7b913873d1",
+      "operation_key": "f7f3238f-d9c8-4042-a2a8-5a7b913873d1",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.611895+00:00",
+        "data": {
+          "commanded_state": "LOCK",
+          "controller_ack": false,
+          "position_raw": 1500,
+          "published": true,
+          "ros_servo_id": 4,
+          "verified": false
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.611895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "LOCK_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "visit_no": 1
+    },
+    "event_id": "94dbb49a-0776-46fb-a36e-510e544949b1",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.611895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 60,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "f7f3238f-d9c8-4042-a2a8-5a7b913873d1",
+      "operation_key": "f7f3238f-d9c8-4042-a2a8-5a7b913873d1",
+      "simulation": true,
+      "step_code": "LOCK_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "transition": {
+        "next": "VERIFY_RECEIVER",
+        "on": "SUCCESS",
+        "priority": 100
+      },
+      "visit_no": 1
+    },
+    "event_id": "d21bcac7-e139-4d23-a1b6-41125e391be8",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.611895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 61,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "7a102179-d942-4a88-834d-97c661b0b489",
+      "operation_key": "7a102179-d942-4a88-834d-97c661b0b489",
+      "resolved_input": {
+        "action": "CONFIRM",
+        "data": {
+          "delivery_id": "DEMO_DELIVERY",
+          "stage": "RECEIVER"
+        },
+        "language": "vi-VN",
+        "prompt_key": "STAFF_PHYSICALLY_VERIFY_LOCK"
+      },
+      "simulation": true,
+      "step_code": "VERIFY_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 120,
+      "type": "INTERACT",
+      "visit_no": 1
+    },
+    "event_id": "fac4572e-8476-46e4-a11e-11f0e2d1cfbe",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.611895+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 62,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "7a102179-d942-4a88-834d-97c661b0b489",
+      "operation_key": "7a102179-d942-4a88-834d-97c661b0b489",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.613065+00:00",
+        "data": {
+          "actor_user_id": "SIM_STAFF",
+          "completed": true,
+          "confirmed": true,
+          "input_data": {}
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.611895+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "VERIFY_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 120,
+      "visit_no": 1
+    },
+    "event_id": "7ef0ea8f-cc9c-4f22-b783-784ac44602b7",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.613065+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 63,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "7a102179-d942-4a88-834d-97c661b0b489",
+      "operation_key": "7a102179-d942-4a88-834d-97c661b0b489",
+      "simulation": true,
+      "step_code": "VERIFY_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 120,
+      "transition": {
+        "next": "CHECK_LOCK_RECEIVER",
+        "on": "SUCCESS",
+        "priority": 100
+      },
+      "visit_no": 1
+    },
+    "event_id": "8932c159-2c5c-4012-a711-ec4c8b8aa9cb",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.613065+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 64,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "62d55f26-8461-404a-b603-bf596dfbc923",
+      "operation_key": "62d55f26-8461-404a-b603-bf596dfbc923",
+      "resolved_input": {
+        "expression": {
+          "var": "/outputs/VERIFY_RECEIVER/confirmed"
+        }
+      },
+      "simulation": true,
+      "step_code": "CHECK_LOCK_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "type": "CHECK_CONDITION",
+      "visit_no": 1
+    },
+    "event_id": "eee8fc5b-ae2c-45fa-91b7-9c45b33df03e",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.613065+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 65,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "62d55f26-8461-404a-b603-bf596dfbc923",
+      "operation_key": "62d55f26-8461-404a-b603-bf596dfbc923",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.613065+00:00",
+        "data": {
+          "value": true
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.613065+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "CHECK_LOCK_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "visit_no": 1
+    },
+    "event_id": "66e28e5e-a747-4ead-993a-5190c0a5e126",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.613065+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 66,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "62d55f26-8461-404a-b603-bf596dfbc923",
+      "operation_key": "62d55f26-8461-404a-b603-bf596dfbc923",
+      "simulation": true,
+      "step_code": "CHECK_LOCK_RECEIVER",
+      "task_code": "HANDOVER",
+      "timeout_sec": 30,
+      "transition": {
+        "next": "COMPLETE",
+        "on": "SUCCESS",
+        "priority": 1,
+        "when": {
+          "args": [
+            {
+              "var": "/result/value"
+            },
+            true
+          ],
+          "op": "eq"
+        }
+      },
+      "visit_no": 1
+    },
+    "event_id": "6cc6cb88-765e-4f95-b8a6-41745e308736",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.613065+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 67,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "a9a55b50-6d2f-45bd-af3d-c4893afdf575",
+      "operation_key": "a9a55b50-6d2f-45bd-af3d-c4893afdf575",
+      "resolved_input": {
+        "data": {
+          "delivery_id": "DEMO_DELIVERY",
+          "items": [
+            {
+              "item_code": "DEMO_DOCUMENT",
+              "quantity": 1
+            }
+          ],
+          "receiver_user_id": "SIM_STAFF",
+          "sender_user_id": "SIM_STAFF",
+          "staff_confirmed_lock": true
+        },
+        "notification_type": "DELIVERY_COMPLETED",
+        "recipients": [
+          "STAFF"
+        ],
+        "require_ack": false,
+        "severity": "INFO"
+      },
+      "simulation": true,
+      "step_code": "COMPLETE",
+      "task_code": "FINALIZE",
+      "timeout_sec": 60,
+      "type": "NOTIFY",
+      "visit_no": 1
+    },
+    "event_id": "f3c1f8a9-9a24-44ea-9047-1688c52ebced",
+    "event_type": "STEP_STARTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.613065+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 68,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "error": null,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "a9a55b50-6d2f-45bd-af3d-c4893afdf575",
+      "operation_key": "a9a55b50-6d2f-45bd-af3d-c4893afdf575",
+      "outcome": "SUCCESS",
+      "result": {
+        "attempt": 1,
+        "completed_at": "2026-09-27T11:55:24.613065+00:00",
+        "data": {
+          "acked": false,
+          "delivered": true,
+          "notification_id": "650012b2-5eb4-4ccd-9600-05f2a3827b10"
+        },
+        "duration_ms": 0,
+        "started_at": "2026-09-27T11:55:24.613065+00:00",
+        "success": true
+      },
+      "simulation": true,
+      "step_code": "COMPLETE",
+      "task_code": "FINALIZE",
+      "timeout_sec": 60,
+      "visit_no": 1
+    },
+    "event_id": "f4c9ca07-ca74-4e94-bca8-f4c121692d05",
+    "event_type": "STEP_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.613065+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 69,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "attempt_no": 1,
+      "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+      "job_step_id": "a9a55b50-6d2f-45bd-af3d-c4893afdf575",
+      "operation_key": "a9a55b50-6d2f-45bd-af3d-c4893afdf575",
+      "simulation": true,
+      "step_code": "COMPLETE",
+      "task_code": "FINALIZE",
+      "timeout_sec": 60,
+      "transition": {
+        "on": "SUCCESS",
+        "priority": 100,
+        "terminal": "SUCCEEDED"
+      },
+      "visit_no": 1
+    },
+    "event_id": "2d74ede2-fb90-4b10-95e3-0c1d4864c7bd",
+    "event_type": "TRANSITION_SELECTED",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.613065+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 70,
+    "type": "EVENT"
+  },
+  {
+    "data": {
+      "error_code": null,
+      "output": {
+        "delivery_id": "DEMO_DELIVERY",
+        "items": [
+          {
+            "item_code": "DEMO_DOCUMENT",
+            "quantity": 1
+          }
+        ],
+        "lock_sensor_verified": false,
+        "receiver_user_id": "SIM_STAFF",
+        "staff_confirmed_lock": true
+      },
+      "status": "SUCCEEDED"
+    },
+    "event_id": "3e05b012-f283-4772-95d6-e49b68368a6c",
+    "event_type": "JOB_RESULT",
+    "job_id": "9aabd1e3-23b4-40f9-b0b9-4215bb341cff",
+    "occurred_at": "2026-09-27T11:55:24.613065+00:00",
+    "producer_session_id": "88ba9cc7-496a-4bec-99ae-23c3d7368846",
+    "protocol_version": 1,
+    "sequence_no": 71,
+    "type": "EVENT"
+  }
+]

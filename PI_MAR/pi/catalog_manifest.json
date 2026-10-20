@@ -1,0 +1,96 @@
+[
+  {
+    "workflow_code": "WF_CROWD_MONITORING",
+    "version": 4,
+    "sha256": "370d7276c888c838eef73ae5639c6b5ac26056e70e64aa33931060fdf9d79701",
+    "capabilities": [
+      "nav2",
+      "ai_crowd",
+      "notification"
+    ]
+  },
+  {
+    "workflow_code": "WF_EMERGENCY_SOS_RESPONSE",
+    "version": 4,
+    "sha256": "03dba764e0b115fc01d9874b15fc6b70f49f3acad9bb7cece3a20fe2a12ec65a",
+    "capabilities": [
+      "notification",
+      "interaction",
+      "event_wait"
+    ]
+  },
+  {
+    "workflow_code": "WF_ENDPOINT_NAVIGATION",
+    "version": 4,
+    "sha256": "edcdcdfa400dfda87a47360c48873573f1cc88beae2a107baa8d0a523dc0cf9a",
+    "capabilities": [
+      "nav2",
+      "interaction",
+      "notification"
+    ]
+  },
+  {
+    "workflow_code": "WF_FALL_DETECTION_RESPONSE",
+    "version": 4,
+    "sha256": "c027665a26ba02bb9d13b023ed0edcc2f162619e92554d4a198cc83d5b63c8cb",
+    "capabilities": [
+      "data_service",
+      "event_wait",
+      "interaction",
+      "notification"
+    ]
+  },
+  {
+    "workflow_code": "WF_INFORMATION_ASSISTANCE",
+    "version": 4,
+    "sha256": "0d812359ada3637f292380ed4152e2aea836679323febe6c4460ffa32034fd16",
+    "capabilities": [
+      "interaction",
+      "data_service",
+      "notification"
+    ]
+  },
+  {
+    "workflow_code": "WF_PATIENT_ESCORT",
+    "version": 4,
+    "sha256": "75ff6815749fb067af46c9b71db54b9fd8c6d4b7224758a246e0bfd5f829046e",
+    "capabilities": [
+      "nav2",
+      "interaction",
+      "notification"
+    ]
+  },
+  {
+    "workflow_code": "WF_RESTRICTED_AREA_MONITORING",
+    "version": 4,
+    "sha256": "2b0efe09e11b9593f52d9afd477858ad2b3d1b875cffb47441e35a3b7981f4c6",
+    "capabilities": [
+      "nav2",
+      "ai_intrusion",
+      "interaction",
+      "notification"
+    ]
+  },
+  {
+    "workflow_code": "WF_ROBOT_STARTUP_STANDBY",
+    "version": 4,
+    "sha256": "55541544b987c84e9a4af12e9dd19dd34b7beada8a31e2e81a1b3b43b030dbe8",
+    "capabilities": [
+      "sensors",
+      "notification"
+    ]
+  },
+  {
+    "workflow_code": "WF_SECURE_MEDICAL_DELIVERY",
+    "version": 4,
+    "sha256": "435ae022c12f030251a5c9d4479af011b86207b9c4bf4bf27a3f8ec650e994c9",
+    "capabilities": [
+      "nav2",
+      "cargo_lock",
+      "identity",
+      "payload_staff",
+      "interaction",
+      "notification"
+    ]
+  }
+]

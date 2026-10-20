@@ -1,0 +1,163 @@
+{
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": "1.0"
+    },
+    "contract": {
+      "const": "MAR-STEP-2"
+    },
+    "messageType": {
+      "const": "COMMAND"
+    },
+    "commandId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "correlationId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "robotId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "commandType": {
+      "enum": [
+        "EXECUTE_STEP",
+        "CANCEL_STEP"
+      ]
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "step": {
+      "type": "object",
+      "properties": {
+        "jobId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "jobStepId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "stepId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "stepCode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "stepType": {
+          "enum": [
+            "MOVE",
+            "INTERACT",
+            "DATA_SERVICE",
+            "AUTHENTICATE",
+            "CONTROL_HARDWARE",
+            "HANDLE_PAYLOAD",
+            "EXECUTE_SENSING",
+            "NOTIFY",
+            "WAIT",
+            "CHECK_CONDITION",
+            "SET_CONTEXT"
+          ]
+        },
+        "visitNo": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "operationKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "timeoutSec": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 3605
+        },
+        "params": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "jobId",
+        "jobStepId",
+        "stepId",
+        "stepCode",
+        "stepType",
+        "visitNo",
+        "operationKey",
+        "timeoutSec",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "jobId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "jobStepId": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "contract",
+    "messageType",
+    "commandId",
+    "correlationId",
+    "robotId",
+    "commandType",
+    "expiresAt"
+  ],
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "properties": {
+        "commandType": {
+          "const": "EXECUTE_STEP"
+        }
+      },
+      "required": [
+        "step"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "jobId"
+            ]
+          },
+          {
+            "required": [
+              "jobStepId"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "commandType": {
+          "const": "CANCEL_STEP"
+        }
+      },
+      "required": [
+        "jobId",
+        "jobStepId"
+      ],
+      "not": {
+        "required": [
+          "step"
+        ]
+      }
+    }
+  ]
+}

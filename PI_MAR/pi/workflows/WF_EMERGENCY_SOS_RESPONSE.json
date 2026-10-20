@@ -1,0 +1,201 @@
+{
+  "code": "WF_EMERGENCY_SOS_RESPONSE",
+  "version": 4,
+  "name": "Báo SOS và chờ staff tiếp nhận",
+  "deployment_note": "Bản 4: 11 STEP TYPE; không CALL_WORKFLOW; đối chiếu capability trước khi chạy.",
+  "required_capabilities": [
+    "notification",
+    "interaction",
+    "event_wait"
+  ],
+  "tasks": [
+    {
+      "code": "MAIN",
+      "name": "Luồng chính",
+      "display_order": 0
+    }
+  ],
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "incident_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "message": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      }
+    },
+    "required": [
+      "incident_id",
+      "message"
+    ],
+    "additionalProperties": false
+  },
+  "start": "ALERT",
+  "max_duration_sec": 1200,
+  "max_step_visits": 100,
+  "output_mapping": {
+    "incident_id": {
+      "$ref": "/input/incident_id"
+    },
+    "staff_arrival_event": {
+      "$ref": "/outputs/WAIT_STAFF/event"
+    }
+  },
+  "steps": [
+    {
+      "code": "ALERT",
+      "task_code": "MAIN",
+      "type": "NOTIFY",
+      "params": {
+        "notification_type": "SOS",
+        "severity": "CRITICAL",
+        "recipients": [
+          "STAFF"
+        ],
+        "data": {
+          "incident_id": {
+            "$ref": "/input/incident_id"
+          },
+          "message": {
+            "$ref": "/input/message"
+          }
+        },
+        "require_ack": true
+      },
+      "timeout_sec": 60,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "SPEAK"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "ESCALATE"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "ESCALATE"
+        }
+      ]
+    },
+    {
+      "code": "SPEAK",
+      "task_code": "MAIN",
+      "type": "INTERACT",
+      "params": {
+        "action": "SPEAK",
+        "language": "vi-VN",
+        "prompt_key": "STAFF_ON_THE_WAY",
+        "data": {
+          "incident_id": {
+            "$ref": "/input/incident_id"
+          }
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "WAIT_STAFF"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "WAIT_STAFF"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "WAIT_STAFF"
+        }
+      ]
+    },
+    {
+      "code": "WAIT_STAFF",
+      "task_code": "MAIN",
+      "type": "WAIT",
+      "params": {
+        "wait_type": "EVENT",
+        "event_type": "STAFF_ARRIVED",
+        "correlation_key": {
+          "$ref": "/input/incident_id"
+        }
+      },
+      "timeout_sec": 300,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "SUCCEEDED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "ESCALATE"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "ESCALATE"
+        }
+      ]
+    },
+    {
+      "code": "ESCALATE",
+      "task_code": "MAIN",
+      "type": "NOTIFY",
+      "params": {
+        "notification_type": "SOS_ESCALATION",
+        "severity": "CRITICAL",
+        "recipients": [
+          "STAFF"
+        ],
+        "data": {
+          "incident_id": {
+            "$ref": "/input/incident_id"
+          }
+        },
+        "require_ack": true
+      },
+      "timeout_sec": 60,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        }
+      ]
+    }
+  ]
+}

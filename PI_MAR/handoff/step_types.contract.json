@@ -1,0 +1,655 @@
+{
+  "contract": "MAR-STEP-2",
+  "step_types": {
+    "MOVE": {
+      "executor": "PI",
+      "status": "IMPLEMENTED_ON_PI",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "map_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "endpoint_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "mode": {
+            "enum": [
+              "NORMAL",
+              "ESCORT",
+              "PATROL"
+            ]
+          },
+          "max_speed_mps": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 0.3
+          }
+        },
+        "required": [
+          "map_id",
+          "endpoint_id",
+          "mode",
+          "max_speed_mps"
+        ],
+        "additionalProperties": false
+      },
+      "note": ""
+    },
+    "INTERACT": {
+      "executor": "PI_FOR_SPEAK_BE_FOR_UI_ACTIONS",
+      "status": "SPEAK_IMPLEMENTED_ON_PI",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "prompt_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "action": {
+            "const": "SPEAK"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+                "pattern": "\\S"
+              },
+              "language_code": {
+                "enum": [
+                  "vi",
+                  "en"
+                ]
+              },
+              "speed_wpm": {
+                "type": "integer",
+                "minimum": 80,
+                "maximum": 220
+              },
+              "volume": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "prompt_key",
+          "action",
+          "data"
+        ],
+        "additionalProperties": false
+      },
+      "note": "This input schema describes Pi SPEAK only. Server/UI actions use the BE schema."
+    },
+    "DATA_SERVICE": {
+      "executor": "BE",
+      "status": "BE_IMPLEMENTATION_REQUIRED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "service_key": {
+            "enum": [
+              "QUERY_HOSPITAL_INFORMATION",
+              "RESOLVE_TARGETS",
+              "SELECT_TARGET",
+              "CHECK_TARGET",
+              "CREATE_FALL_INCIDENT",
+              "COMMIT_MAP_ARTIFACT"
+            ]
+          },
+          "mapping_session_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "artifact_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "floor_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "map_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "endpoint_group_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "endpoint_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "detection_event_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "service_key"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "service_key": {
+                  "const": "QUERY_HOSPITAL_INFORMATION"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "question"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "service_key": {
+                  "const": "RESOLVE_TARGETS"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "endpoint_group_id"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "service_key": {
+                  "const": "SELECT_TARGET"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "targets",
+                "index"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "service_key": {
+                  "const": "CHECK_TARGET"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "endpoint_id"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "service_key": {
+                  "const": "CREATE_FALL_INCIDENT"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "detection_event_id"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "service_key": {
+                  "const": "COMMIT_MAP_ARTIFACT"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "mapping_session_id",
+                "artifact_id",
+                "floor_id",
+                "map_name"
+              ]
+            }
+          }
+        ]
+      },
+      "note": "Resolved flat fields match BE handlers. Required service-specific fields are enforced below."
+    },
+    "AUTHENTICATE": {
+      "executor": "BE",
+      "status": "DEFERRED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "purpose": {
+            "enum": [
+              "DELIVERY_SENDER",
+              "DELIVERY_RECEIVER"
+            ]
+          }
+        },
+        "required": [
+          "purpose"
+        ],
+        "additionalProperties": false
+      },
+      "note": "No successful grant is generated. Delivery with staff authentication is pending."
+    },
+    "CONTROL_HARDWARE": {
+      "executor": "PI",
+      "status": "IMPLEMENTED_ON_PI",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "compartment_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "action": {
+            "enum": [
+              "LOCK_COMPARTMENT",
+              "UNLOCK_COMPARTMENT"
+            ]
+          },
+          "authorization": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "enum": [
+                  "STAFF_VERIFIED"
+                ]
+              },
+              "verification_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "actor_account_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "purpose": {
+                "enum": [
+                  "DELIVERY_SENDER",
+                  "DELIVERY_RECEIVER"
+                ]
+              },
+              "valid_until": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "mode",
+              "verification_id",
+              "actor_account_id",
+              "purpose",
+              "valid_until"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "compartment_id",
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "note": "UNLOCK disabled by default; commissioning-only opening is explicitly enabled locally. Staff verification is not implemented."
+    },
+    "HANDLE_PAYLOAD": {
+      "executor": "BE",
+      "status": "BE_IMPLEMENTATION_REQUIRED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "enum": [
+              "LOAD",
+              "UNLOAD"
+            ]
+          },
+          "service_request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "compartment_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "item_code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2000
+                },
+                "quantity": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "item_code",
+                "quantity"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "action",
+          "service_request_id",
+          "compartment_id",
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "note": ""
+    },
+    "EXECUTE_SENSING": {
+      "executor": "PI",
+      "status": "IMPLEMENTED_ON_PI",
+      "input_schema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "sensing_type": {
+                "enum": [
+                  "ROBOT_HEALTH",
+                  "SIDE_CLEARANCE",
+                  "CROWD_DENSITY",
+                  "RESTRICTED_ZONE"
+                ]
+              },
+              "zone_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "window_sec": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 30
+              }
+            },
+            "required": [
+              "sensing_type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "sensing_type": {
+                    "const": "MAPPING"
+                  },
+                  "action": {
+                    "const": "START"
+                  },
+                  "mapping_session_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "preview_rate_hz": {
+                    "type": "number",
+                    "minimum": 0.2,
+                    "maximum": 1
+                  }
+                },
+                "required": [
+                  "sensing_type",
+                  "action",
+                  "mapping_session_id"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "sensing_type": {
+                    "const": "MAPPING"
+                  },
+                  "action": {
+                    "const": "SAVE"
+                  },
+                  "mapping_session_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "artifact_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "sensing_type",
+                  "action",
+                  "mapping_session_id",
+                  "artifact_id"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "sensing_type": {
+                    "const": "MAPPING"
+                  },
+                  "action": {
+                    "const": "STOP"
+                  },
+                  "mapping_session_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "sensing_type",
+                  "action",
+                  "mapping_session_id"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        ]
+      },
+      "note": "Health/US100 implemented. AI requires a real publisher on /mediassist/ai/observations; model weights/inference not included."
+    },
+    "NOTIFY": {
+      "executor": "BE",
+      "status": "BE_IMPLEMENTATION_REQUIRED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "notification_type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "severity": {
+            "enum": [
+              "INFO",
+              "WARNING",
+              "CRITICAL"
+            ]
+          },
+          "data": {
+            "type": "object"
+          },
+          "require_ack": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "notification_type",
+          "severity",
+          "data",
+          "require_ack"
+        ],
+        "additionalProperties": false
+      },
+      "note": ""
+    },
+    "WAIT": {
+      "executor": "PI_FOR_DURATION_BE_FOR_EVENT",
+      "status": "IMPLEMENTED_ON_PI",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "wait_type": {
+            "enum": [
+              "DURATION",
+              "EVENT"
+            ]
+          },
+          "duration_sec": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 3600
+          },
+          "event_type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "correlation_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "required": [
+          "wait_type"
+        ],
+        "additionalProperties": false
+      },
+      "note": "Pi rejects EVENT. BE owns staff event and correlation."
+    },
+    "CHECK_CONDITION": {
+      "executor": "BE",
+      "status": "BE_IMPLEMENTATION_REQUIRED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "expression": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "operator": {
+                "enum": [
+                  "EQ",
+                  "NE",
+                  "GT",
+                  "GTE",
+                  "LT",
+                  "LTE",
+                  "IN",
+                  "EXISTS"
+                ]
+              },
+              "value": {}
+            },
+            "required": [
+              "path",
+              "operator"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "expression"
+        ],
+        "additionalProperties": false
+      },
+      "note": ""
+    },
+    "SET_CONTEXT": {
+      "executor": "BE",
+      "status": "BE_IMPLEMENTATION_REQUIRED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "operations": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "pattern": "^/vars/[A-Za-z][A-Za-z0-9_]*$"
+                },
+                "operation": {
+                  "enum": [
+                    "SET",
+                    "INCREMENT"
+                  ]
+                },
+                "value": {}
+              },
+              "required": [
+                "path",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "operations"
+        ],
+        "additionalProperties": false
+      },
+      "note": ""
+    }
+  }
+}

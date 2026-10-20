@@ -1,0 +1,20 @@
+{
+  "measured": false,
+  "parent_frame": "base_footprint",
+  "left": {
+    "x_m": null,
+    "y_m": null,
+    "z_m": null,
+    "roll_rad": null,
+    "pitch_rad": null,
+    "yaw_rad": null
+  },
+  "right": {
+    "x_m": null,
+    "y_m": null,
+    "z_m": null,
+    "roll_rad": null,
+    "pitch_rad": null,
+    "yaw_rad": null
+  }
+}

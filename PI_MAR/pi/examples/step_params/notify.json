@@ -1,0 +1,17 @@
+{
+  "data": {
+    "captured_at": "2026-09-27T11:55:24.575901+00:00",
+    "checkpoint_id": "EP_305",
+    "evidence_ref": null,
+    "metrics": {
+      "count": 12
+    },
+    "zone_id": "ZONE_WAITING"
+  },
+  "notification_type": "CROWD_WARNING",
+  "recipients": [
+    "STAFF"
+  ],
+  "require_ack": false,
+  "severity": "WARNING"
+}

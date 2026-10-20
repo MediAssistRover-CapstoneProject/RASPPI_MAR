@@ -1,0 +1,11 @@
+{
+  "map_id": "opd-map-v1",
+  "endpoint_group_id": "GROUP_RECEPTION",
+  "group_revision": 1,
+  "candidate_endpoint_ids": [
+    "EP_DESK_A",
+    "EP_DESK_B"
+  ],
+  "mode": "NORMAL",
+  "max_speed_mps": 0.05
+}

@@ -1,0 +1,7 @@
+{
+  "map_id": "opd-map-v1",
+  "checkpoint_id": "EP_305",
+  "zone_id": "ZONE_WAITING",
+  "warning_count": 10,
+  "max_loops": 2
+}

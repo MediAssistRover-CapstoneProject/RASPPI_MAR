@@ -1,0 +1,12 @@
+{
+  "map_id": "opd-map-v1",
+  "pickup_endpoint_id": "EP_PICKUP",
+  "delivery_endpoint_id": "EP_305",
+  "delivery_id": "DEMO_DELIVERY",
+  "items": [
+    {
+      "item_code": "DEMO_DOCUMENT",
+      "quantity": 1
+    }
+  ]
+}

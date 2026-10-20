@@ -1,0 +1,71 @@
+{
+  "robot_id": "mentorpi-m1-01",
+  "server_url": "wss://YOUR_SERVER/robot/ws",
+  "allow_insecure_localhost": false,
+  "state_path": "./state/robot.sqlite3",
+  "max_speed_mps": 0.15,
+  "capabilities": [
+    "sensors"
+  ],
+  "allowed_workflows": [],
+  "motion": {
+    "commissioned": false,
+    "cart_footprint_validated": false,
+    "watchdog_validated": false,
+    "max_angular_speed_rps": 0.3,
+    "stop_distance_m": 0.25,
+    "sensor_max_age_sec": 0.6,
+    "lease_timeout_sec": 0.4,
+    "command_timeout_sec": 0.3
+  },
+  "servo": {
+    "model": "MG996R",
+    "port": "S6",
+    "ros_id": 4,
+    "lock_position_raw": 1500,
+    "unlock_position_raw": 2400,
+    "duration_sec": 1.0,
+    "user_reported_tested": true,
+    "physical_feedback_available": false,
+    "commissioned": false
+  },
+  "ros": {
+    "navigate_action": "/navigate_to_pose",
+    "map_frame": "map",
+    "base_frame": "base_footprint",
+    "odom": "/odom",
+    "scan": "/scan_raw",
+    "battery": "/ros_robot_controller/battery",
+    "pwm": "/ros_robot_controller/pwm_servo/set_state",
+    "left_range": "/ultrasonic/left/range",
+    "right_range": "/ultrasonic/right/range",
+    "raw_cmd_vel": "/cmd_vel",
+    "safe_cmd_vel": "/mediassist/cmd_vel_safe",
+    "lease": "/mediassist/motion_lease",
+    "compute_path_action": "/compute_path_to_pose"
+  },
+  "us100": {
+    "mode": "TRIG_ECHO",
+    "left": {
+      "trig_bcm": 17,
+      "echo_bcm": 18
+    },
+    "right": {
+      "trig_bcm": 22,
+      "echo_bcm": 23
+    },
+    "mount": "FIXED_SIDES",
+    "fov_deg": 15.0
+  },
+  "map_id": null,
+  "map_asset_sha256": null,
+  "endpoints": {},
+  "endpoint_groups": {},
+  "navigation": {
+    "planner_id": "GridBased",
+    "planning_timeout_sec": 10.0,
+    "max_candidates": 8,
+    "group_fallback": "PLAN_ONLY"
+  },
+  "tls_ca_file": null
+}

@@ -1,0 +1,457 @@
+{
+  "code": "WF_FALL_DETECTION_RESPONSE",
+  "version": 4,
+  "name": "Tiếp nhận sự kiện nghi té ngã từ detector",
+  "deployment_note": "Bản 4: 11 STEP TYPE; không CALL_WORKFLOW; đối chiếu capability trước khi chạy.",
+  "required_capabilities": [
+    "data_service",
+    "event_wait",
+    "interaction",
+    "notification"
+  ],
+  "tasks": [
+    {
+      "code": "MAIN",
+      "name": "Luồng chính",
+      "display_order": 0
+    }
+  ],
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "detection_event_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "confidence": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "min_confidence": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      }
+    },
+    "required": [
+      "detection_event_id",
+      "confidence",
+      "min_confidence"
+    ],
+    "additionalProperties": false
+  },
+  "start": "CHECK",
+  "max_duration_sec": 1200,
+  "max_step_visits": 100,
+  "output_mapping": {
+    "detection_event_id": {
+      "$ref": "/input/detection_event_id"
+    },
+    "accepted": {
+      "$ref": "/vars/accepted"
+    },
+    "incident_id": {
+      "$ref": "/vars/incident_id"
+    },
+    "staff_arrived": {
+      "$ref": "/vars/staff_arrived"
+    }
+  },
+  "steps": [
+    {
+      "code": "CHECK",
+      "task_code": "MAIN",
+      "type": "CHECK_CONDITION",
+      "params": {
+        "expression": {
+          "op": "ge",
+          "args": [
+            {
+              "var": "/input/confidence"
+            },
+            {
+              "var": "/input/min_confidence"
+            }
+          ]
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 1,
+          "next": "CREATE",
+          "when": {
+            "op": "eq",
+            "args": [
+              {
+                "var": "/result/value"
+              },
+              true
+            ]
+          }
+        },
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "IGNORE"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    },
+    {
+      "code": "CREATE",
+      "task_code": "MAIN",
+      "type": "DATA_SERVICE",
+      "params": {
+        "service_key": "INCIDENT",
+        "operation": "CREATE",
+        "resource": "incidents",
+        "request": {
+          "detection_event_id": {
+            "$ref": "/input/detection_event_id"
+          },
+          "type": "SUSPECTED_FALL"
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "ALERT"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "ALERT",
+      "task_code": "MAIN",
+      "type": "NOTIFY",
+      "params": {
+        "notification_type": "SOS",
+        "severity": "CRITICAL",
+        "recipients": [
+          "STAFF"
+        ],
+        "data": {
+          "incident_id": {
+            "$ref": "/outputs/CREATE/data/incident_id"
+          },
+          "detection_event_id": {
+            "$ref": "/input/detection_event_id"
+          },
+          "message": "Có sự kiện nghi té ngã cần nhân viên kiểm tra"
+        },
+        "require_ack": true
+      },
+      "timeout_sec": 60,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "SPEAK"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "ESCALATE"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "ESCALATE"
+        }
+      ]
+    },
+    {
+      "code": "SPEAK",
+      "task_code": "MAIN",
+      "type": "INTERACT",
+      "params": {
+        "action": "SPEAK",
+        "language": "vi-VN",
+        "prompt_key": "STAFF_ON_THE_WAY",
+        "data": {
+          "incident_id": {
+            "$ref": "/outputs/CREATE/data/incident_id"
+          }
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "WAIT_STAFF"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "WAIT_STAFF"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "WAIT_STAFF"
+        }
+      ]
+    },
+    {
+      "code": "WAIT_STAFF",
+      "task_code": "MAIN",
+      "type": "WAIT",
+      "params": {
+        "wait_type": "EVENT",
+        "event_type": "STAFF_ARRIVED",
+        "correlation_key": {
+          "$ref": "/outputs/CREATE/data/incident_id"
+        }
+      },
+      "timeout_sec": 300,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "DONE"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "ESCALATE"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "ESCALATE"
+        }
+      ]
+    },
+    {
+      "code": "DONE",
+      "task_code": "MAIN",
+      "type": "NOTIFY",
+      "params": {
+        "notification_type": "FALL_RESPONSE_COMPLETED",
+        "severity": "INFO",
+        "recipients": [
+          "STAFF"
+        ],
+        "data": {
+          "incident_id": {
+            "$ref": "/outputs/CREATE/data/incident_id"
+          },
+          "staff_arrival_event": {
+            "$ref": "/outputs/WAIT_STAFF/event"
+          }
+        },
+        "require_ack": false
+      },
+      "timeout_sec": 60,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "COMPLETE"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        }
+      ]
+    },
+    {
+      "code": "COMPLETE",
+      "task_code": "MAIN",
+      "type": "SET_CONTEXT",
+      "params": {
+        "assignments": {
+          "accepted": true,
+          "incident_id": {
+            "var": "/outputs/CREATE/data/incident_id"
+          },
+          "staff_arrived": true
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "SUCCEEDED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    },
+    {
+      "code": "IGNORE",
+      "task_code": "MAIN",
+      "type": "SET_CONTEXT",
+      "params": {
+        "assignments": {
+          "accepted": false,
+          "incident_id": null,
+          "staff_arrived": false
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "SUCCEEDED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    },
+    {
+      "code": "ESCALATE",
+      "task_code": "MAIN",
+      "type": "NOTIFY",
+      "params": {
+        "notification_type": "FALL_RESPONSE_ESCALATION",
+        "severity": "CRITICAL",
+        "recipients": [
+          "STAFF"
+        ],
+        "data": {
+          "incident_id": {
+            "$ref": "/outputs/CREATE/data/incident_id"
+          },
+          "detection_event_id": {
+            "$ref": "/input/detection_event_id"
+          }
+        },
+        "require_ack": true
+      },
+      "timeout_sec": 60,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        }
+      ]
+    },
+    {
+      "code": "HELP",
+      "task_code": "MAIN",
+      "type": "NOTIFY",
+      "params": {
+        "notification_type": "FALL_RESPONSE_FAILURE",
+        "severity": "CRITICAL",
+        "recipients": [
+          "STAFF"
+        ],
+        "data": {
+          "detection_event_id": {
+            "$ref": "/input/detection_event_id"
+          }
+        },
+        "require_ack": true
+      },
+      "timeout_sec": 60,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,303 @@
+{
+  "code": "WF_RESTRICTED_AREA_MONITORING",
+  "version": 4,
+  "name": "Kiểm tra vùng hạn chế tại checkpoint",
+  "deployment_note": "Bản 4: 11 STEP TYPE; không CALL_WORKFLOW; đối chiếu capability trước khi chạy.",
+  "required_capabilities": [
+    "nav2",
+    "ai_intrusion",
+    "interaction",
+    "notification"
+  ],
+  "tasks": [
+    {
+      "code": "MAIN",
+      "name": "Luồng chính",
+      "display_order": 0
+    }
+  ],
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "map_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "checkpoint_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "zone_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      }
+    },
+    "required": [
+      "map_id",
+      "checkpoint_id",
+      "zone_id"
+    ],
+    "additionalProperties": false
+  },
+  "start": "MOVE",
+  "max_duration_sec": 1200,
+  "max_step_visits": 100,
+  "output_mapping": {
+    "zone_id": {
+      "$ref": "/input/zone_id"
+    },
+    "intrusion_detected": {
+      "$ref": "/outputs/SENSE/metrics/intrusion_detected"
+    }
+  },
+  "steps": [
+    {
+      "code": "MOVE",
+      "task_code": "MAIN",
+      "type": "MOVE",
+      "params": {
+        "map_id": {
+          "$ref": "/input/map_id"
+        },
+        "endpoint_id": {
+          "$ref": "/input/checkpoint_id"
+        },
+        "mode": "PATROL",
+        "max_speed_mps": {
+          "$ref": "/system/max_speed_mps"
+        }
+      },
+      "timeout_sec": 180,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "SENSE"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "SENSE",
+      "task_code": "MAIN",
+      "type": "EXECUTE_SENSING",
+      "params": {
+        "task_type": "RESTRICTED_AREA_INTRUSION",
+        "zone_id": {
+          "$ref": "/input/zone_id"
+        },
+        "window_sec": 5
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "CHECK"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "CHECK",
+      "task_code": "MAIN",
+      "type": "CHECK_CONDITION",
+      "params": {
+        "expression": {
+          "var": "/outputs/SENSE/metrics/intrusion_detected"
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 1,
+          "next": "WARN",
+          "when": {
+            "op": "eq",
+            "args": [
+              {
+                "var": "/result/value"
+              },
+              true
+            ]
+          }
+        },
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "SUCCEEDED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    },
+    {
+      "code": "WARN",
+      "task_code": "MAIN",
+      "type": "INTERACT",
+      "params": {
+        "action": "SPEAK",
+        "language": "vi-VN",
+        "prompt_key": "RESTRICTED_AREA_WARNING",
+        "data": {
+          "zone_id": {
+            "$ref": "/input/zone_id"
+          }
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "ALERT"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "ALERT"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "ALERT"
+        }
+      ]
+    },
+    {
+      "code": "ALERT",
+      "task_code": "MAIN",
+      "type": "NOTIFY",
+      "params": {
+        "notification_type": "INTRUSION",
+        "severity": "CRITICAL",
+        "recipients": [
+          "STAFF"
+        ],
+        "data": {
+          "zone_id": {
+            "$ref": "/input/zone_id"
+          },
+          "checkpoint_id": {
+            "$ref": "/input/checkpoint_id"
+          },
+          "metrics": {
+            "$ref": "/outputs/SENSE/metrics"
+          },
+          "captured_at": {
+            "$ref": "/outputs/SENSE/captured_at"
+          },
+          "evidence_ref": {
+            "$ref": "/outputs/SENSE/evidence_ref"
+          }
+        },
+        "require_ack": true
+      },
+      "timeout_sec": 60,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "SUCCEEDED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    },
+    {
+      "code": "HELP",
+      "task_code": "MAIN",
+      "type": "NOTIFY",
+      "params": {
+        "notification_type": "MONITORING_UNAVAILABLE",
+        "severity": "WARNING",
+        "recipients": [
+          "STAFF"
+        ],
+        "data": {
+          "zone_id": {
+            "$ref": "/input/zone_id"
+          },
+          "checkpoint_id": {
+            "$ref": "/input/checkpoint_id"
+          }
+        },
+        "require_ack": false
+      },
+      "timeout_sec": 60,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    }
+  ]
+}

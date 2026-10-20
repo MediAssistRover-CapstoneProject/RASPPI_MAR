@@ -1,0 +1,100 @@
+Panels:
+- Class: rviz_common/Displays
+  Name: Displays
+Visualization Manager:
+  Class: ''
+  Global Options:
+    Fixed Frame: map
+    Background Color: 48; 48; 48
+    Frame Rate: 20
+  Displays:
+  - Class: rviz_default_plugins/Grid
+    Name: Grid
+    Enabled: true
+  - Class: rviz_default_plugins/Map
+    Name: Map
+    Enabled: true
+    Topic:
+      Value: /map
+      Reliability Policy: Reliable
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Depth: 5
+    Alpha: 0.7
+  - Class: rviz_default_plugins/LaserScan
+    Name: LiDAR
+    Enabled: true
+    Topic:
+      Value: /scan_raw
+      Reliability Policy: Best Effort
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Depth: 5
+    Size (m): 0.03
+  - Class: rviz_default_plugins/TF
+    Name: TF
+    Enabled: true
+  - Class: rviz_default_plugins/Polygon
+    Name: Robot and cart footprint
+    Enabled: true
+    Topic:
+      Value: /local_costmap/published_footprint
+      Reliability Policy: Reliable
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Depth: 5
+  - Class: rviz_default_plugins/Odometry
+    Name: Odom
+    Enabled: true
+    Topic:
+      Value: /odom
+      Reliability Policy: Best Effort
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Depth: 5
+  - Class: rviz_default_plugins/Range
+    Name: US100 Left
+    Enabled: false
+    Topic:
+      Value: /ultrasonic/left/range
+      Reliability Policy: Best Effort
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Depth: 5
+  - Class: rviz_default_plugins/Range
+    Name: US100 Right
+    Enabled: false
+    Topic:
+      Value: /ultrasonic/right/range
+      Reliability Policy: Best Effort
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Depth: 5
+  - Class: rviz_default_plugins/Image
+    Name: RGB Camera
+    Enabled: false
+    Topic:
+      Value: /ascamera/camera_publisher/rgb0/image
+      Reliability Policy: Best Effort
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Depth: 5
+  Tools:
+  - Class: rviz_default_plugins/Interact
+  - Class: rviz_default_plugins/MoveCamera
+  - Class: rviz_default_plugins/Select
+  - Class: rviz_default_plugins/PublishPoint
+    Topic:
+      Value: /clicked_point
+    Single click: true
+  - Class: rviz_default_plugins/SetInitialPose
+    Topic:
+      Value: /initialpose
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Scale: 40
+      Target Frame: <Fixed Frame>
+Window Geometry:
+  Width: 1280
+  Height: 800

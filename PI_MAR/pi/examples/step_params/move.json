@@ -1,0 +1,6 @@
+{
+  "endpoint_id": "EP_305",
+  "map_id": "opd-map-v1",
+  "max_speed_mps": 0.05,
+  "mode": "PATROL"
+}

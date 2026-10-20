@@ -1,0 +1,221 @@
+{
+  "code": "WF_ENDPOINT_NAVIGATION",
+  "version": 4,
+  "name": "Đi tới endpoint riêng hoặc một điểm thay thế trong group",
+  "deployment_note": "Bản 4: 11 STEP TYPE; không CALL_WORKFLOW; đối chiếu capability trước khi chạy.",
+  "required_capabilities": [
+    "nav2",
+    "interaction",
+    "notification"
+  ],
+  "tasks": [
+    {
+      "code": "MAIN",
+      "name": "Điều hướng",
+      "display_order": 0
+    }
+  ],
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "map_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "endpoint_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "mode": {
+        "enum": [
+          "NORMAL",
+          "ESCORT",
+          "PATROL"
+        ]
+      },
+      "max_speed_mps": {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "maximum": 0.3
+      },
+      "endpoint_group_id": {
+        "type": "string",
+        "minLength": 1
+      },
+      "group_revision": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "candidate_endpoint_ids": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "minItems": 1,
+        "maxItems": 8,
+        "uniqueItems": true
+      }
+    },
+    "required": [
+      "map_id",
+      "mode",
+      "max_speed_mps"
+    ],
+    "additionalProperties": false,
+    "oneOf": [
+      {
+        "required": [
+          "endpoint_id"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "endpoint_group_id"
+              ]
+            },
+            {
+              "required": [
+                "group_revision"
+              ]
+            },
+            {
+              "required": [
+                "candidate_endpoint_ids"
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "required": [
+          "endpoint_group_id",
+          "group_revision",
+          "candidate_endpoint_ids"
+        ],
+        "not": {
+          "required": [
+            "endpoint_id"
+          ]
+        }
+      }
+    ]
+  },
+  "start": "MOVE",
+  "max_duration_sec": 360,
+  "max_step_visits": 5,
+  "output_mapping": {
+    "navigation": {
+      "$ref": "/outputs/MOVE"
+    }
+  },
+  "steps": [
+    {
+      "code": "MOVE",
+      "task_code": "MAIN",
+      "type": "MOVE",
+      "params": {
+        "$ref": "/input"
+      },
+      "timeout_sec": 300,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "ARRIVED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "ARRIVED",
+      "task_code": "MAIN",
+      "type": "INTERACT",
+      "params": {
+        "action": "DISPLAY",
+        "language": "vi-VN",
+        "prompt_key": "ENDPOINT_ARRIVED",
+        "data": {
+          "endpoint_id": {
+            "$ref": "/outputs/MOVE/endpoint_id"
+          }
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "SUCCEEDED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "HELP",
+      "task_code": "MAIN",
+      "type": "NOTIFY",
+      "params": {
+        "notification_type": "NAVIGATION_FAILED",
+        "severity": "WARNING",
+        "recipients": [
+          "STAFF"
+        ],
+        "data": {
+          "map_id": {
+            "$ref": "/input/map_id"
+          }
+        },
+        "require_ack": false
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    }
+  ]
+}

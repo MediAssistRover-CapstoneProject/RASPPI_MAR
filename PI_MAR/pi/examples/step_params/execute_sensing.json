@@ -1,0 +1,5 @@
+{
+  "task_type": "CROWD_DENSITY",
+  "window_sec": 5,
+  "zone_id": "ZONE_WAITING"
+}

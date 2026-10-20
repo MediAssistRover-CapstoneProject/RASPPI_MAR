@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!-- Invoke from the vendor robot xacro with MEASURED xyz/rpy values. No fabricated geometry. -->
+  <xacro:macro name="mediassist_fixed_us100" params="parent left_xyz left_rpy right_xyz right_rpy">
+    <link name="us100_left"/>
+    <joint name="us100_left_mount" type="fixed">
+      <parent link="${parent}"/><child link="us100_left"/>
+      <origin xyz="${left_xyz}" rpy="${left_rpy}"/>
+    </joint>
+    <link name="us100_right"/>
+    <joint name="us100_right_mount" type="fixed">
+      <parent link="${parent}"/><child link="us100_right"/>
+      <origin xyz="${right_xyz}" rpy="${right_rpy}"/>
+    </joint>
+  </xacro:macro>
+</robot>

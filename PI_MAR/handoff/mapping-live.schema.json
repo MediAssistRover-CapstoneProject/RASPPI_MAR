@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "messageType",
+        "robotId",
+        "transportSessionId",
+        "jobId",
+        "mappingSessionId",
+        "commandId",
+        "sequenceNo",
+        "issuedAt",
+        "expiresAt",
+        "linearX",
+        "angularZ",
+        "durationMs"
+      ],
+      "properties": {
+        "messageType": {
+          "const": "MAPPING_CONTROL"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "jobId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "mappingSessionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "commandId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sequenceNo": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "issuedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "linearX": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.05
+        },
+        "angularZ": {
+          "type": "number",
+          "minimum": -0.2,
+          "maximum": 0.2
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 400
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "messageType",
+        "robotId",
+        "transportSessionId",
+        "jobId",
+        "mappingSessionId",
+        "commandId",
+        "sequenceNo",
+        "producerSessionId",
+        "accepted",
+        "errorCode",
+        "receivedAt"
+      ],
+      "properties": {
+        "messageType": {
+          "const": "MAPPING_CONTROL_ACK"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "jobId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "mappingSessionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "commandId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sequenceNo": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "producerSessionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "accepted": {
+          "type": "boolean"
+        },
+        "errorCode": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "maxLength": 100
+            }
+          ]
+        },
+        "receivedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "messageType",
+        "robotId",
+        "transportSessionId",
+        "payload"
+      ],
+      "properties": {
+        "messageType": {
+          "const": "CAMERA_PREVIEW"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "payload": {
+          "type": "object",
+          "required": [
+            "mapping_session_id",
+            "captured_at",
+            "revision",
+            "encoding",
+            "width",
+            "height",
+            "data"
+          ],
+          "properties": {
+            "mapping_session_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "captured_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "encoding": {
+              "const": "jpeg-base64"
+            },
+            "width": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 640
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 480
+            },
+            "data": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 90000
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

@@ -1,0 +1,1025 @@
+{
+  "MOVE": {
+    "schema_version": 3,
+    "executor": "PI_NAV2",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "map_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "endpoint_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "mode": {
+          "enum": [
+            "NORMAL",
+            "ESCORT",
+            "PATROL"
+          ]
+        },
+        "max_speed_mps": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 0.3
+        },
+        "endpoint_group_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "group_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "candidate_endpoint_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "map_id",
+        "mode",
+        "max_speed_mps"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "endpoint_id"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "endpoint_group_id"
+                ]
+              },
+              {
+                "required": [
+                  "group_revision"
+                ]
+              },
+              {
+                "required": [
+                  "candidate_endpoint_ids"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "required": [
+            "endpoint_group_id",
+            "group_revision",
+            "candidate_endpoint_ids"
+          ],
+          "not": {
+            "required": [
+              "endpoint_id"
+            ]
+          }
+        }
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "reached": {
+          "type": "boolean"
+        },
+        "endpoint_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "action_status": {
+          "type": "integer"
+        },
+        "last_feedback_pose": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "x_m": {
+                  "type": "number"
+                },
+                "y_m": {
+                  "type": "number"
+                },
+                "yaw_rad": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "x_m",
+                "y_m",
+                "yaw_rad"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "distance_remaining_m": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "endpoint_group_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "endpoint_id": {
+                "type": "string"
+              },
+              "phase": {
+                "enum": [
+                  "PLAN",
+                  "NAVIGATE"
+                ]
+              },
+              "outcome": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "endpoint_id",
+              "phase",
+              "outcome"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "reached",
+        "endpoint_id",
+        "action_status",
+        "last_feedback_pose",
+        "distance_remaining_m",
+        "endpoint_group_id",
+        "attempts"
+      ],
+      "additionalProperties": false
+    },
+    "note": "MOVE schema 3: endpoint XOR group with frozen candidate order and revision. PLAN_ONLY fallback; no automatic fallback after navigation abort. Humble has no detailed error in these action results."
+  },
+  "INTERACT": {
+    "schema_version": 2,
+    "executor": "SERVER_INTERACTION_ADAPTER",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "enum": [
+            "SPEAK",
+            "DISPLAY",
+            "CAPTURE_INPUT",
+            "CONFIRM"
+          ]
+        },
+        "language": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "prompt_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "data": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "language",
+        "prompt_key",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "completed": {
+          "type": "boolean"
+        },
+        "confirmed": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "input_data": {
+          "type": "object"
+        },
+        "actor_user_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "completed",
+        "confirmed",
+        "input_data",
+        "actor_user_id"
+      ],
+      "additionalProperties": false
+    },
+    "note": "Server drives actual tablet/TTS and returns correlated completion. No implicit success from publishing a string."
+  },
+  "DATA_SERVICE": {
+    "schema_version": 2,
+    "executor": "SERVER_SERVICE_REGISTRY",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "service_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "operation": {
+          "enum": [
+            "QUERY",
+            "CREATE",
+            "UPDATE"
+          ]
+        },
+        "resource": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "request": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "service_key",
+        "operation",
+        "resource",
+        "request"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "required": [
+        "data",
+        "request_id"
+      ],
+      "additionalProperties": false
+    },
+    "note": "No arbitrary URL/SQL/token; operation_key deduplicates writes."
+  },
+  "AUTHENTICATE": {
+    "schema_version": 3,
+    "executor": "SERVER_IDENTITY",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "enum": [
+            "QR_CODE",
+            "STAFF_CONFIRMATION"
+          ]
+        },
+        "required_permission": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "required": [
+        "method",
+        "required_permission",
+        "purpose"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "authenticated": {
+          "type": "boolean"
+        },
+        "verification_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "actor_user_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "valid_until": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "required": [
+        "authenticated",
+        "verification_id",
+        "actor_user_id",
+        "valid_until",
+        "purpose"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "authenticated": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "verification_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "actor_user_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "valid_until": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "note": "Authenticated=true requires non-null actor, verification and expiry. Denied responses may use null for unknown identity/grant. Job and operation scope come from SERVICE_REQUEST metadata."
+  },
+  "CONTROL_HARDWARE": {
+    "schema_version": 3,
+    "executor": "PI_RRC_PWM",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "device_id": {
+          "enum": [
+            "cargo_lock"
+          ]
+        },
+        "action": {
+          "enum": [
+            "LOCK",
+            "UNLOCK"
+          ]
+        },
+        "verification_mode": {
+          "enum": [
+            "COMMAND_ONLY"
+          ]
+        },
+        "verification_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "required": [
+        "device_id",
+        "action",
+        "verification_mode"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "UNLOCK"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "verification_id",
+              "purpose"
+            ]
+          }
+        }
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "published": {
+          "const": true
+        },
+        "controller_ack": {
+          "const": false
+        },
+        "verified": {
+          "const": false
+        },
+        "commanded_state": {
+          "enum": [
+            "LOCK",
+            "UNLOCK"
+          ]
+        },
+        "position_raw": {
+          "type": "integer",
+          "enum": [
+            1500,
+            2400
+          ]
+        },
+        "ros_servo_id": {
+          "const": 4
+        }
+      },
+      "required": [
+        "published",
+        "controller_ack",
+        "verified",
+        "commanded_state",
+        "position_raw",
+        "ros_servo_id"
+      ],
+      "additionalProperties": false
+    },
+    "note": "MG996R on RRC Lite S6, ROS ID4: LOCK=1500, UNLOCK=2400, reported tested by user. No door/lock sensor. Output never claims physical verification."
+  },
+  "HANDLE_PAYLOAD": {
+    "schema_version": 2,
+    "executor": "SERVER_STAFF_INPUT",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "enum": [
+            "LOAD",
+            "UNLOAD",
+            "VERIFY"
+          ]
+        },
+        "delivery_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "item_code": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "quantity": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "item_code",
+              "quantity"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "verification_mode": {
+          "enum": [
+            "STAFF_CONFIRMED"
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "delivery_id",
+        "items",
+        "verification_mode"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "confirmed": {
+          "type": "boolean"
+        },
+        "verification_mode": {
+          "enum": [
+            "STAFF_CONFIRMED"
+          ]
+        },
+        "actor_user_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "items": {
+          "type": "array"
+        },
+        "weight_kg": {
+          "type": "null"
+        },
+        "temperature_c": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "confirmed",
+        "verification_mode",
+        "actor_user_id",
+        "items",
+        "weight_kg",
+        "temperature_c"
+      ],
+      "additionalProperties": false
+    },
+    "note": "No load cell/temperature RFID claims; staff confirmation is audited, never sensor measurement."
+  },
+  "EXECUTE_SENSING": {
+    "schema_version": 2,
+    "executor": "PI_SENSOR_OR_SERVER_AI",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task_type": {
+          "enum": [
+            "ROBOT_HEALTH",
+            "SIDE_CLEARANCE",
+            "CROWD_DENSITY",
+            "RESTRICTED_AREA_INTRUSION"
+          ]
+        },
+        "zone_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "window_sec": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 30
+        }
+      },
+      "required": [
+        "task_type"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "task_type": {
+          "enum": [
+            "ROBOT_HEALTH",
+            "SIDE_CLEARANCE",
+            "CROWD_DENSITY",
+            "RESTRICTED_AREA_INTRUSION"
+          ]
+        },
+        "metrics": {
+          "type": "object"
+        },
+        "captured_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidence_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "task_type",
+        "metrics",
+        "captured_at",
+        "evidence_ref"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "task_type": {
+                "const": "ROBOT_HEALTH"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "metrics": {
+                "type": "object",
+                "properties": {
+                  "sensors_ready": {
+                    "type": "boolean"
+                  },
+                  "battery_raw": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "battery_percent": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "sensors_ready",
+                  "battery_raw",
+                  "battery_percent"
+                ],
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "task_type": {
+                "const": "SIDE_CLEARANCE"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "metrics": {
+                "type": "object",
+                "properties": {
+                  "left_m": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "right_m": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "left_fresh": {
+                    "type": "boolean"
+                  },
+                  "right_fresh": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "left_m",
+                  "right_m",
+                  "left_fresh",
+                  "right_fresh"
+                ],
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "task_type": {
+                "const": "CROWD_DENSITY"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "metrics": {
+                "type": "object",
+                "properties": {
+                  "count": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "count"
+                ],
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "task_type": {
+                "const": "RESTRICTED_AREA_INTRUSION"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "metrics": {
+                "type": "object",
+                "properties": {
+                  "intrusion_detected": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "intrusion_detected"
+                ],
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      ]
+    },
+    "note": "US100 reports metres+freshness. Battery is raw UInt16 with unknown verified scale; percentage=null. AI only with a commissioned server adapter."
+  },
+  "NOTIFY": {
+    "schema_version": 2,
+    "executor": "SERVER_NOTIFICATION",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "notification_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "severity": {
+          "enum": [
+            "INFO",
+            "WARNING",
+            "CRITICAL"
+          ]
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "minItems": 1
+        },
+        "data": {
+          "type": "object"
+        },
+        "require_ack": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "notification_type",
+        "severity",
+        "recipients",
+        "data",
+        "require_ack"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "notification_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "delivered": {
+          "type": "boolean"
+        },
+        "acked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "notification_id",
+        "delivered",
+        "acked"
+      ],
+      "additionalProperties": false
+    },
+    "note": "Critical ACK is explicit recipient acknowledgement, not transport ACK."
+  },
+  "WAIT": {
+    "schema_version": 2,
+    "executor": "PI_TIMER_OR_SERVER_EVENT",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "wait_type": {
+          "enum": [
+            "DURATION",
+            "EVENT"
+          ]
+        },
+        "duration_sec": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 3600
+        },
+        "event_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "correlation_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "required": [
+        "wait_type"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "wait_type": {
+              "const": "DURATION"
+            }
+          },
+          "required": [
+            "duration_sec"
+          ]
+        },
+        {
+          "properties": {
+            "wait_type": {
+              "const": "EVENT"
+            }
+          },
+          "required": [
+            "event_type",
+            "correlation_key"
+          ]
+        }
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "completed": {
+          "type": "boolean"
+        },
+        "wake_reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "elapsed_sec": {
+          "type": "number"
+        },
+        "event": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "completed",
+        "wake_reason",
+        "elapsed_sec",
+        "event"
+      ],
+      "additionalProperties": false
+    },
+    "note": "EVENT waits are correlated and bounded; early events belong in the server event store."
+  },
+  "CHECK_CONDITION": {
+    "schema_version": 2,
+    "executor": "PI_SAFE_EXPR_V1",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "expression": {}
+      },
+      "required": [
+        "expression"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "note": "No string eval and no second set of transition targets."
+  },
+  "SET_CONTEXT": {
+    "schema_version": 2,
+    "executor": "PI_SAFE_EXPR_V1",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "assignments": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "assignments"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "changed_keys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "values": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "changed_keys",
+        "values"
+      ],
+      "additionalProperties": false
+    },
+    "note": "Only vars writable. Inputs/system/policies immutable."
+  }
+}

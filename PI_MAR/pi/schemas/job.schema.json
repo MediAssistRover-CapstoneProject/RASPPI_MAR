@@ -1,0 +1,32 @@
+{
+  "type": "object",
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "workflow_code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "workflow_version": {
+      "const": 4
+    },
+    "workflow_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "input": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "job_id",
+    "workflow_code",
+    "workflow_version",
+    "workflow_hash",
+    "input"
+  ],
+  "additionalProperties": false
+}

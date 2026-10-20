@@ -1,0 +1,149 @@
+{
+  "code": "WF_ROBOT_STARTUP_STANDBY",
+  "version": 4,
+  "name": "Kiểm tra sức khỏe và báo sẵn sàng",
+  "deployment_note": "Bản 4: 11 STEP TYPE; không CALL_WORKFLOW; đối chiếu capability trước khi chạy.",
+  "required_capabilities": [
+    "sensors",
+    "notification"
+  ],
+  "tasks": [
+    {
+      "code": "MAIN",
+      "name": "Luồng chính",
+      "display_order": 0
+    }
+  ],
+  "input_schema": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  },
+  "start": "HEALTH",
+  "max_duration_sec": 1200,
+  "max_step_visits": 100,
+  "output_mapping": {
+    "sensors_ready": {
+      "$ref": "/outputs/HEALTH/metrics/sensors_ready"
+    },
+    "health": {
+      "$ref": "/outputs/HEALTH/metrics"
+    }
+  },
+  "steps": [
+    {
+      "code": "HEALTH",
+      "task_code": "MAIN",
+      "type": "EXECUTE_SENSING",
+      "params": {
+        "task_type": "ROBOT_HEALTH"
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "CHECK"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    },
+    {
+      "code": "CHECK",
+      "task_code": "MAIN",
+      "type": "CHECK_CONDITION",
+      "params": {
+        "expression": {
+          "var": "/outputs/HEALTH/metrics/sensors_ready"
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 1,
+          "next": "READY",
+          "when": {
+            "op": "eq",
+            "args": [
+              {
+                "var": "/result/value"
+              },
+              true
+            ]
+          }
+        },
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    },
+    {
+      "code": "READY",
+      "task_code": "MAIN",
+      "type": "NOTIFY",
+      "params": {
+        "notification_type": "ROBOT_STARTUP_CHECK_PASSED",
+        "severity": "INFO",
+        "recipients": [
+          "STAFF"
+        ],
+        "data": {
+          "health": {
+            "$ref": "/outputs/HEALTH/metrics"
+          }
+        },
+        "require_ack": false
+      },
+      "timeout_sec": 60,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "SUCCEEDED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    }
+  ]
+}

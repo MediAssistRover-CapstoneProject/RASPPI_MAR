@@ -1,0 +1,5 @@
+{
+  "method": "QR_CODE",
+  "purpose": "DELIVERY_SENDER",
+  "required_permission": "DELIVERY_SEND"
+}

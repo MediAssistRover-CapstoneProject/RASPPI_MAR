@@ -1,0 +1,27 @@
+{
+  "protocolVersion": "1.0",
+  "contract": "MAR-STEP-2",
+  "messageType": "COMMAND",
+  "commandId": "d3152d62-04e4-5411-87c0-5b00d2c069e3",
+  "correlationId": "55555555-5555-4555-8555-555555555555",
+  "robotId": "11111111-1111-4111-8111-111111111111",
+  "commandType": "EXECUTE_STEP",
+  "expiresAt": "2026-10-08T00:00:00Z",
+  "step": {
+    "jobId": "22222222-2222-4222-8222-222222222222",
+    "jobStepId": "2bddd1b0-b7f6-5709-b070-8093d7395fcd",
+    "stepId": "66666666-6666-4666-8666-666666666666",
+    "stepCode": "MAP_SAVE",
+    "stepType": "EXECUTE_SENSING",
+    "visitNo": 1,
+    "operationKey": "22222222-2222-4222-8222-222222222222:MAP_SAVE:1",
+    "timeoutSec": 90,
+    "params": {
+      "sensing_type": "MAPPING",
+      "action": "SAVE",
+      "mapping_session_id": "abcdef01-2345-4678-9012-abcdefabcdef",
+      "artifact_id": "12345678-1234-4234-8234-123456789abc"
+    }
+  },
+  "transportSessionId": "01234567-89ab-4cde-8123-456789abcdef"
+}

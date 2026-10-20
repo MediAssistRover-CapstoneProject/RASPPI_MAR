@@ -1,0 +1,7 @@
+{
+  "action": "UNLOCK",
+  "device_id": "cargo_lock",
+  "purpose": "DELIVERY_SENDER",
+  "verification_id": "SIM_VER_AUTH_SENDER",
+  "verification_mode": "COMMAND_ONLY"
+}

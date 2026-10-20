@@ -1,0 +1,205 @@
+{
+  "SET_CONTEXT": {
+    "simulation": true,
+    "input": {
+      "assignments": {
+        "loops": 0
+      }
+    },
+    "output_data": {
+      "changed_keys": [
+        "loops"
+      ],
+      "values": {
+        "loops": 0
+      }
+    }
+  },
+  "MOVE": {
+    "simulation": true,
+    "input": {
+      "endpoint_id": "EP_305",
+      "map_id": "opd-map-v1",
+      "max_speed_mps": 0.05,
+      "mode": "PATROL"
+    },
+    "output_data": {
+      "action_status": 4,
+      "attempts": [],
+      "distance_remaining_m": 0.0,
+      "endpoint_group_id": null,
+      "endpoint_id": "EP_305",
+      "last_feedback_pose": null,
+      "reached": true
+    }
+  },
+  "EXECUTE_SENSING": {
+    "simulation": true,
+    "input": {
+      "task_type": "CROWD_DENSITY",
+      "window_sec": 5,
+      "zone_id": "ZONE_WAITING"
+    },
+    "output_data": {
+      "captured_at": "2026-09-27T11:55:24.575901+00:00",
+      "evidence_ref": null,
+      "metrics": {
+        "count": 12
+      },
+      "task_type": "CROWD_DENSITY"
+    }
+  },
+  "CHECK_CONDITION": {
+    "simulation": true,
+    "input": {
+      "expression": {
+        "args": [
+          {
+            "var": "/outputs/SENSE/metrics/count"
+          },
+          {
+            "var": "/input/warning_count"
+          }
+        ],
+        "op": "ge"
+      }
+    },
+    "output_data": {
+      "value": true
+    }
+  },
+  "NOTIFY": {
+    "simulation": true,
+    "input": {
+      "data": {
+        "captured_at": "2026-09-27T11:55:24.575901+00:00",
+        "checkpoint_id": "EP_305",
+        "evidence_ref": null,
+        "metrics": {
+          "count": 12
+        },
+        "zone_id": "ZONE_WAITING"
+      },
+      "notification_type": "CROWD_WARNING",
+      "recipients": [
+        "STAFF"
+      ],
+      "require_ack": false,
+      "severity": "WARNING"
+    },
+    "output_data": {
+      "acked": false,
+      "delivered": true,
+      "notification_id": "078e6b84-db08-4f6b-a537-23435ece8ce1"
+    }
+  },
+  "WAIT": {
+    "simulation": true,
+    "input": {
+      "duration_sec": 5,
+      "wait_type": "DURATION"
+    },
+    "output_data": {
+      "completed": true,
+      "elapsed_sec": 0.0,
+      "event": null,
+      "wake_reason": "DURATION"
+    }
+  },
+  "INTERACT": {
+    "simulation": true,
+    "input": {
+      "action": "SPEAK",
+      "data": {
+        "incident_id": "INC_DEMO"
+      },
+      "language": "vi-VN",
+      "prompt_key": "STAFF_ON_THE_WAY"
+    },
+    "output_data": {
+      "actor_user_id": "SIM_STAFF",
+      "completed": true,
+      "confirmed": null,
+      "input_data": {}
+    }
+  },
+  "DATA_SERVICE": {
+    "simulation": true,
+    "input": {
+      "operation": "CREATE",
+      "request": {
+        "detection_event_id": "DET_DEMO",
+        "type": "SUSPECTED_FALL"
+      },
+      "resource": "incidents",
+      "service_key": "INCIDENT"
+    },
+    "output_data": {
+      "data": {
+        "answer": "Dữ liệu mô phỏng, chưa kết nối dữ liệu bệnh viện.",
+        "incident_id": "SIM_INCIDENT"
+      },
+      "request_id": "3004e850-43b6-4900-a64b-0901ca79e8bb"
+    }
+  },
+  "AUTHENTICATE": {
+    "simulation": true,
+    "input": {
+      "method": "QR_CODE",
+      "purpose": "DELIVERY_SENDER",
+      "required_permission": "DELIVERY_SEND"
+    },
+    "output_data": {
+      "actor_user_id": "SIM_STAFF",
+      "authenticated": true,
+      "purpose": "DELIVERY_SENDER",
+      "valid_until": "2026-09-27T11:57:24.605895+00:00",
+      "verification_id": "SIM_VER_AUTH_SENDER"
+    }
+  },
+  "CONTROL_HARDWARE": {
+    "simulation": true,
+    "input": {
+      "action": "UNLOCK",
+      "device_id": "cargo_lock",
+      "purpose": "DELIVERY_SENDER",
+      "verification_id": "SIM_VER_AUTH_SENDER",
+      "verification_mode": "COMMAND_ONLY"
+    },
+    "output_data": {
+      "commanded_state": "UNLOCK",
+      "controller_ack": false,
+      "position_raw": 2400,
+      "published": true,
+      "ros_servo_id": 4,
+      "verified": false
+    }
+  },
+  "HANDLE_PAYLOAD": {
+    "simulation": true,
+    "input": {
+      "action": "LOAD",
+      "delivery_id": "DEMO_DELIVERY",
+      "items": [
+        {
+          "item_code": "DEMO_DOCUMENT",
+          "quantity": 1
+        }
+      ],
+      "verification_mode": "STAFF_CONFIRMED"
+    },
+    "output_data": {
+      "actor_user_id": "SIM_STAFF",
+      "confirmed": true,
+      "items": [
+        {
+          "item_code": "DEMO_DOCUMENT",
+          "quantity": 1
+        }
+      ],
+      "temperature_c": null,
+      "verification_mode": "STAFF_CONFIRMED",
+      "weight_kg": null
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "action": "LOAD",
+  "delivery_id": "DEMO_DELIVERY",
+  "items": [
+    {
+      "item_code": "DEMO_DOCUMENT",
+      "quantity": 1
+    }
+  ],
+  "verification_mode": "STAFF_CONFIRMED"
+}

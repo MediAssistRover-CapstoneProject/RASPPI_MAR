@@ -1,0 +1,53 @@
+{
+  "prefix": "mar/robots/{robotId}",
+  "commands": {
+    "direction": "BE_TO_PI",
+    "qos": 1,
+    "retain": false
+  },
+  "event-acks": {
+    "direction": "BE_TO_PI",
+    "qos": 1,
+    "retain": false
+  },
+  "events": {
+    "direction": "PI_TO_BE",
+    "qos": 1,
+    "retain": false
+  },
+  "heartbeat": {
+    "direction": "PI_TO_BE",
+    "qos": 0,
+    "retain": false
+  },
+  "presence": {
+    "direction": "PI_TO_BE",
+    "qos": 1,
+    "retain": true
+  },
+  "mapping/preview": {
+    "direction": "PI_TO_BE",
+    "qos": 0,
+    "retain": false
+  },
+  "profile-acks": {
+    "direction": "PI_TO_BE",
+    "qos": 1,
+    "retain": false
+  },
+  "mapping/control": {
+    "direction": "BE_TO_PI",
+    "qos": 0,
+    "retain": false
+  },
+  "mapping/control-acks": {
+    "direction": "PI_TO_BE",
+    "qos": 0,
+    "retain": false
+  },
+  "camera/preview": {
+    "direction": "PI_TO_BE",
+    "qos": 0,
+    "retain": false
+  }
+}

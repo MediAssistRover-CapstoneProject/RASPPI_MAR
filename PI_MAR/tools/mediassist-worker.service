@@ -1,0 +1,17 @@
+[Unit]
+Description=MediAssist MQTT step worker inside MentorPi
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/docker inspect MentorPi
+ExecStart=/usr/bin/docker exec -u ubuntu -w /home/ubuntu/mediassist-mqtt-2026-10-08/pi MentorPi /bin/zsh /home/ubuntu/mediassist-mqtt-2026-10-08/tools/run_worker.zsh
+ExecStop=/usr/bin/docker exec -u ubuntu MentorPi /usr/bin/python3 /home/ubuntu/mediassist-mqtt-2026-10-08/tools/stop_worker.py --config /home/ubuntu/mediassist-mqtt-2026-10-08/pi/config/mqtt.worker.json
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

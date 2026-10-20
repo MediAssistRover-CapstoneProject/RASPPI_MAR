@@ -1,0 +1,232 @@
+{
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "version": {
+      "const": 4
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "deployment_note": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "required_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      }
+    },
+    "input_schema": {
+      "type": "object"
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "display_order": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "display_order"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "start": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "max_duration_sec": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 7200
+    },
+    "max_step_visits": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+    },
+    "output_mapping": {
+      "type": "object"
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "task_code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "type": {
+            "enum": [
+              "MOVE",
+              "INTERACT",
+              "DATA_SERVICE",
+              "AUTHENTICATE",
+              "CONTROL_HARDWARE",
+              "HANDLE_PAYLOAD",
+              "EXECUTE_SENSING",
+              "NOTIFY",
+              "WAIT",
+              "CHECK_CONDITION",
+              "SET_CONTEXT"
+            ]
+          },
+          "params": {
+            "type": "object"
+          },
+          "timeout_sec": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 3600
+          },
+          "max_attempts": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "retry_delay_sec": {
+            "type": "number"
+          },
+          "retry_codes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          },
+          "transitions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "on": {
+                  "enum": [
+                    "SUCCESS",
+                    "FAILURE",
+                    "TIMEOUT"
+                  ]
+                },
+                "priority": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "error_code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2000
+                },
+                "when": {},
+                "next": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2000
+                },
+                "terminal": {
+                  "enum": [
+                    "SUCCEEDED",
+                    "FAILED",
+                    "CANCELLED",
+                    "RECOVERY_REQUIRED"
+                  ]
+                }
+              },
+              "required": [
+                "on",
+                "priority"
+              ],
+              "additionalProperties": false,
+              "oneOf": [
+                {
+                  "required": [
+                    "next"
+                  ],
+                  "not": {
+                    "required": [
+                      "terminal"
+                    ]
+                  }
+                },
+                {
+                  "required": [
+                    "terminal"
+                  ],
+                  "not": {
+                    "required": [
+                      "next"
+                    ]
+                  }
+                }
+              ]
+            },
+            "minItems": 3
+          }
+        },
+        "required": [
+          "code",
+          "task_code",
+          "type",
+          "params",
+          "timeout_sec",
+          "max_attempts",
+          "retry_delay_sec",
+          "retry_codes",
+          "transitions"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1
+    }
+  },
+  "required": [
+    "code",
+    "version",
+    "name",
+    "deployment_note",
+    "required_capabilities",
+    "input_schema",
+    "tasks",
+    "start",
+    "max_duration_sec",
+    "max_step_visits",
+    "output_mapping",
+    "steps"
+  ],
+  "additionalProperties": false
+}

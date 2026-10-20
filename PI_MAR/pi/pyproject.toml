@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "packaging>=24.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mediassist-pi"
+version = "0.12.2"
+description = "MentorPi M1 workflow runtime, contracts and commissioned ROS adapters"
+requires-python = ">=3.10"
+dependencies = ["paho-mqtt==2.1.0", "jsonschema==4.23.0", "websockets==15.0.1", "PyYAML==6.0.2"]
+
+[project.scripts]
+mediassist-pi = "mediassist.cli:main"
+mediassist-worker = "mediassist.worker_cli:main"
+mediassist-gate = "mediassist.safety_node:main"
+
+[tool.setuptools.packages.find]
+include = ["mediassist*"]

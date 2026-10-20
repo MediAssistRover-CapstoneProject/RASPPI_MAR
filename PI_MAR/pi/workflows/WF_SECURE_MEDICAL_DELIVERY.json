@@ -1,0 +1,1052 @@
+{
+  "code": "WF_SECURE_MEDICAL_DELIVERY",
+  "version": 4,
+  "name": "Giao nhận có xác thực và staff xác nhận cơ cấu",
+  "deployment_note": "Bản 4: 11 STEP TYPE; không CALL_WORKFLOW; đối chiếu capability trước khi chạy.",
+  "required_capabilities": [
+    "nav2",
+    "cargo_lock",
+    "identity",
+    "payload_staff",
+    "interaction",
+    "notification"
+  ],
+  "tasks": [
+    {
+      "code": "PICKUP",
+      "name": "Nhận hàng",
+      "display_order": 0
+    },
+    {
+      "code": "TRANSIT",
+      "name": "Di chuyển",
+      "display_order": 1
+    },
+    {
+      "code": "HANDOVER",
+      "name": "Giao hàng",
+      "display_order": 2
+    },
+    {
+      "code": "FINALIZE",
+      "name": "Kết thúc và xử lý lỗi",
+      "display_order": 3
+    }
+  ],
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "map_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "pickup_endpoint_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "delivery_endpoint_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "delivery_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "item_code": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            "quantity": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "item_code",
+            "quantity"
+          ],
+          "additionalProperties": false
+        },
+        "minItems": 1
+      }
+    },
+    "required": [
+      "map_id",
+      "pickup_endpoint_id",
+      "delivery_endpoint_id",
+      "delivery_id",
+      "items"
+    ],
+    "additionalProperties": false
+  },
+  "start": "PICKUP",
+  "max_duration_sec": 3600,
+  "max_step_visits": 100,
+  "output_mapping": {
+    "delivery_id": {
+      "$ref": "/input/delivery_id"
+    },
+    "items": {
+      "$ref": "/outputs/PAYLOAD_RECEIVER/items"
+    },
+    "receiver_user_id": {
+      "$ref": "/outputs/AUTH_RECEIVER/actor_user_id"
+    },
+    "staff_confirmed_lock": {
+      "$ref": "/outputs/VERIFY_RECEIVER/confirmed"
+    },
+    "lock_sensor_verified": false
+  },
+  "steps": [
+    {
+      "code": "PICKUP",
+      "task_code": "PICKUP",
+      "type": "MOVE",
+      "params": {
+        "map_id": {
+          "$ref": "/input/map_id"
+        },
+        "endpoint_id": {
+          "$ref": "/input/pickup_endpoint_id"
+        },
+        "mode": "NORMAL",
+        "max_speed_mps": {
+          "$ref": "/system/max_speed_mps"
+        }
+      },
+      "timeout_sec": 180,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "AUTH_SENDER"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "AUTH_SENDER",
+      "task_code": "PICKUP",
+      "type": "AUTHENTICATE",
+      "params": {
+        "method": "QR_CODE",
+        "required_permission": "DELIVERY_SEND",
+        "purpose": "DELIVERY_SENDER"
+      },
+      "timeout_sec": 120,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "CHECK_AUTH_SENDER"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "CHECK_AUTH_SENDER",
+      "task_code": "PICKUP",
+      "type": "CHECK_CONDITION",
+      "params": {
+        "expression": {
+          "var": "/outputs/AUTH_SENDER/authenticated"
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 1,
+          "next": "UNLOCK_SENDER",
+          "when": {
+            "op": "eq",
+            "args": [
+              {
+                "var": "/result/value"
+              },
+              true
+            ]
+          }
+        },
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    },
+    {
+      "code": "UNLOCK_SENDER",
+      "task_code": "PICKUP",
+      "type": "CONTROL_HARDWARE",
+      "params": {
+        "device_id": "cargo_lock",
+        "action": "UNLOCK",
+        "verification_mode": "COMMAND_ONLY",
+        "verification_id": {
+          "$ref": "/outputs/AUTH_SENDER/verification_id"
+        },
+        "purpose": "DELIVERY_SENDER"
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "PAYLOAD_SENDER"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "PAYLOAD_SENDER",
+      "task_code": "PICKUP",
+      "type": "HANDLE_PAYLOAD",
+      "params": {
+        "action": "LOAD",
+        "delivery_id": {
+          "$ref": "/input/delivery_id"
+        },
+        "items": {
+          "$ref": "/input/items"
+        },
+        "verification_mode": "STAFF_CONFIRMED"
+      },
+      "timeout_sec": 180,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "CHECK_PAYLOAD_SENDER"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "CHECK_PAYLOAD_SENDER",
+      "task_code": "PICKUP",
+      "type": "CHECK_CONDITION",
+      "params": {
+        "expression": {
+          "var": "/outputs/PAYLOAD_SENDER/confirmed"
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 1,
+          "next": "CLOSE_SENDER",
+          "when": {
+            "op": "eq",
+            "args": [
+              {
+                "var": "/result/value"
+              },
+              true
+            ]
+          }
+        },
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    },
+    {
+      "code": "CLOSE_SENDER",
+      "task_code": "PICKUP",
+      "type": "INTERACT",
+      "params": {
+        "action": "CONFIRM",
+        "language": "vi-VN",
+        "prompt_key": "STAFF_CLOSE_DOOR_AND_CLEAR_MECHANISM",
+        "data": {
+          "delivery_id": {
+            "$ref": "/input/delivery_id"
+          },
+          "stage": "SENDER"
+        }
+      },
+      "timeout_sec": 120,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "CHECK_CLOSE_SENDER"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "CHECK_CLOSE_SENDER",
+      "task_code": "PICKUP",
+      "type": "CHECK_CONDITION",
+      "params": {
+        "expression": {
+          "var": "/outputs/CLOSE_SENDER/confirmed"
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 1,
+          "next": "LOCK_SENDER",
+          "when": {
+            "op": "eq",
+            "args": [
+              {
+                "var": "/result/value"
+              },
+              true
+            ]
+          }
+        },
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    },
+    {
+      "code": "LOCK_SENDER",
+      "task_code": "PICKUP",
+      "type": "CONTROL_HARDWARE",
+      "params": {
+        "device_id": "cargo_lock",
+        "action": "LOCK",
+        "verification_mode": "COMMAND_ONLY"
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "VERIFY_SENDER"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "VERIFY_SENDER",
+      "task_code": "PICKUP",
+      "type": "INTERACT",
+      "params": {
+        "action": "CONFIRM",
+        "language": "vi-VN",
+        "prompt_key": "STAFF_PHYSICALLY_VERIFY_LOCK",
+        "data": {
+          "delivery_id": {
+            "$ref": "/input/delivery_id"
+          },
+          "stage": "SENDER"
+        }
+      },
+      "timeout_sec": 120,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "CHECK_LOCK_SENDER"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "CHECK_LOCK_SENDER",
+      "task_code": "PICKUP",
+      "type": "CHECK_CONDITION",
+      "params": {
+        "expression": {
+          "var": "/outputs/VERIFY_SENDER/confirmed"
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 1,
+          "next": "TRANSIT",
+          "when": {
+            "op": "eq",
+            "args": [
+              {
+                "var": "/result/value"
+              },
+              true
+            ]
+          }
+        },
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    },
+    {
+      "code": "TRANSIT",
+      "task_code": "TRANSIT",
+      "type": "MOVE",
+      "params": {
+        "map_id": {
+          "$ref": "/input/map_id"
+        },
+        "endpoint_id": {
+          "$ref": "/input/delivery_endpoint_id"
+        },
+        "mode": "NORMAL",
+        "max_speed_mps": {
+          "$ref": "/system/max_speed_mps"
+        }
+      },
+      "timeout_sec": 180,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "AUTH_RECEIVER"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "AUTH_RECEIVER",
+      "task_code": "HANDOVER",
+      "type": "AUTHENTICATE",
+      "params": {
+        "method": "QR_CODE",
+        "required_permission": "DELIVERY_RECEIVE",
+        "purpose": "DELIVERY_RECEIVER"
+      },
+      "timeout_sec": 120,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "CHECK_AUTH_RECEIVER"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "CHECK_AUTH_RECEIVER",
+      "task_code": "HANDOVER",
+      "type": "CHECK_CONDITION",
+      "params": {
+        "expression": {
+          "var": "/outputs/AUTH_RECEIVER/authenticated"
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 1,
+          "next": "UNLOCK_RECEIVER",
+          "when": {
+            "op": "eq",
+            "args": [
+              {
+                "var": "/result/value"
+              },
+              true
+            ]
+          }
+        },
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    },
+    {
+      "code": "UNLOCK_RECEIVER",
+      "task_code": "HANDOVER",
+      "type": "CONTROL_HARDWARE",
+      "params": {
+        "device_id": "cargo_lock",
+        "action": "UNLOCK",
+        "verification_mode": "COMMAND_ONLY",
+        "verification_id": {
+          "$ref": "/outputs/AUTH_RECEIVER/verification_id"
+        },
+        "purpose": "DELIVERY_RECEIVER"
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "PAYLOAD_RECEIVER"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "PAYLOAD_RECEIVER",
+      "task_code": "HANDOVER",
+      "type": "HANDLE_PAYLOAD",
+      "params": {
+        "action": "UNLOAD",
+        "delivery_id": {
+          "$ref": "/input/delivery_id"
+        },
+        "items": {
+          "$ref": "/input/items"
+        },
+        "verification_mode": "STAFF_CONFIRMED"
+      },
+      "timeout_sec": 180,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "CHECK_PAYLOAD_RECEIVER"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "CHECK_PAYLOAD_RECEIVER",
+      "task_code": "HANDOVER",
+      "type": "CHECK_CONDITION",
+      "params": {
+        "expression": {
+          "var": "/outputs/PAYLOAD_RECEIVER/confirmed"
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 1,
+          "next": "CLOSE_RECEIVER",
+          "when": {
+            "op": "eq",
+            "args": [
+              {
+                "var": "/result/value"
+              },
+              true
+            ]
+          }
+        },
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    },
+    {
+      "code": "CLOSE_RECEIVER",
+      "task_code": "HANDOVER",
+      "type": "INTERACT",
+      "params": {
+        "action": "CONFIRM",
+        "language": "vi-VN",
+        "prompt_key": "STAFF_CLOSE_DOOR_AND_CLEAR_MECHANISM",
+        "data": {
+          "delivery_id": {
+            "$ref": "/input/delivery_id"
+          },
+          "stage": "RECEIVER"
+        }
+      },
+      "timeout_sec": 120,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "CHECK_CLOSE_RECEIVER"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "CHECK_CLOSE_RECEIVER",
+      "task_code": "HANDOVER",
+      "type": "CHECK_CONDITION",
+      "params": {
+        "expression": {
+          "var": "/outputs/CLOSE_RECEIVER/confirmed"
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 1,
+          "next": "LOCK_RECEIVER",
+          "when": {
+            "op": "eq",
+            "args": [
+              {
+                "var": "/result/value"
+              },
+              true
+            ]
+          }
+        },
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    },
+    {
+      "code": "LOCK_RECEIVER",
+      "task_code": "HANDOVER",
+      "type": "CONTROL_HARDWARE",
+      "params": {
+        "device_id": "cargo_lock",
+        "action": "LOCK",
+        "verification_mode": "COMMAND_ONLY"
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "VERIFY_RECEIVER"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "VERIFY_RECEIVER",
+      "task_code": "HANDOVER",
+      "type": "INTERACT",
+      "params": {
+        "action": "CONFIRM",
+        "language": "vi-VN",
+        "prompt_key": "STAFF_PHYSICALLY_VERIFY_LOCK",
+        "data": {
+          "delivery_id": {
+            "$ref": "/input/delivery_id"
+          },
+          "stage": "RECEIVER"
+        }
+      },
+      "timeout_sec": 120,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "CHECK_LOCK_RECEIVER"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "CHECK_LOCK_RECEIVER",
+      "task_code": "HANDOVER",
+      "type": "CHECK_CONDITION",
+      "params": {
+        "expression": {
+          "var": "/outputs/VERIFY_RECEIVER/confirmed"
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 1,
+          "next": "COMPLETE",
+          "when": {
+            "op": "eq",
+            "args": [
+              {
+                "var": "/result/value"
+              },
+              true
+            ]
+          }
+        },
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    },
+    {
+      "code": "COMPLETE",
+      "task_code": "FINALIZE",
+      "type": "NOTIFY",
+      "params": {
+        "notification_type": "DELIVERY_COMPLETED",
+        "severity": "INFO",
+        "recipients": [
+          "STAFF"
+        ],
+        "data": {
+          "delivery_id": {
+            "$ref": "/input/delivery_id"
+          },
+          "sender_user_id": {
+            "$ref": "/outputs/AUTH_SENDER/actor_user_id"
+          },
+          "receiver_user_id": {
+            "$ref": "/outputs/AUTH_RECEIVER/actor_user_id"
+          },
+          "items": {
+            "$ref": "/outputs/PAYLOAD_RECEIVER/items"
+          },
+          "staff_confirmed_lock": {
+            "$ref": "/outputs/VERIFY_RECEIVER/confirmed"
+          }
+        },
+        "require_ack": false
+      },
+      "timeout_sec": 60,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "SUCCEEDED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    },
+    {
+      "code": "HELP",
+      "task_code": "FINALIZE",
+      "type": "NOTIFY",
+      "params": {
+        "notification_type": "DELIVERY_REQUIRES_STAFF",
+        "severity": "CRITICAL",
+        "recipients": [
+          "STAFF"
+        ],
+        "data": {
+          "delivery_id": {
+            "$ref": "/input/delivery_id"
+          }
+        },
+        "require_ack": true
+      },
+      "timeout_sec": 60,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "RECOVERY_REQUIRED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    }
+  ]
+}

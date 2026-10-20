@@ -1,0 +1,9 @@
+{
+  "operation": "CREATE",
+  "request": {
+    "detection_event_id": "DET_DEMO",
+    "type": "SUSPECTED_FALL"
+  },
+  "resource": "incidents",
+  "service_key": "INCIDENT"
+}

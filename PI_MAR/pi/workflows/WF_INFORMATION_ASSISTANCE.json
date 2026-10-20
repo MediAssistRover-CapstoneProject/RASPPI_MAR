@@ -1,0 +1,156 @@
+{
+  "code": "WF_INFORMATION_ASSISTANCE",
+  "version": 4,
+  "name": "Tra cứu thông tin ngoại trú",
+  "deployment_note": "Bản 4: 11 STEP TYPE; không CALL_WORKFLOW; đối chiếu capability trước khi chạy.",
+  "required_capabilities": [
+    "interaction",
+    "data_service",
+    "notification"
+  ],
+  "tasks": [
+    {
+      "code": "MAIN",
+      "name": "Luồng chính",
+      "display_order": 0
+    }
+  ],
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "question": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      }
+    },
+    "required": [
+      "question"
+    ],
+    "additionalProperties": false
+  },
+  "start": "QUERY",
+  "max_duration_sec": 1200,
+  "max_step_visits": 100,
+  "output_mapping": {
+    "answer": {
+      "$ref": "/outputs/QUERY/data/answer"
+    },
+    "presented": {
+      "$ref": "/outputs/ANSWER/completed"
+    }
+  },
+  "steps": [
+    {
+      "code": "QUERY",
+      "task_code": "MAIN",
+      "type": "DATA_SERVICE",
+      "params": {
+        "service_key": "HOSPITAL_INFORMATION",
+        "operation": "QUERY",
+        "resource": "answer",
+        "request": {
+          "question": {
+            "$ref": "/input/question"
+          }
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "next": "ANSWER"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "next": "HELP"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "next": "HELP"
+        }
+      ]
+    },
+    {
+      "code": "ANSWER",
+      "task_code": "MAIN",
+      "type": "INTERACT",
+      "params": {
+        "action": "SPEAK",
+        "language": "vi-VN",
+        "prompt_key": "INFORMATION_ANSWER",
+        "data": {
+          "answer": {
+            "$ref": "/outputs/QUERY/data/answer"
+          }
+        }
+      },
+      "timeout_sec": 30,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "SUCCEEDED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    },
+    {
+      "code": "HELP",
+      "task_code": "MAIN",
+      "type": "NOTIFY",
+      "params": {
+        "notification_type": "INFORMATION_UNAVAILABLE",
+        "severity": "WARNING",
+        "recipients": [
+          "STAFF"
+        ],
+        "data": {
+          "question": {
+            "$ref": "/input/question"
+          }
+        },
+        "require_ack": false
+      },
+      "timeout_sec": 60,
+      "max_attempts": 1,
+      "retry_delay_sec": 0,
+      "retry_codes": [],
+      "transitions": [
+        {
+          "on": "SUCCESS",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "FAILURE",
+          "priority": 100,
+          "terminal": "FAILED"
+        },
+        {
+          "on": "TIMEOUT",
+          "priority": 100,
+          "terminal": "FAILED"
+        }
+      ]
+    }
+  ]
+}

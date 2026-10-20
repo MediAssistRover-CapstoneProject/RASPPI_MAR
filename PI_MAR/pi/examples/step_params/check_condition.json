@@ -1,0 +1,13 @@
+{
+  "expression": {
+    "args": [
+      {
+        "var": "/outputs/SENSE/metrics/count"
+      },
+      {
+        "var": "/input/warning_count"
+      }
+    ],
+    "op": "ge"
+  }
+}

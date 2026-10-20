@@ -1,0 +1,84 @@
+{
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": "1.0"
+    },
+    "messageId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "operationKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "correlationId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "robotId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "jobId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "jobStepId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "messageType": {
+      "enum": [
+        "HELLO",
+        "HEARTBEAT",
+        "COMMAND_ACK",
+        "STEP_STARTED",
+        "STEP_RESULT",
+        "STEP_ERROR",
+        "OPERATOR_RECONCILED",
+        "PROTOCOL_ERROR"
+      ]
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "producerSessionId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "sequenceNo": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "payload": {
+      "type": "object"
+    },
+    "transportSessionId": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "messageId",
+    "operationKey",
+    "correlationId",
+    "robotId",
+    "jobId",
+    "jobStepId",
+    "messageType",
+    "occurredAt",
+    "producerSessionId",
+    "sequenceNo",
+    "payload",
+    "transportSessionId"
+  ],
+  "additionalProperties": false
+}

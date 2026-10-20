@@ -1,0 +1,186 @@
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "messageType": {
+          "const": "HELLO_ACK"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "contract": {
+          "const": "MAR-STEP-2"
+        },
+        "accepted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "messageType",
+        "robotId",
+        "transportSessionId",
+        "contract",
+        "accepted"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "messageType": {
+          "const": "EVENT_ACK"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "messageId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "accepted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "messageType",
+        "robotId",
+        "transportSessionId",
+        "messageId",
+        "accepted"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "messageType": {
+          "const": "SERVER_HEARTBEAT"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "messageType",
+        "robotId",
+        "transportSessionId"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "messageType": {
+          "const": "NAV_PROFILE"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "profileVersion": {
+          "const": "BE-NAV-PROFILE-1"
+        },
+        "profileHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "profile": {
+          "type": "object",
+          "properties": {
+            "map_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "map_asset_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "frame_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "map_version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "endpoints": {
+              "type": "object",
+              "minProperties": 1,
+              "propertyNames": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              },
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "map_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "x_m": {
+                    "type": "number"
+                  },
+                  "y_m": {
+                    "type": "number"
+                  },
+                  "yaw_rad": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "map_id",
+                  "x_m",
+                  "y_m",
+                  "yaw_rad"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "map_id",
+            "map_asset_sha256",
+            "frame_id",
+            "map_version",
+            "endpoints"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "messageType",
+        "robotId",
+        "transportSessionId",
+        "profileVersion",
+        "profileHash",
+        "profile"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}
