@@ -54,6 +54,18 @@ class GraphTests(unittest.TestCase):
 
 
 class ProcessTests(unittest.TestCase):
+    def test_optional_video_failure_does_not_stop_motion_stack(self):
+        with tempfile.TemporaryDirectory() as directory:
+            supervisor=stack.Supervisor(Path(directory))
+            camera=Mock();camera.poll.return_value=1
+            worker=Mock();worker.poll.return_value=None
+            supervisor.children=[('camera',camera,None),('worker',worker,None)]
+            supervisor.optional.add('camera')
+            with patch.object(stack,'processes',return_value={}):supervisor.alive()
+            self.assertIn('camera',supervisor.reported_optional)
+            worker.poll.return_value=1
+            with patch.object(stack,'processes',return_value={}),self.assertRaises(RuntimeError):supervisor.alive()
+
     def test_only_exact_vendor_bringup_matches(self):
         self.assertTrue(stack.vendor_bringup({'argv': ['/usr/bin/python3', '/opt/ros/humble/bin/ros2', 'launch', 'bringup', 'bringup.launch.py']}))
         for argv in (['echo', 'ros2 launch bringup bringup.launch.py'], ['ros2', 'launch', 'other', 'bringup.launch.py'], ['python3', 'startup_check']):

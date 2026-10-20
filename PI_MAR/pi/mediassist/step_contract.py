@@ -2,11 +2,11 @@
 from datetime import datetime, timezone
 from uuid import UUID
 from jsonschema import Draft202012Validator, FormatChecker
-from .contracts import StepError, canonical
+from .contracts import StepError, canonical, parse_timestamp
 
 CONTRACT = "MAR-STEP-2"
 SUBPROTOCOL = "mar-step-v1"
-VERSION = "0.12.2"
+VERSION = "0.12.5"
 UUID_SCHEMA = {"type": "string", "format": "uuid"}
 
 def obj(properties, required=None):
@@ -83,10 +83,10 @@ def validate(value, schema):
         raise StepError("INVALID_COMMAND", errors[0].message[:300])
 
 def expiry(value):
-    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if dt.tzinfo is None:
-        raise StepError("INVALID_EXPIRY")
-    return dt.astimezone(timezone.utc)
+    try:
+        return parse_timestamp(value)
+    except ValueError:
+        raise StepError("INVALID_EXPIRY") from None
 
 def validate_command(command, robot_id, check_expiry=True):
     validate(command, COMMAND_SCHEMA)

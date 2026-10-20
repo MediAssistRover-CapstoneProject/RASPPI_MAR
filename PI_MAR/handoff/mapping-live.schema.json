@@ -57,17 +57,17 @@
         "linearX": {
           "type": "number",
           "minimum": 0,
-          "maximum": 0.05
+          "maximum": 0.1
         },
         "angularZ": {
           "type": "number",
-          "minimum": -0.2,
-          "maximum": 0.2
+          "minimum": -0.3,
+          "maximum": 0.3
         },
         "durationMs": {
           "type": "integer",
           "minimum": 100,
-          "maximum": 400
+          "maximum": 600
         }
       },
       "additionalProperties": false

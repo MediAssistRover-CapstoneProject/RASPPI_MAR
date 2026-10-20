@@ -1,19 +1,23 @@
 """Offline tests: transport scope, expiry, motion watchdog and media separation. No robot motion."""
 import asyncio,copy,json,os,sys,time,unittest
 import threading
+import tempfile
+import urllib.error
 from pathlib import Path
 from datetime import datetime,timezone,timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock,Mock,patch
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 for wheel in (ROOT.parent/'offline/wheels').glob('paho_mqtt-*.whl'):sys.path.insert(0,str(wheel))
-from mediassist.mapping_control import MappingControlLease,VALIDATOR
+from mediassist.mapping_control import MappingControlLease,VALIDATOR,VelocityRamp
 from mediassist.mapping import MappingManager
 from mediassist.mqtt_transport import MqttSession
 from mediassist.step_worker import StepWorker
 from mediassist.worker_adapter import WorkerAdapter
 from mediassist.ros_adapter import RosAdapter
 from mediassist.contracts import StepError
+from mediassist.contracts import parse_timestamp
+from mediassist.step_contract import expiry
 R='11111111-1111-4111-8111-111111111111';S='22222222-2222-4222-8222-222222222222'
 J='33333333-3333-4333-8333-333333333333';T='44444444-4444-4444-8444-444444444444'
 NOW=datetime(2026,10,14,10,tzinfo=timezone.utc)
@@ -22,6 +26,43 @@ def message():return {'messageType':'MAPPING_CONTROL','robotId':R,'transportSess
     'expiresAt':(NOW+timedelta(milliseconds=750)).isoformat(),'linearX':.05,'angularZ':0.,'durationMs':400}
 STATE={'session_id':S,'job_id':J,'state':'MAPPING','session_open':True}
 class MappingTests(unittest.IsolatedAsyncioTestCase):
+    def test_map_upload_http_failure_preserves_artifact_and_reports_auth_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder=Path(directory);(folder/'token').write_text('test-only-device-token');(folder/'map.tar.gz').write_bytes(b'local-map-artifact')
+            manager=object.__new__(MappingManager);manager.state={'session_id':S}
+            manager.cfg={'upload_base_url':'https://be.example/api/v1/pi/mapping-sessions','upload_token_file':str(folder/'token')}
+            for status,expected in ((401,'MAP_UPLOAD_UNAUTHORIZED'),(500,'MAP_UPLOAD_HTTP_ERROR')):
+                opener=Mock();opener.open.side_effect=urllib.error.HTTPError('https://be.example',status,'failed',{},None)
+                with patch('mediassist.mapping.urllib.request.build_opener',return_value=opener),self.assertRaises(StepError) as caught:
+                    manager.upload(folder,{'artifact_id':R,'asset_hash':'a'*64})
+                self.assertEqual(caught.exception.code,expected)
+                self.assertNotIn('test-only-device-token',str(caught.exception))
+                self.assertTrue((folder/'map.tar.gz').is_file())
+
+    def test_rfc3339_fractions_and_offsets_on_python310(self):
+        for fraction,microsecond in (('',0),('.1',100000),('.123',123000),('.12345',123450),('.123456',123456),('.123456789',123456)):
+            with self.subTest(fraction=fraction):
+                self.assertEqual(parse_timestamp('2026-10-14T10:00:00'+fraction+'Z'),NOW.replace(microsecond=microsecond))
+        self.assertEqual(expiry('2026-10-14T17:00:00.123456789+07:00'),NOW.replace(microsecond=123456))
+        for bad in ('2026-10-14T10:00:00','2026-10-14T10:00:00.1234567890Z','2026-99-14T10:00:00Z',None):
+            with self.subTest(bad=bad),self.assertRaises(ValueError):parse_timestamp(bad)
+
+    async def test_java_nanosecond_control_survives_transport_and_lease_on_python310(self):
+        # Java Instant.now() uses nine fractional digits; fixed-second fixtures
+        # hid the Python 3.10 datetime.fromisoformat incompatibility.
+        m={**message(),'issuedAt':'2026-10-14T10:00:00.225096447Z',
+           'expiresAt':'2026-10-14T10:00:00.975096447Z','sequenceNo':1792508043041007}
+        session=object.__new__(MqttSession);session.failure=None
+        session.cfg={'robot_id':R,'mqtt':{'be_timeout_sec':15}};session.id=T
+        session.last_be=time.monotonic();session.queue=asyncio.Queue()
+        await session.queue.put(('mar/robots/'+R+'/mapping/control',json.dumps(m).encode()))
+        actual=json.loads(await session.recv());lease=MappingControlLease()
+        lease.accept(actual,R,T,STATE,now=NOW+timedelta(milliseconds=226),mono=1)
+        self.assertEqual(lease.current(1.1),(.05,0.))
+        self.assertEqual(lease.current(1.401),(0.,0.))
+        with self.assertRaises(StepError):
+            MappingControlLease().accept(actual,R,T,STATE,now=NOW+timedelta(seconds=1),mono=1)
+
     def test_future_tf_stamp_does_not_produce_negative_heartbeat_age(self):
         class FakeTime:
             @staticmethod
@@ -88,10 +129,31 @@ class MappingTests(unittest.IsolatedAsyncioTestCase):
         lease=MappingControlLease();lease.accept(message(),R,T,STATE,now=NOW+timedelta(milliseconds=700),mono=1)
         self.assertEqual(lease.current(1.06),(0,0))
     def test_wrong_session_transport_expired_and_invalid_velocities(self):
-        cases=[{'mappingSessionId':R},{'transportSessionId':R},{'durationMs':5000},{'linearX':-.01},{'linearX':float('nan')},{'angularZ':.21}]
+        cases=[{'mappingSessionId':R},{'transportSessionId':R},{'durationMs':5000},{'linearX':-.01},{'linearX':float('nan')},{'linearX':.11},{'angularZ':.31}]
         for changes in cases:
             with self.subTest(changes=changes),self.assertRaises(StepError):MappingControlLease().accept({**message(),**changes},R,T,STATE,now=NOW,mono=1)
         with self.assertRaises(StepError):MappingControlLease().accept(message(),R,T,STATE,now=NOW+timedelta(seconds=1),mono=1)
+    def test_renewed_jog_remains_live_then_zero_stop_cancels_old_packets(self):
+        lease=MappingControlLease()
+        m={**message(),'linearX':.08,'durationMs':600,'expiresAt':(NOW+timedelta(milliseconds=1500)).isoformat()}
+        lease.accept(m,R,T,STATE,now=NOW+timedelta(milliseconds=450),mono=1.)
+        self.assertEqual(lease.current(1.5),(.08,0.))
+        second={**m,'sequenceNo':2,'issuedAt':(NOW+timedelta(milliseconds=300)).isoformat(),
+                'expiresAt':(NOW+timedelta(milliseconds=1800)).isoformat()}
+        lease.accept(second,R,T,STATE,now=NOW+timedelta(milliseconds=750),mono=1.3)
+        self.assertEqual(lease.current(1.8),(.08,0.))
+        self.assertEqual(lease.current(1.901),(0.,0.))
+        lease.accept({**second,'sequenceNo':3,'linearX':0},R,T,STATE,now=NOW+timedelta(milliseconds=800),mono=1.4)
+        with self.assertRaises(StepError):lease.accept(second,R,T,STATE,now=NOW+timedelta(milliseconds=850),mono=1.45)
+        self.assertEqual(lease.current(1.5),(0.,0.))
+
+    def test_ramp_is_bounded_and_zero_or_expiry_stops_without_ramp(self):
+        ramp=VelocityRamp();values=[ramp.update((.08,.2),i*.05) for i in range(15)]
+        self.assertGreater(values[0][0],0);self.assertLess(values[0][0],.08)
+        self.assertTrue(all(0 <= x <= .08 and 0 <= z <= .2 for x,z in values))
+        self.assertEqual(values[-1],(.08,.2))
+        self.assertEqual(ramp.update((0.,0.),1.),(0.,0.))
+        self.assertLess(ramp.update((.08,0.),10.)[0],.08)
     def test_actual_be_serialized_command_if_available(self):
         fixture=Path(os.environ.get('MAR_BE_CONTROL_FIXTURE',''))
         if not fixture.is_file():self.skipTest('Set MAR_BE_CONTROL_FIXTURE to the command generated by BE MappingLiveTest')

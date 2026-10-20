@@ -248,6 +248,8 @@ class StepWorker:
             accepted=True
         except (StepError,ValueError,KeyError,TypeError) as exc:
             error=getattr(exc,'code','INVALID_MAPPING_CONTROL')
+            logging.warning('Mapping control rejected: code=%s command=%s job=%s reason=%s',
+                            error,message.get('commandId'),message.get('jobId'),str(exc)[:240])
         ack={key:message.get(key) for key in ('robotId','jobId','mappingSessionId','commandId','sequenceNo')}
         ack.update(messageType='MAPPING_CONTROL_ACK',transportSessionId=session.id,producerSessionId=self.store.session,
                    accepted=accepted,errorCode=error,receivedAt=datetime.now(timezone.utc).isoformat())

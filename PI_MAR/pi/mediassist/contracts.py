@@ -3,6 +3,8 @@ import copy
 import hashlib
 import json
 import math
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 from jsonschema import Draft202012Validator, FormatChecker
 
@@ -11,6 +13,23 @@ class StepError(Exception):
     def __init__(self, code, message="", retryable=False):
         super().__init__(message or code)
         self.code, self.retryable = code, retryable
+
+
+def parse_timestamp(value):
+    """RFC3339 UTC/offset timestamp, including Java nanoseconds, on Python 3.10.
+
+    datetime only stores microseconds. Truncate sub-microsecond precision;
+    never round an expired motion command into the future.
+    """
+    if not isinstance(value, str):
+        raise ValueError('Timestamp must be a string')
+    match = re.fullmatch(r'(\d{4}-\d{2}-\d{2})[Tt](\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?([Zz]|[+-]\d{2}:\d{2})', value)
+    if not match:
+        raise ValueError('Timestamp must be RFC3339 with a timezone')
+    date, clock, fraction, offset = match.groups()
+    suffix = '.' + fraction[:6].ljust(6, '0') if fraction else ''
+    offset = '+00:00' if offset in ('Z', 'z') else offset
+    return datetime.fromisoformat(date + 'T' + clock + suffix + offset).astimezone(timezone.utc)
 
 
 def canonical(value):

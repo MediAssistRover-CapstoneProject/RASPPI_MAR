@@ -10,6 +10,7 @@ import tarfile
 import threading
 import time
 import urllib.request
+import urllib.error
 import zlib
 from pathlib import Path
 from .contracts import StepError, canonical
@@ -34,8 +35,9 @@ class MappingManager:
         self.last_preview = 0
         self.last_graph_check = 0
         self.manual = (0., 0., 0.)
-        from .mapping_control import MappingControlLease
+        from .mapping_control import MappingControlLease, VelocityRamp
         self.remote_control = MappingControlLease()
+        self.ramp = VelocityRamp()
         self.camera = None
         self.process = None
         from nav_msgs.msg import OccupancyGrid
@@ -93,7 +95,7 @@ class MappingManager:
                 return
             if type(x) not in (int,float) or type(z) not in (int,float) or not all(math.isfinite(v) for v in (x,z)):
                 return
-            if not 0 <= x <= .05 or abs(z) > .2:
+            if not 0 <= x <= .10 or abs(z) > .30:
                 return
             with self.lock:
                 self.manual = (float(x),float(z),time.monotonic())
@@ -143,9 +145,14 @@ class MappingManager:
                 moving = False
         msg = Twist()
         if moving:
-            msg.linear.x, msg.angular.z = x, z
+            target = (min(x, .10, self.adapter.cfg['max_speed_mps']),
+                      max(-self.adapter.cfg['motion']['max_angular_speed_rps'],
+                          min(z, self.adapter.cfg['motion']['max_angular_speed_rps'])))
+            msg.linear.x, msg.angular.z = self.ramp.update(target, time.monotonic())
+        else:
+            self.ramp.reset()
         self.velocity.publish(msg)
-        self.adapter.lease_message(bool(moving and (x or z)), min(.05,self.adapter.cfg['max_speed_mps']))
+        self.adapter.lease_message(bool(moving and (x or z)), min(.10,self.adapter.cfg['max_speed_mps']))
 
     async def preview(self):
         rate = min(self.state.get('preview_rate_hz',0.2), self.cfg.get('max_preview_rate_hz',0.2))
@@ -183,6 +190,7 @@ class MappingManager:
         if action == 'START':
             if self.active:
                 raise StepError('MAPPING_ALREADY_ACTIVE')
+            self.ramp.reset()
             # Existing navigation must be stopped by the local operator first.
             if self.adapter.nav.server_is_ready():
                 raise StepError('STOP_NAVIGATION_BEFORE_MAPPING')
@@ -284,8 +292,12 @@ class MappingManager:
         request = urllib.request.Request(url,data=body,method='PUT',headers={
             'Authorization':'Bearer '+token,'Content-Type':'application/gzip',
             'X-Asset-SHA256':metadata['asset_hash'],'X-Archive-SHA256':hashlib.sha256(body).hexdigest()})
-        with opener.open(request,timeout=15) as response:
-            receipt = json.loads(response.read(65536))
+        try:
+            with opener.open(request,timeout=15) as response:
+                receipt = json.loads(response.read(65536))
+        except urllib.error.HTTPError as exc:
+            code = 'MAP_UPLOAD_UNAUTHORIZED' if exc.code in (401,403) else 'MAP_UPLOAD_HTTP_ERROR'
+            raise StepError(code, 'Map upload HTTP ' + str(exc.code) + '; local artifact preserved') from None
         if (receipt.get('artifactId') != metadata['artifact_id'] or receipt.get('assetHash') != metadata['asset_hash']
             or receipt.get('stored') is not True):
             raise StepError('MAP_UPLOAD_RECEIPT_MISMATCH')

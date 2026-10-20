@@ -24,6 +24,10 @@ class StepStore:
             seq INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT UNIQUE NOT NULL,
             body TEXT NOT NULL, acked INTEGER NOT NULL DEFAULT 0);
         """)
+        columns = {r[1] for r in self.db.execute("PRAGMA table_info(worker_outbox)")}
+        if "superseded_by" not in columns:
+            with self.db:
+                self.db.execute("ALTER TABLE worker_outbox ADD COLUMN superseded_by TEXT")
         identities = [r[0] for r in self.db.execute("SELECT robot_id FROM worker_identity")]
         if identities and identities != [robot_id]:
             raise StepError("JOURNAL_ROBOT_MISMATCH")
@@ -41,7 +45,7 @@ class StepStore:
                       step, str(uuid.uuid4()))
 
     def emit(self, kind, payload, step=None, correlation=None):
-        if self.db.execute("SELECT count(*) FROM worker_outbox WHERE acked=0").fetchone()[0] >= 10000:
+        if self.db.execute("SELECT count(*) FROM worker_outbox WHERE acked=0 AND superseded_by IS NULL").fetchone()[0] >= 10000:
             raise StepError("OUTBOX_FULL")
         mid = str(uuid.uuid4())
         self.sequence += 1
@@ -106,7 +110,7 @@ class StepStore:
 
     def pending(self):
         return [json.loads(r[0]) for r in self.db.execute(
-            "SELECT body FROM worker_outbox WHERE acked=0 ORDER BY seq LIMIT 100")]
+            "SELECT body FROM worker_outbox WHERE acked=0 AND superseded_by IS NULL ORDER BY seq LIMIT 100")]
 
     def ack(self, mid):
         with self.db:
@@ -123,13 +127,40 @@ class StepStore:
     def blocked(self):
         return bool(self.db.execute("SELECT 1 FROM worker_steps WHERE status='RECOVERY_REQUIRED' LIMIT 1").fetchone())
 
-    def reconcile(self, sid, reason):
+    def reconcile(self, sid, reason, allow_terminal_failed_mapping=False):
         row = self.db.execute("SELECT body,status FROM worker_steps WHERE step_id=?", (sid,)).fetchone()
-        if not row or row[1] != "RECOVERY_REQUIRED":
+        if not row:
             raise StepError("STEP_NOT_RECOVERY_REQUIRED")
         step = json.loads(row[0])
-        self.finish(step, "CANCELLED", {"reason":reason,"source":"LOCAL_OPERATOR"})
-        self.emit("OPERATOR_RECONCILED", {"reason":reason,"status":"CANCELLED"}, step)
+        failed_mapping = (allow_terminal_failed_mapping and row[1] in {"FAILED", "TIMED_OUT", "CANCELLED"}
+                          and step.get("stepType") == "EXECUTE_SENSING"
+                          and step.get("params", {}).get("sensing_type") == "MAPPING")
+        if row[1] != "RECOVERY_REQUIRED" and not failed_mapping:
+            raise StepError("STEP_NOT_RECOVERY_REQUIRED")
+        if not reason.strip():
+            raise StepError("RECONCILIATION_REASON_REQUIRED")
+        command_id = None
+        superseded = []
+        for mid, raw, acked in self.db.execute("SELECT message_id,body,acked FROM worker_outbox ORDER BY seq"):
+            event = json.loads(raw)
+            if event.get("jobStepId") != sid or event.get("operationKey") != step["operationKey"]:
+                continue
+            payload = event.get("payload", {})
+            if event.get("messageType") == "COMMAND_ACK" and payload.get("commandType") == "EXECUTE_STEP":
+                candidate = payload.get("commandId")
+                if candidate and event.get("correlationId") == candidate:
+                    command_id = candidate
+            if not acked:
+                superseded.append(mid)
+        if command_id is None:
+            raise StepError("RECONCILIATION_COMMAND_RECEIPT_MISSING")
+        # Retain old events for audit; an explicit operator receipt replaces their delivery.
+        self.finish(step, "CANCELLED", {"reason":reason,"source":"LOCAL_OPERATOR","previousStatus":row[1]})
+        receipt = self.emit("OPERATOR_RECONCILED", {"reason":reason,"status":"CANCELLED"}, step, command_id)
+        with self.db:
+            self.db.executemany("UPDATE worker_outbox SET superseded_by=? WHERE message_id=? AND acked=0",
+                                [(receipt["messageId"], mid) for mid in superseded])
+        return receipt
 
     def close(self):
         self.db.close()

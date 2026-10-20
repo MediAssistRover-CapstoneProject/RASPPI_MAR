@@ -6,7 +6,7 @@ import threading
 import time
 from .store import utcnow
 
-def encode_frame(sample, cfg):
+def encode_jpeg(sample, cfg):
     import cv2
     import numpy as np
     data,width,height,step,encoding,captured,received = sample
@@ -21,8 +21,16 @@ def encode_frame(sample, cfg):
         ok,encoded=cv2.imencode('.jpg',frame,[cv2.IMWRITE_JPEG_QUALITY,quality])
         if ok and len(encoded)<=cfg['max_jpeg_bytes']:
             return {'captured_at':captured,'width':frame.shape[1],'height':frame.shape[0],
-                    'encoding':'jpeg-base64','data':base64.b64encode(encoded).decode('ascii')}
+                    'jpeg':encoded.tobytes()}
     return None
+
+
+def encode_frame(sample, cfg):
+    frame = encode_jpeg(sample, cfg)
+    if frame is None:
+        return None
+    jpeg = frame.pop('jpeg')
+    return {**frame, 'encoding':'jpeg-base64', 'data':base64.b64encode(jpeg).decode('ascii')}
 
 class CameraPreview:
     def __init__(self,adapter,cfg,active):
@@ -35,7 +43,8 @@ class CameraPreview:
 
     def on_image(self,msg):
         now=time.monotonic()
-        if not self.active() or now-self.last_sample<1/self.cfg['rate_hz']:return
+        if not self.active():return
+        if not self.cfg.get('sample_every_frame',False) and now-self.last_sample<1/self.cfg['rate_hz']:return
         self.last_sample=now
         channels={'rgb8':3,'bgr8':3,'rgba8':4,'bgra8':4,'mono8':1}.get(msg.encoding)
         if not channels or not 0<msg.width*msg.height<=4000000 or msg.step<msg.width*channels or len(msg.data)!=msg.step*msg.height or len(msg.data)>16000000:

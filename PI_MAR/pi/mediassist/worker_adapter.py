@@ -6,7 +6,7 @@ import math
 import threading
 import time
 from datetime import datetime, timezone
-from .contracts import StepError
+from .contracts import StepError, parse_timestamp
 from .ros_adapter import RosAdapter
 from .store import utcnow
 
@@ -49,7 +49,7 @@ class WorkerAdapter(RosAdapter):
                     return
             elif type(metrics.get("intrusion_detected")) is not bool:
                 return
-            captured = datetime.fromisoformat(data["captured_at"].replace("Z","+00:00"))
+            captured = parse_timestamp(data["captured_at"])
             if captured.tzinfo is None:
                 return
             age = (datetime.now(timezone.utc) - captured).total_seconds()
@@ -129,7 +129,7 @@ class WorkerAdapter(RosAdapter):
                     item = self.ai_observations.get((task,p["zone_id"]))
                 if item:
                     data, received = item
-                    captured = datetime.fromisoformat(data["captured_at"].replace("Z","+00:00"))
+                    captured = parse_timestamp(data["captured_at"])
                     if ((received >= started or window == 0) and time.monotonic()-received <= self.worker["ai"]["max_age_sec"]
                         and 0 <= (datetime.now(timezone.utc)-captured).total_seconds() <= self.worker["ai"]["max_age_sec"]):
                         return data

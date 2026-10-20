@@ -48,7 +48,7 @@ def vendor_bringup(info):
 
 def conflict(info):
     a = info['argv']
-    if any(x in a for x in ('mediassist.worker_cli', 'mediassist.safety_node', 'mediassist.cli')):
+    if any(x in a for x in ('mediassist.worker_cli', 'mediassist.safety_node', 'mediassist.cli', 'mediassist.camera_stream')):
         return True
     if any(Path(x).name in ('us100_dual_ros2.py', 'manual_mapping.py', 'mediassist_demo_slam.launch.py',
                             'mediassist_demo_navigation.launch.py', 'slam.launch.py', 'navigation.launch.py') for x in a):
@@ -209,8 +209,10 @@ class Supervisor:
         self.directory = directory
         self.stopping = False
         self.owned = {}
+        self.optional = set()
+        self.reported_optional = set()
 
-    def start(self, name, argv):
+    def start(self, name, argv, required=True):
         log = (self.directory / (name + '.log')).open('ab', buffering=0)
         log.write(('\n=== ' + time.strftime('%Y-%m-%d %H:%M:%S') + ' ===\n').encode())
         env = dict(os.environ)
@@ -221,6 +223,8 @@ class Supervisor:
         finally:
             log.close()
         self.children.append((name, child, proc(child.pid)))
+        if not required:
+            self.optional.add(name)
         say('START ' + name + ': ' + str(self.directory / (name + '.log')))
 
     def alive(self):
@@ -231,12 +235,17 @@ class Supervisor:
                 for entry in descendants(identity, table):
                     saved[(entry['pid'], entry['ticks'])] = entry
             if child.poll() is not None:
+                if name in self.optional:
+                    if name not in self.reported_optional:
+                        say('OPTIONAL_COMPONENT_UNAVAILABLE: ' + name + '; see ' + str(self.directory / (name + '.log')))
+                        self.reported_optional.add(name)
+                    continue
                 raise RuntimeError(name + ' exited code=' + str(child.returncode) + '; see ' + str(self.directory / (name + '.log')))
 
     def close(self):
         # Worker first, hardware while gate/watchdog remain available, then sensors
         # and finally gate/watchdog. No automatic restart/replay of a failed job.
-        order = {'worker': 0, 'slam': 1, 'us100': 2, 'gate': 3, 'watchdog': 4}
+        order = {'worker': 0, 'camera': 1, 'slam': 2, 'us100': 3, 'gate': 4, 'watchdog': 5}
         for name, child, identity in sorted(self.children, key=lambda item: order[item[0]]):
             say('STOP ' + name)
             try:
@@ -308,6 +317,7 @@ def main():
     if args.action == 'inspect':
         print(json.dumps({'hardware_profile': cfg['hardware_profile'], 'motion': hardware['motion'],
             'mapping_enabled': cfg['mapping']['enabled'], 'speech': cfg.get('speech', {}),
+            'camera': cfg['mapping']['camera'],
             'map_topic': cfg['mapping']['map_topic'],
             'slam_launch_argv': cfg['mapping']['launch_argv'], 'vendor_bringup_pids': [p['pid'] for p in vendor],
             'existing_components': existing}, indent=2))
@@ -376,6 +386,10 @@ def main():
             if supervisor.stopping:
                 return
             if args.action == 'run':
+                camera = cfg['mapping']['camera']
+                if camera['enabled'] and camera['stream_enabled']:
+                    supervisor.start('camera', [python, '-m', 'mediassist.camera_stream', '--config', str(config)], required=False)
+                    say('CAMERA_STREAM: HTTP port=' + str(camera['stream_port']) + ' topic=' + camera['topic'] + '; see camera.log')
                 supervisor.start('worker', [python, '-m', 'mediassist.worker_cli', 'run', '--config', str(config)])
                 say('STACK_READY: map/odom/TF/topology checked; check BE MQTT handshake separately')
                 flags = ('commissioned', 'cart_footprint_validated', 'watchdog_validated')

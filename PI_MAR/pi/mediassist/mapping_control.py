@@ -5,7 +5,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from jsonschema import Draft202012Validator, FormatChecker
-from .contracts import StepError
+from .contracts import StepError, parse_timestamp
+
+MAX_LINEAR = .10
+MAX_ANGULAR = .30
+MAX_PACKET_AGE = 1.501
 
 SCHEMA = json.loads((Path(__file__).resolve().parents[2]/'handoff/mapping-live.schema.json').read_text())
 VALIDATOR = Draft202012Validator(SCHEMA['oneOf'][0], format_checker=FormatChecker())
@@ -21,8 +25,10 @@ class MappingControlLease:
         self.deadline = 0.
 
     def accept(self, message, robot_id, transport_id, state, now=None, mono=None):
-        if next(VALIDATOR.iter_errors(message), None):
-            raise StepError('INVALID_MAPPING_CONTROL')
+        invalid = next(VALIDATOR.iter_errors(message), None)
+        if invalid:
+            raise StepError('INVALID_MAPPING_CONTROL',
+                            'schema field=' + '.'.join(map(str, invalid.path)) + ' rule=' + str(invalid.validator))
         if not all(math.isfinite(message[k]) for k in ('linearX','angularZ')):
             raise StepError('INVALID_MAPPING_CONTROL')
         if message['robotId'] != robot_id or message['transportSessionId'] != transport_id:
@@ -31,9 +37,12 @@ class MappingControlLease:
             raise StepError('MAPPING_SESSION_MISMATCH')
         now = now or datetime.now(timezone.utc)
         mono = time.monotonic() if mono is None else mono
-        issued = datetime.fromisoformat(message['issuedAt'].replace('Z','+00:00'))
-        expires = datetime.fromisoformat(message['expiresAt'].replace('Z','+00:00'))
-        if not 0 < (expires-issued).total_seconds() <= .751 or (issued-now).total_seconds() > .1 or expires <= now:
+        try:
+            issued = parse_timestamp(message['issuedAt'])
+            expires = parse_timestamp(message['expiresAt'])
+        except ValueError:
+            raise StepError('INVALID_MAPPING_CONTROL_TIMESTAMP') from None
+        if not 0 < (expires-issued).total_seconds() <= MAX_PACKET_AGE or (issued-now).total_seconds() > .1 or expires <= now:
             raise StepError('MAPPING_CONTROL_EXPIRED_OR_CLOCK_SKEW')
         key = (transport_id,state['session_id'])
         if message['sequenceNo'] <= self.sequence.get(key,0):
@@ -48,3 +57,25 @@ class MappingControlLease:
     def current(self, mono=None):
         mono = time.monotonic() if mono is None else mono
         return self.velocity if mono < self.deadline else (0.,0.)
+
+
+class VelocityRamp:
+    """Smooth live nonzero setpoints; an expired/zero command always stops now."""
+    def __init__(self, linear_accel=.25, angular_accel=.8):
+        self.linear_accel, self.angular_accel = linear_accel, angular_accel
+        self.reset()
+
+    def reset(self):
+        self.value, self.at = (0., 0.), None
+
+    def update(self, target, now):
+        if not any(target):
+            self.reset()
+            return (0., 0.)
+        dt = .05 if self.at is None else max(0., min(.1, now - self.at))
+        self.at = now
+        def approach(previous, desired, limit):
+            return previous + max(-limit, min(limit, desired - previous))
+        self.value = (approach(self.value[0], target[0], self.linear_accel * dt),
+                      approach(self.value[1], target[1], self.angular_accel * dt))
+        return self.value

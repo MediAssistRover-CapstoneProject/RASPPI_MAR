@@ -85,13 +85,25 @@ def load(path):
     if mapping['control_source'] not in ('local','mqtt'):raise StepError('INVALID_MAPPING_CONTROL_SOURCE')
     camera=mapping.setdefault('camera',{})
     for key,value in {'enabled':False,'topic':'/ascamera/camera_publisher/rgb0/image','rate_hz':.5,
-                      'max_width':320,'max_height':240,'jpeg_quality':50,'max_jpeg_bytes':65536}.items():camera.setdefault(key,value)
+                      'max_width':320,'max_height':240,'jpeg_quality':50,'max_jpeg_bytes':65536,
+                      'stream_enabled':True,'stream_bind':'0.0.0.0','stream_port':8081,'stream_rate_hz':15.}.items():camera.setdefault(key,value)
     if type(camera['enabled']) is not bool or not isinstance(camera['topic'],str) or not camera['topic'].startswith('/'):
         raise StepError('INVALID_CAMERA_CONFIG')
     for key,lo,hi in (('rate_hz',.2,1),('max_width',64,640),('max_height',48,480),('jpeg_quality',20,80),('max_jpeg_bytes',4096,65536)):
         value=camera[key]
         if type(value) not in (int,float) or not lo<=value<=hi or key!='rate_hz' and type(value) is not int:
             raise StepError('INVALID_CAMERA_CONFIG',key)
+    from ipaddress import IPv4Address
+    try:
+        if not isinstance(camera['stream_bind'], str):
+            raise ValueError('IPv4 string required')
+        IPv4Address(camera['stream_bind'])
+    except (ValueError, TypeError):
+        raise StepError('INVALID_CAMERA_STREAM_BIND') from None
+    if (type(camera['stream_enabled']) is not bool or type(camera['stream_port']) is not int
+        or not 1024 <= camera['stream_port'] <= 65535
+        or type(camera['stream_rate_hz']) not in (int,float) or not 1 <= camera['stream_rate_hz'] <= 30):
+        raise StepError('INVALID_CAMERA_STREAM_CONFIG')
     mapping.setdefault("max_preview_rate_hz",0.2)
     mapping.setdefault("max_preview_bytes",131072)
     if type(mapping["max_preview_rate_hz"]) not in (int,float) or not 0.2 <= mapping["max_preview_rate_hz"] <= 1:
