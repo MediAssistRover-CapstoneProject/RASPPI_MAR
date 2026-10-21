@@ -8,7 +8,7 @@ from uuid import UUID
 from .contracts import StepError, canonical
 
 
-def validate_profile(message, robot_id, hardware):
+def validate_profile(message, robot_id, hardware, allow_empty=False):
     if message.get('messageType') != 'NAV_PROFILE' or message.get('robotId') != robot_id:
         raise StepError('INVALID_NAV_PROFILE')
     if message.get('profileVersion') != 'BE-NAV-PROFILE-1':
@@ -27,7 +27,7 @@ def validate_profile(message, robot_id, hardware):
     if profile.get('frame_id') != hardware['ros']['map_frame']:
         raise StepError('NAV_PROFILE_FRAME_MISMATCH')
     points=profile.get('endpoints')
-    if not isinstance(points,dict) or not 1 <= len(points) <= 10000:
+    if not isinstance(points,dict) or not (0 if allow_empty else 1) <= len(points) <= 10000:
         raise StepError('NAV_PROFILE_ENDPOINTS_REQUIRED')
     for endpoint_id,point in points.items():
         UUID(endpoint_id)

@@ -32,9 +32,10 @@ class MapSyncTests(unittest.TestCase):
         sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'tools'))
         from robot_stack import validate_mode
         h={'map_asset_sha256':'a'*64,'endpoints':{'x':{}},'motion':dict(commissioned=False,cart_footprint_validated=False,watchdog_validated=False)}
-        with self.assertRaises(RuntimeError):validate_mode('run',{'mapping':{'enabled':False}},h,'navigation')
+        cfg={'mapping':{'enabled':False},'localization':{'enabled':True}}
+        with self.assertRaises(RuntimeError):validate_mode('run',cfg,h,'navigation')
         h['motion']=dict.fromkeys(h['motion'],True)
-        validate_mode('run',{'mapping':{'enabled':False}},h,'navigation')
+        validate_mode('run',cfg,h,'navigation')
         with self.assertRaises(RuntimeError):validate_mode('run',{'mapping':{'enabled':True}},h,'navigation')
     def test_installer_declares_nav2_but_preserves_uncommissioned_motion(self):
         sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'tools'))

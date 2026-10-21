@@ -47,6 +47,8 @@ class RosAdapter:
         self.node.create_subscription(LaserScan, config["ros"]["scan"], lambda m: self._sample("scan", bool(m.ranges)), qos_profile_sensor_data)
         self.node.create_subscription(Odometry, config["ros"]["odom"], lambda m: self._sample("odom_speed", max(abs(m.twist.twist.linear.x), abs(m.twist.twist.linear.y), abs(m.twist.twist.angular.z))), qos_profile_sensor_data)
         self.node.create_subscription(String, "/mediassist/safety_state", lambda m: self._sample("gate", m.data), 10)
+        if getattr(self,'localization_required',False):
+            self.node.create_subscription(String,"/mediassist/localization/status",self._localization_status,10)
         self.thread = threading.Thread(target=self._spin, daemon=True)
         self.thread.start()
 
@@ -64,11 +66,20 @@ class RosAdapter:
     def _sample(self, key, value):
         with self.lock: self.samples[key] = (value, time.monotonic())
 
+    def _localization_status(self,msg):
+        try:
+            if len(msg.data)>16384:return
+            status=json.loads(msg.data)
+            if isinstance(status,dict):self._sample('localization_status',status)
+        except (ValueError,TypeError):pass
+
     def telemetry(self):
         with self.lock: snapshot = dict(self.samples)
         now = time.monotonic()
         data = {key: {"value": v if not isinstance(v, float) or math.isfinite(v) else None,
                       "age_sec": max(0, now - at)} for key, (v, at) in snapshot.items()}
+        # Keep the MQTT telemetry contract unchanged; diagnostics stay on the local ROS topic/file.
+        localization=data.pop('localization_status',None)
         try:
             from rclpy.time import Time
             transform = self.tf_buffer.lookup_transform(self.cfg["ros"]["map_frame"], self.cfg["ros"]["base_frame"], Time())
@@ -79,6 +90,11 @@ class RosAdapter:
                                 "age_sec": max(0.0, age), "fresh": 0 <= age <= 1.0}
         except Exception:
             data["map_pose"] = {"value": None, "age_sec": None, "fresh": False}
+        if getattr(self,'localization_required',False):
+            from .localization import guarded_pose
+            data['map_pose']=guarded_pose(localization['value'] if localization else {},
+                localization['age_sec'] if localization else math.inf,self.node.get_clock().now().nanoseconds/1e9,
+                self.cfg['map_id'],self.cfg['map_asset_sha256'],self.cfg['ros']['map_frame'])
         return data
 
     def check_capabilities(self, wf):
@@ -161,7 +177,8 @@ class RosAdapter:
         self._check_graph()
         await self._check_map(p["map_id"])
         if not self.health()["sensors_ready"]: raise StepError("SENSORS_NOT_READY")
-        if not self.telemetry()["map_pose"]["fresh"]: raise StepError("MAP_TF_NOT_READY")
+        if not self.telemetry()["map_pose"]["fresh"]:
+            raise StepError("LOCALIZATION_NOT_READY" if getattr(self,'localization_required',False) else "MAP_TF_NOT_READY")
 
     def _pose(self, endpoint_id):
         from geometry_msgs.msg import PoseStamped
@@ -216,6 +233,8 @@ class RosAdapter:
             while not result_future.done():
                 self._check_graph()
                 state = self.telemetry()
+                if getattr(self,'localization_required',False) and not state['map_pose']['fresh']:
+                    raise StepError('LOCALIZATION_LOST')
                 if "gate" not in state or state["gate"]["age_sec"] > 0.6: raise StepError("SAFETY_GATE_LOST")
                 self.lease_message(True, p["max_speed_mps"])
                 await asyncio.sleep(0.1)

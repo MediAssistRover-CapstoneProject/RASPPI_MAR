@@ -17,6 +17,9 @@ class NoRemote:
 class WorkerAdapter(RosAdapter):
     def __init__(self, hardware, worker):
         self.worker = worker
+        self.localization_required=worker.get('localization',{}).get('enabled',False) and not worker['mapping']['enabled']
+        if not worker['mapping']['enabled'] and 'MOVE' in worker.get('enabled_step_types',[]) and not self.localization_required:
+            raise StepError('CONFIGURE_LOCALIZATION_FIRST')
         self.ai_observations = {}
         self.ai_lock = threading.Lock()
         self.stop_lock = asyncio.Lock()

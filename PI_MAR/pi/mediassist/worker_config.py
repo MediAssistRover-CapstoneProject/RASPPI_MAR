@@ -81,6 +81,14 @@ def load(path):
     if type(ai.get("max_age_sec")) not in (int,float) or not 0.1 <= ai["max_age_sec"] <= 10:
         raise StepError("INVALID_AI_CONFIG")
     mapping=cfg["mapping"]
+    for key,value in {'fresh_session':True,'reset_service':'/mediassist/slam/new_session','slam_resolution_m':.025,
+        'slam_min_travel_m':.05,'slam_min_heading_rad':.10,'slam_min_interval_sec':.15,'slam_map_interval_sec':.5}.items():mapping.setdefault(key,value)
+    if type(mapping['fresh_session']) is not bool or not isinstance(mapping['reset_service'],str) or not mapping['reset_service'].startswith('/'):
+        raise StepError('INVALID_SLAM_SESSION_CONFIG')
+    for key,low,high in (('slam_resolution_m',.01,.1),('slam_min_travel_m',.02,.5),('slam_min_heading_rad',.03,.5),
+                         ('slam_min_interval_sec',.05,1),('slam_map_interval_sec',.2,5)):
+        value=mapping[key]
+        if type(value) not in (int,float) or not low<=value<=high:raise StepError('INVALID_SLAM_SESSION_CONFIG',key)
     mapping.setdefault('control_source','local')
     if mapping['control_source'] not in ('local','mqtt'):raise StepError('INVALID_MAPPING_CONTROL_SOURCE')
     camera=mapping.setdefault('camera',{})
@@ -125,6 +133,14 @@ def load(path):
             raise StepError("UPLOAD_TOKEN_FILE_REQUIRED")
         if mapping.get("upload_ca_file") and not Path(mapping["upload_ca_file"]).is_file():
             raise StepError("UPLOAD_CA_FILE_NOT_FOUND")
+    if mapping.get('device_secret_file'):
+        secret=Path(mapping['device_secret_file'])
+        if not secret.is_absolute() or not secret.is_file() or not mapping.get('robot_code') or not mapping.get('upload_base_url'):
+            raise StepError('INVALID_MAP_DEVICE_AUTH')
+    from .localization import configuration as localization_configuration
+    cfg['localization']=localization_configuration(cfg.get('localization',{}))
+    if cfg['localization']['enabled'] and not Path(cfg['localization'].get('status_file','')).is_absolute():
+        raise StepError('LOCALIZATION_STATUS_PATH_REQUIRED')
     return cfg, hardware
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):

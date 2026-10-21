@@ -6,7 +6,7 @@ from .contracts import StepError, canonical, parse_timestamp
 
 CONTRACT = "MAR-STEP-2"
 SUBPROTOCOL = "mar-step-v1"
-VERSION = "0.12.5"
+VERSION = "0.13.0"
 UUID_SCHEMA = {"type": "string", "format": "uuid"}
 
 def obj(properties, required=None):

@@ -26,6 +26,7 @@ def main():
     p.add_argument('--config',type=Path,default=ROOT/'pi/config/mqtt.worker.json')
     p.add_argument('--base-url',required=True);p.add_argument('--map-id',required=True)
     p.add_argument('--token-file',type=Path,required=True);p.add_argument('--ca-file',type=Path)
+    p.add_argument('--localization-only',action='store_true',help='Install and localize a map before endpoints exist; MOVE is disabled')
     a=p.parse_args();UUID(a.map_id)
     uri=urlparse(a.base_url)
     if uri.scheme!='https' or not uri.hostname or uri.username or uri.password or uri.path not in ('','/') or uri.query or uri.fragment:p.error('Use an HTTPS BE origin')
@@ -50,7 +51,7 @@ def main():
     hw.update(map_id=a.map_id,map_asset_sha256=meta['asset_hash'],endpoints={},endpoint_groups={})
     if hw['ros']['map_frame']!=meta['frame_id']:raise ValueError('BE map frame differs from hardware map_frame')
     message={**manifest,'messageType':'NAV_PROFILE','robotId':cfg['robot_id']}
-    profile=validate_profile(message,cfg['robot_id'],hw)
+    profile=validate_profile(message,cfg['robot_id'],hw,allow_empty=a.localization_only)
     # Declare the installed navigation software without changing motion commissioning.
     hw['endpoints']=profile['endpoints']
     hw['capabilities']=sorted(set(hw['capabilities'])|{'nav2'})
@@ -63,9 +64,12 @@ def main():
         dest.write_bytes(raw)
     hardware_file=root/'hardware.json';save(hardware_file,hw)
     cfg['hardware_profile']=str(hardware_file)
-    cfg['navigation_runtime']={'map_yaml':str(root/'map.yaml')}
+    cfg['navigation_runtime']={'map_yaml':str(root/'map.yaml'),'localization_only':a.localization_only}
+    # Any old seed/quality state belongs to the old map; require explicit setup for the installed map.
+    cfg['localization']={'enabled':False}
     cfg['mapping']['enabled']=False
     cfg['enabled_step_types']=list(dict.fromkeys([*cfg['enabled_step_types'],'MOVE']))
+    if a.localization_only:cfg['enabled_step_types']=[x for x in cfg['enabled_step_types'] if x!='MOVE']
     shutil.copy2(a.config,a.config.with_suffix('.'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')+'.bak'))
     save(a.config,cfg)
     print('Installed:',root/'map.yaml')

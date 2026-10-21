@@ -48,7 +48,7 @@ def vendor_bringup(info):
 
 def conflict(info):
     a = info['argv']
-    if any(x in a for x in ('mediassist.worker_cli', 'mediassist.safety_node', 'mediassist.cli', 'mediassist.camera_stream')):
+    if any(x in a for x in ('mediassist.worker_cli', 'mediassist.safety_node', 'mediassist.cli', 'mediassist.camera_stream','mediassist.slam_session','mediassist.localization_node')):
         return True
     if any(Path(x).name in ('us100_dual_ros2.py', 'manual_mapping.py', 'mediassist_demo_slam.launch.py',
                             'mediassist_demo_navigation.launch.py', 'slam.launch.py', 'navigation.launch.py') for x in a):
@@ -152,8 +152,10 @@ def validate_mode(mode, cfg, hardware, runtime_mode='mapping'):
     if mode == 'run':
         if runtime_mode == 'navigation':
             if cfg['mapping']['enabled']:raise RuntimeError('MAPPING_MUST_BE_DISABLED_FOR_NAVIGATION')
-            if not hardware.get('map_asset_sha256') or not hardware.get('endpoints'):raise RuntimeError('INSTALL_BE_MAP_AND_ENDPOINTS_FIRST')
-            if not all(hardware['motion'][k] for k in ('commissioned','cart_footprint_validated','watchdog_validated')):
+            localization_only=cfg.get('navigation_runtime',{}).get('localization_only',False)
+            if not hardware.get('map_asset_sha256') or not hardware.get('endpoints') and not localization_only:raise RuntimeError('INSTALL_BE_MAP_AND_ENDPOINTS_FIRST')
+            if not cfg.get('localization',{}).get('enabled'):raise RuntimeError('CONFIGURE_LOCALIZATION_FIRST')
+            if not localization_only and not all(hardware['motion'][k] for k in ('commissioned','cart_footprint_validated','watchdog_validated')):
                 raise RuntimeError('MOTION_NOT_COMMISSIONED')
             return
         # MQTT, speech and stationary map preview can run with motion inhibited.
@@ -319,6 +321,8 @@ def main():
             'mapping_enabled': cfg['mapping']['enabled'], 'speech': cfg.get('speech', {}),
             'camera': cfg['mapping']['camera'],
             'map_topic': cfg['mapping']['map_topic'],
+            'slam_session': {key:cfg['mapping'][key] for key in ('fresh_session','reset_service','slam_resolution_m',
+                'slam_min_travel_m','slam_min_heading_rad','slam_map_interval_sec')},
             'slam_launch_argv': cfg['mapping']['launch_argv'], 'vendor_bringup_pids': [p['pid'] for p in vendor],
             'existing_components': existing}, indent=2))
         return
@@ -332,7 +336,7 @@ def main():
     check_journals(cfg)
     if existing:
         raise RuntimeError('EXISTING_COMPONENTS: stop their own terminals first; PIDs=' + ','.join(str(p['pid']) for p in existing))
-    vendor_file = Path('/home/ubuntu/ros2_ws/src/slam/launch/slam.launch.py')
+    vendor_file = Path('/home/ubuntu/ros2_ws/src/slam/launch/include/robot.launch.py')
     if not vendor_file.is_file():
         raise RuntimeError('VENDOR_SLAM_MISSING: ' + str(vendor_file))
     with locked(state_dir, config):
@@ -361,11 +365,14 @@ def main():
             supervisor.start('watchdog', [python, '-m', 'mediassist.safety_node', '--config', hw, '--motor-watchdog'])
             supervisor.start('gate', [python, '-m', 'mediassist.safety_node', '--config', hw] + (['--bench-pause'] if bench else []))
             supervisor.start('us100', [python, str(ROOT / 'pi/scripts/us100_dual_ros2.py'), '--config', hw])
-            launch = ['ros2','launch',str(ROOT/'pi/launch/mediassist_demo_slam.launch.py')]
+            launch = ['ros2','launch',str(ROOT/'pi/launch/mediassist_demo_slam.launch.py'),'worker_config:='+str(config)]
             if args.mode=='navigation':
                 launch=['ros2','launch',str(ROOT/'pi/launch/mediassist_demo_navigation.launch.py'),
-                        'map:='+str(map_yaml),'params_file:='+str(args.nav2_params.resolve())]
+                        'map:='+str(map_yaml),'params_file:='+str(args.nav2_params.resolve()),
+                        'localization_only:='+str(cfg.get('navigation_runtime',{}).get('localization_only',False)).lower()]
             supervisor.start('slam',launch)
+            if args.mode=='navigation':
+                supervisor.start('localization',[python,'-m','mediassist.localization_node','--config',str(config)])
             from stack_probe import Probe
             probe = Probe(hardware, {**cfg['mapping'],'static_map':args.mode=='navigation'})
             deadline, report, stable = time.monotonic() + args.ready_timeout, 0., 0
@@ -375,6 +382,9 @@ def main():
                 missing = probe.missing()
                 if args.action == 'run':
                     missing = [x for x in missing if x not in ('left', 'right')]
+                    # Global/seed AMCL initialization needs the worker/diagnostics online before map TF exists.
+                    # MOVE remains inhibited by the localization guard until its evidence is ready.
+                    if args.mode=='navigation':missing=[x for x in missing if x not in ('TF_map_base','TF_STALE')]
 
                 stable = 0 if missing else stable + 1
                 if stable >= 5:
@@ -391,7 +401,8 @@ def main():
                     supervisor.start('camera', [python, '-m', 'mediassist.camera_stream', '--config', str(config)], required=False)
                     say('CAMERA_STREAM: HTTP port=' + str(camera['stream_port']) + ' topic=' + camera['topic'] + '; see camera.log')
                 supervisor.start('worker', [python, '-m', 'mediassist.worker_cli', 'run', '--config', str(config)])
-                say('STACK_READY: map/odom/TF/topology checked; check BE MQTT handshake separately')
+                say('STACK_READY: map/odom/topology checked; localization readiness is in localization.log' if args.mode=='navigation'
+                    else 'STACK_READY: map/odom/TF/topology checked; check BE MQTT handshake separately')
                 flags = ('commissioned', 'cart_footprint_validated', 'watchdog_validated')
                 if not all(hardware['motion'][k] for k in flags) or any(x in probe.missing() for x in ('left', 'right')):
                     say('MOTION_INHIBITED: stationary mapping and speech available; motion still requires ready sensors and commissioning')
