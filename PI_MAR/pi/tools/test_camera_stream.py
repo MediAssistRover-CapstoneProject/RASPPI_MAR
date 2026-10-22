@@ -91,6 +91,29 @@ class CameraTests(unittest.TestCase):
         pacer.encoded(2.)
         self.assertFalse(pacer.due(2.01));self.assertTrue(pacer.due(2.067))
 
+    def test_health_separates_source_rate_encode_rate_and_receive_age(self):
+        frames=Frames('/camera',target_fps=20.,max_frame_age=.35)
+        for stamp in (10.,10.05,10.10):frames.observe_source(640,480,stamp)
+        with patch('mediassist.camera_stream.time.monotonic',side_effect=[10.02,10.12]):
+            frames.publish(b'first','now',2.,received_at=10.,width=320,height=240)
+            frames.publish(b'latest','now',3.,received_at=10.10,width=320,height=240)
+        with patch('mediassist.camera_stream.time.monotonic',return_value=10.12):
+            status=frames.status()
+        self.assertEqual(status['sourceReceivedFps'],20.)
+        self.assertEqual(status['encodedFps'],10.)
+        self.assertEqual(status['sourceSize'],[640,480])
+        self.assertEqual(status['streamSize'],[320,240])
+        self.assertEqual(status['lastReceiveToEncodeMs'],20.)
+        self.assertEqual(status['lastJpegBytes'],6)
+
+    def test_recently_encoded_but_old_input_is_not_served_as_live(self):
+        frames=Frames('/camera',max_frame_age=.35)
+        with patch('mediassist.camera_stream.time.monotonic',return_value=10.):
+            frames.publish(b'old','now',received_at=9.)
+        with patch('mediassist.camera_stream.time.monotonic',return_value=10.):
+            self.assertFalse(frames.status()['frameFresh'])
+            self.assertIsNone(frames.next(-1,timeout=0.))
+
     def test_stream_sample_is_latest_even_when_source_clock_jitters(self):
         preview=object.__new__(CameraPreview)
         preview.cfg={'rate_hz':15.,'sample_every_frame':True}

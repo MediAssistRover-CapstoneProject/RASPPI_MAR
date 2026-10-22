@@ -19,6 +19,8 @@ thư mục tương ứng là `PI_MAR`.
 Code localization đã có trong repo được giữ lại. Đợt này không bật AMCL,
 không gán map hay thiết lập vị trí ban đầu cho robot.
 
+Thử camera HP60C 20 FPS và đo độ trễ: xem [CAMERA_TUNING.md](CAMERA_TUNING.md).
+
 ## Cấu hình riêng của robot
 
 Repo không chứa cấu hình MQTT đang dùng, mật khẩu, device secret/token,

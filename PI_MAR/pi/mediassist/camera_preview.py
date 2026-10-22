@@ -33,10 +33,11 @@ def encode_frame(sample, cfg):
     return {**frame, 'encoding':'jpeg-base64', 'data':base64.b64encode(jpeg).decode('ascii')}
 
 class CameraPreview:
-    def __init__(self,adapter,cfg,active):
+    def __init__(self,adapter,cfg,active,on_receive=None):
         from sensor_msgs.msg import Image
         from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
         self.cfg,self.active=cfg,active
+        self.on_receive=on_receive
         self.lock=threading.Lock();self.sample=None;self.last_sample=0.;self.revision=0;self.error=None
         qos=QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT,durability=DurabilityPolicy.VOLATILE)
         adapter.node.create_subscription(Image,cfg['topic'],self.on_image,qos)
@@ -52,6 +53,8 @@ class CameraPreview:
             self.error='CAMERA_FORMAT_UNSUPPORTED';return
         sample=(bytes(msg.data),msg.width,msg.height,msg.step,msg.encoding,utcnow(),now)
         with self.lock:self.sample=sample
+        observer=getattr(self,'on_receive',None)
+        if observer:observer(msg.width,msg.height,now)
 
     async def preview(self,session_id):
         with self.lock:sample=self.sample;self.sample=None

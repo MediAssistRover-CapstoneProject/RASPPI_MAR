@@ -12,10 +12,16 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 
 class Frames:
-    def __init__(self, topic, max_clients=4, target_fps=15.):
+    def __init__(self, topic, max_clients=4, target_fps=15., max_frame_age=2.):
         self.topic, self.max_clients = topic, max_clients
         self.target_fps = target_fps
         self.published = deque(maxlen=151)
+        self.received = deque(maxlen=151)
+        self.source_size = self.output_size = None
+        self.input_age = 0.
+        self.jpeg_bytes = None
+        self.client_write_ms = None
+        self.max_frame_age = max_frame_age
         self.encode_ms = None
         self.condition = threading.Condition()
         self.clients = 0
@@ -38,12 +44,24 @@ class Frames:
         with self.condition:
             return self.clients > 0 and not self.closed
 
-    def publish(self, jpeg, captured_at, encode_ms=None):
+    def observe_source(self, width, height, received_at):
+        with self.condition:
+            self.received.append(received_at)
+            self.source_size = [width, height]
+
+    def record_write(self, elapsed_ms):
+        with self.condition:
+            self.client_write_ms = round(elapsed_ms, 1)
+
+    def publish(self, jpeg, captured_at, encode_ms=None, received_at=None, width=None, height=None):
         if not jpeg or len(jpeg) > 65536:
             raise ValueError('JPEG must be between 1 byte and 64 KiB')
         with self.condition:
             self.revision += 1
             self.frame = (self.revision, time.monotonic(), bytes(jpeg), captured_at)
+            self.input_age = max(0., self.frame[1]-received_at) if received_at is not None else 0.
+            self.output_size = [width,height] if width is not None and height is not None else None
+            self.jpeg_bytes = len(jpeg)
             self.published.append(self.frame[1])
             self.encode_ms = encode_ms
             self.condition.notify_all()
@@ -52,7 +70,7 @@ class Frames:
         deadline = time.monotonic() + timeout
         with self.condition:
             while not self.closed:
-                if self.frame and self.frame[0] > revision and time.monotonic() - self.frame[1] <= 2.:
+                if self.frame and self.frame[0] > revision and time.monotonic() - self.frame[1] + self.input_age <= self.max_frame_age:
                     return self.frame
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -62,13 +80,18 @@ class Frames:
 
     def status(self):
         with self.condition:
-            age = None if not self.frame else round(time.monotonic() - self.frame[1], 3)
-            recent = [stamp for stamp in self.published if time.monotonic() - stamp <= 5.]
-            fps = (len(recent)-1)/(recent[-1]-recent[0]) if len(recent)>1 and recent[-1]>recent[0] else 0.
+            now = time.monotonic()
+            age = None if not self.frame else round(now - self.frame[1] + self.input_age, 3)
+            def rate(stamps):
+                recent = [stamp for stamp in stamps if now-stamp <= 5.]
+                return round((len(recent)-1)/(recent[-1]-recent[0]),1) if len(recent)>1 and recent[-1]>recent[0] else 0.
             return {'topic': self.topic, 'qos': 'BEST_EFFORT / VOLATILE / depth=1',
                     'viewers': self.clients, 'frameRevision': self.revision,
-                    'targetFps':self.target_fps,'encodedFps':round(fps,1),'lastEncodeMs':self.encode_ms,
-                    'frameAgeSeconds': age, 'frameFresh': age is not None and age <= 2.}
+                    'targetFps':self.target_fps,'encodedFps':rate(self.published),'lastEncodeMs':self.encode_ms,
+                    'sourceReceivedFps':rate(self.received),'sourceSize':self.source_size,'streamSize':self.output_size,
+                    'lastJpegBytes':self.jpeg_bytes,'lastReceiveToEncodeMs':round(self.input_age*1000,1) if self.frame else None,
+                    'lastClientWriteMs':self.client_write_ms,'maxFrameAgeSeconds':self.max_frame_age,
+                    'frameAgeSeconds': age, 'frameFresh': age is not None and age <= self.max_frame_age}
 
     def close(self):
         with self.condition:
@@ -82,7 +105,8 @@ def handler_for(frames):
             super().setup()
             self.connection.settimeout(5.)
             self.connection.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-            self.connection.setsockopt(socket.SOL_SOCKET,socket.SO_SNDBUF,65536)
+            # Bound per-viewer TCP backlog; slow viewers do not queue more JPEGs in Python.
+            self.connection.setsockopt(socket.SOL_SOCKET,socket.SO_SNDBUF,16384)
 
         def log_message(self, *_):
             pass
@@ -127,12 +151,15 @@ def handler_for(frames):
                 self.send_response(200)
                 self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
                 self.send_header('Cache-Control', 'no-store')
+                self.send_header('X-Accel-Buffering', 'no')
                 self.send_header('Connection', 'close')
                 self.end_headers()
                 while frame is not None:
+                    started = time.monotonic()
                     self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ' +
                                      str(len(frame[2])).encode() + b'\r\n\r\n' + frame[2] + b'\r\n')
                     self.wfile.flush()
+                    frames.record_write((time.monotonic()-started)*1000)
                     frame = frames.next(frame[0], timeout=3.)
             except (BrokenPipeError, ConnectionResetError, TimeoutError):
                 pass
@@ -167,10 +194,12 @@ def main():
     cfg, _ = load(args.config)
     camera = dict(cfg['mapping']['camera'])
     camera['rate_hz'] = camera['stream_rate_hz']
+    for key in ('max_width','max_height','jpeg_quality'):
+        camera[key] = camera['stream_'+key]
     # Sample the latest source frame independently of the encoder cadence. Two
     # nearly equal 15 Hz clocks otherwise drop alternating camera messages.
     camera['sample_every_frame'] = True
-    frames = Frames(camera['topic'],target_fps=camera['stream_rate_hz'])
+    frames = Frames(camera['topic'],target_fps=camera['stream_rate_hz'],max_frame_age=camera['stream_max_frame_age_sec'])
     pacer = EncodePacer(camera['stream_rate_hz'])
     server = CameraServer((camera['stream_bind'], camera['stream_port']), handler_for(frames))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -187,7 +216,7 @@ def main():
         pass
     rclpy.init()
     node = rclpy.create_node('mediassist_camera_stream')
-    preview = CameraPreview(SimpleNamespace(node=node), camera, frames.viewing)
+    preview = CameraPreview(SimpleNamespace(node=node), camera, frames.viewing, frames.observe_source)
     print('CAMERA_HTTP_READY port=' + str(server.server_address[1]) + ' topic=' + camera['topic'] +
           ' target_fps=' + str(camera['stream_rate_hz']) + ' QoS=BEST_EFFORT; waiting for viewers/ROS frames', flush=True)
     try:
@@ -198,14 +227,15 @@ def main():
             with preview.lock:
                 sample = preview.sample
                 preview.sample = None
-            if sample and frames.viewing() and time.monotonic() - sample[-1] <= 2.:
+            if sample and frames.viewing() and time.monotonic() - sample[-1] <= camera['stream_max_frame_age_sec']:
                 try:
                     started = time.monotonic()
                     pacer.encoded(started)
                     encoded = encode_jpeg(sample, camera)
                     if encoded:
                         frames.publish(encoded['jpeg'], encoded['captured_at'],
-                                       round((time.monotonic()-started)*1000,1))
+                                       round((time.monotonic()-started)*1000,1),
+                                       received_at=sample[-1],width=encoded['width'],height=encoded['height'])
                 except Exception as exc:
                     logging.warning('Camera encoding failed: %s', type(exc).__name__)
     except KeyboardInterrupt:
