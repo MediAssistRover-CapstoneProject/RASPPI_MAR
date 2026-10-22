@@ -53,6 +53,14 @@ class MappingManager:
         self.velocity = adapter.node.create_publisher(Twist, adapter.cfg['ros']['raw_cmd_vel'], 1)
         from std_srvs.srv import Trigger
         self.reset_client=adapter.node.create_client(Trigger,cfg['reset_service'])
+        self.gamepad = None
+        if cfg.get('control_source') == 'gamepad':
+            from .gamepad import GamepadInput, configuration
+            from sensor_msgs.msg import Joy
+            self.gamepad = GamepadInput(configuration(cfg))
+            self.gamepad_status = adapter.node.create_publisher(String, '/mediassist/gamepad/status', 1)
+            self.gamepad_report_at, self.gamepad_report = 0., None
+            adapter.node.create_subscription(Joy, cfg['gamepad']['topic'], self.on_gamepad, qos)
         if cfg.get('camera',{}).get('enabled'):
             from .camera_preview import CameraPreview
             self.camera = CameraPreview(adapter,cfg['camera'],lambda:self.state.get('state')=='MAPPING')
@@ -90,6 +98,44 @@ class MappingManager:
             self.grid = (snapshot,time.monotonic())
             self.revision += 1
 
+    def on_gamepad(self, msg):
+        # Driver and worker share the container clock. Do not refresh delayed DDS samples.
+        stamp = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
+        age = (self.adapter.node.get_clock().now().nanoseconds - stamp) / 1e9
+        if not -.1 <= age <= self.gamepad.cfg['timeout_sec']:
+            self.gamepad.reject('JOY_SOURCE_STALE')
+            return
+        self.gamepad.feed(msg.axes, time.monotonic(), stamp)
+
+    def gamepad_velocity(self, ready, idle):
+        now = time.monotonic()
+        active = self.active and self.state.get('state') == 'MAPPING'
+        reason, allowed = 'WAIT_READY', bool(active and ready and idle and not self.adapter.motion_uncertain)
+        if allowed:
+            publishers = self.adapter.node.get_publishers_info_by_topic(self.cfg['gamepad']['topic'])
+            allowed = len(publishers) == 1 and publishers[0].node_name == 'mediassist_gamepad_joy'
+            if not allowed: reason = 'JOY_PUBLISHER_COUNT'
+        if allowed:
+            allowed = all(self.adapter.cfg['motion'][k] for k in
+                          ('commissioned', 'cart_footprint_validated', 'watchdog_validated'))
+            if not allowed: reason = 'MOTION_NOT_COMMISSIONED'
+        if allowed:
+            allowed = self.adapter.health()['sensors_ready']
+            if not allowed: reason = 'SENSORS_NOT_READY'
+        if allowed:
+            odom = self.adapter.telemetry().get('odom_speed')
+            allowed = bool(odom and odom['age_sec'] <= .5)
+            if not allowed: reason = 'ODOM_NOT_READY'
+        velocity = self.gamepad.current(self.state.get('session_id') if active else None, allowed, now, reason)
+        status = self.gamepad.status()
+        if status != self.gamepad_report or now - self.gamepad_report_at >= 1.:
+            from std_msgs.msg import String
+            self.gamepad_status.publish(String(data=json.dumps(status)))
+            if status != self.gamepad_report:
+                self.adapter.node.get_logger().info('GAMEPAD ' + status['reason'])
+            self.gamepad_report, self.gamepad_report_at = status, now
+        return velocity
+
     def on_manual(self, msg):
         try:
             if len(msg.data) > 512:
@@ -99,7 +145,9 @@ class MappingManager:
                 return
             x, z = p['linear_x'], p['angular_z']
             if self.cfg.get('control_source','local') != 'local':
-                if x == 0 and z == 0:self.remote_control.stop()
+                if x == 0 and z == 0:
+                    self.remote_control.stop()
+                    if getattr(self, 'gamepad', None): self.gamepad.stop()
                 return
             if type(x) not in (int,float) or type(z) not in (int,float) or not all(math.isfinite(v) for v in (x,z)):
                 return
@@ -111,6 +159,12 @@ class MappingManager:
             return
 
     def receive_control(self, message, transport_id, ready, idle):
+        if self.cfg.get('control_source') == 'gamepad':
+            if message.get('linearX') or message.get('angularZ'):
+                raise StepError('MAPPING_CONTROL_SOURCE_GAMEPAD')
+            self.remote_control.accept(message,self.adapter.worker['robot_id'],transport_id,self.state)
+            self.gamepad.stop()
+            return
         if self.cfg.get('control_source','local') != 'mqtt':raise StepError('MAPPING_CONTROL_SOURCE_LOCAL')
         moving = bool(message.get('linearX') or message.get('angularZ'))
         if moving:
@@ -132,11 +186,15 @@ class MappingManager:
 
     async def tick(self, ready, idle):
         from geometry_msgs.msg import Twist
+        gamepad_velocity = self.gamepad_velocity(ready, idle) if self.cfg.get('control_source') == 'gamepad' else None
         if not self.active:
             return
         with self.lock:
             x, z, captured = self.manual
-        if self.cfg.get('control_source','local') == 'mqtt':
+        if gamepad_velocity is not None:
+            x,z = gamepad_velocity
+            fresh = True
+        elif self.cfg.get('control_source','local') == 'mqtt':
             x,z = self.remote_control.current()
             fresh = True
         else:

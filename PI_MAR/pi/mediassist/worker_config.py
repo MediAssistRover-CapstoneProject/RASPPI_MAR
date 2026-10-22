@@ -125,7 +125,9 @@ def load(path):
         value=mapping[key]
         if type(value) not in (int,float) or not low<=value<=high:raise StepError('INVALID_SLAM_SESSION_CONFIG',key)
     mapping.setdefault('control_source','local')
-    if mapping['control_source'] not in ('local','mqtt'):raise StepError('INVALID_MAPPING_CONTROL_SOURCE')
+    if mapping['control_source'] not in ('local','mqtt','gamepad'):raise StepError('INVALID_MAPPING_CONTROL_SOURCE')
+    from .gamepad import configuration as gamepad_configuration
+    gamepad_configuration(mapping)
     camera_config(mapping)
     mapping.setdefault("max_preview_rate_hz",0.2)
     mapping.setdefault("max_preview_bytes",131072)

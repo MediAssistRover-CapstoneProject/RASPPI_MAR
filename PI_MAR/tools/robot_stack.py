@@ -164,8 +164,8 @@ def validate_mode(mode, cfg, hardware, runtime_mode='mapping'):
             raise RuntimeError('MAPPING_DISABLED: configure_mapping.py --enable-mapping first')
         if cfg['mapping']['launch_argv']:
             raise RuntimeError('SLAM_DOUBLE_LAUNCH: supervisor owns SLAM; set mapping.launch_argv=[]')
-        if cfg['mapping']['control_source'] != 'mqtt':
-            raise RuntimeError('MAPPING_CONTROL_MUST_BE_MQTT')
+        if cfg['mapping']['control_source'] not in ('mqtt','gamepad'):
+            raise RuntimeError('MAPPING_CONTROL_MUST_BE_MQTT_OR_GAMEPAD')
 
 
 def check_journals(cfg):
@@ -247,7 +247,7 @@ class Supervisor:
     def close(self):
         # Worker first, hardware while gate/watchdog remain available, then sensors
         # and finally gate/watchdog. No automatic restart/replay of a failed job.
-        order = {'worker': 0, 'camera': 1, 'slam': 2, 'us100': 3, 'gate': 4, 'watchdog': 5}
+        order = {'worker': 0, 'gamepad': 1, 'camera': 2, 'slam': 3, 'us100': 4, 'gate': 5, 'watchdog': 6}
         for name, child, identity in sorted(self.children, key=lambda item: order[item[0]]):
             say('STOP ' + name)
             try:
@@ -398,6 +398,15 @@ def main():
             if supervisor.stopping:
                 return
             if args.action == 'run':
+                if args.mode == 'mapping' and cfg['mapping']['control_source'] == 'gamepad':
+                    readers = [p['pid'] for p in processes().values()
+                               if any(Path(word).name in ('joy_node', 'joystick_control', 'joystick_control.py',
+                                                          'joystick_control.launch.py') for word in p['argv'])]
+                    if readers:
+                        raise RuntimeError('STOP_EXISTING_JOY_READER: stop its terminal first; PIDs=' + ','.join(map(str,readers)))
+                    from mediassist.gamepad import driver_argv
+                    supervisor.start('gamepad', driver_argv(cfg['mapping']), required=False)
+                    say('GAMEPAD: left stick; active mapping session required; return stick to centre to arm; see gamepad/status')
                 camera = cfg['mapping']['camera']
                 if camera['enabled'] and camera['stream_enabled']:
                     supervisor.start('camera', [python, '-m', 'mediassist.camera_stream', '--config', str(config)], required=False)

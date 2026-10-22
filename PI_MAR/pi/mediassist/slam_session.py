@@ -18,11 +18,13 @@ def process_tools():
 
 
 def engine_parameters(source,mapping,ros):
+    from .scan_normalizer import configuration, TOPIC
+    scan_topic = TOPIC if configuration(mapping)['enabled'] else ros['scan']
     params=copy.deepcopy(source.get('/**',source.get('slam_toolbox',{})).get('ros__parameters',{}))
     if not params:raise ValueError('VENDOR_SLAM_PARAMETERS_MISSING')
     for key in ('map_file_name','map_start_pose','map_start_at_dock'):params.pop(key,None)
     params.update(use_sim_time=False,mode='mapping',map_frame=ros['map_frame'],odom_frame=ros.get('odom_frame','odom'),
-        base_frame=ros['base_frame'],scan_topic=ros['scan'],resolution=mapping['slam_resolution_m'],
+        base_frame=ros['base_frame'],scan_topic=scan_topic,resolution=mapping['slam_resolution_m'],
         minimum_travel_distance=mapping['slam_min_travel_m'],minimum_travel_heading=mapping['slam_min_heading_rad'],
         minimum_time_interval=mapping['slam_min_interval_sec'],map_update_interval=mapping['slam_map_interval_sec'])
     return {'slam_toolbox':{'ros__parameters':params}}
@@ -78,6 +80,8 @@ def main():
     params_path=folder/'slam-session.yaml'
     params_path.write_text(yaml.safe_dump(params),encoding='utf-8')
     engine=Engine(params_path,folder/'slam-engine.log')
+    from .scan_normalizer import ManagedNormalizer, configuration
+    normalizer = ManagedNormalizer(args.config,folder/'scan-normalizer.log',process_tools()) if configuration(mapping)['enabled'] else None
     import rclpy
     from rclpy.signals import SignalHandlerOptions
     from std_srvs.srv import Trigger
@@ -104,13 +108,19 @@ def main():
         return response
     node.create_service(Trigger,mapping['reset_service'],reset)
     try:
+        if normalizer: normalizer.start()
         engine.start()
         node.get_logger().info('SLAM_SESSION_READY reset_service='+mapping['reset_service'])
         while rclpy.ok() and not stopping[0]:
             rclpy.spin_once(node,timeout_sec=.1)
+            if normalizer: normalizer.check()
             if engine.process is None or engine.process.poll() is not None:raise RuntimeError('SLAM_ENGINE_EXITED')
     finally:
-        engine.stop();node.destroy_node()
+        try:
+            engine.stop()
+        finally:
+            if normalizer: normalizer.stop()
+        node.destroy_node()
         if rclpy.ok():rclpy.shutdown()
 
 

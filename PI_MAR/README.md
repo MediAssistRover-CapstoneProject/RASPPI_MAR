@@ -21,6 +21,12 @@ không gán map hay thiết lập vị trí ban đầu cho robot.
 
 Thử camera HP60C 20 FPS và đo độ trễ: xem [CAMERA_TUNING.md](CAMERA_TUNING.md).
 
+Điều khiển bằng cần trái SHANWAN trong phiên quét, chọn nguồn độc quyền và
+US100 tùy chọn: xem [GAMEPAD_MAPPING.md](GAMEPAD_MAPPING.md).
+
+MS200 đổi số tia/góc giữa các scan và cập nhật BE HTTPS khi đổi IP: xem
+[MS200_SCAN.md](MS200_SCAN.md).
+
 ## Cấu hình riêng của robot
 
 Repo không chứa cấu hình MQTT đang dùng, mật khẩu, device secret/token,
