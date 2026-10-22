@@ -3,6 +3,7 @@ import asyncio,copy,json,os,sys,time,unittest
 import threading
 import tempfile
 import urllib.error
+import io
 from pathlib import Path
 from datetime import datetime,timezone,timedelta
 from types import SimpleNamespace
@@ -26,6 +27,25 @@ def message():return {'messageType':'MAPPING_CONTROL','robotId':R,'transportSess
     'expiresAt':(NOW+timedelta(milliseconds=750)).isoformat(),'linearX':.05,'angularZ':0.,'durationMs':400}
 STATE={'session_id':S,'job_id':J,'state':'MAPPING','session_open':True}
 class MappingTests(unittest.IsolatedAsyncioTestCase):
+    def test_upload_refreshes_once_after_http_auth_rejection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder=Path(directory);(folder/'map.tar.gz').write_bytes(b'local-map-artifact')
+            manager=object.__new__(MappingManager);manager.state={'session_id':S}
+            manager.adapter=SimpleNamespace(worker={'robot_id':R})
+            manager.cfg={'upload_base_url':'https://be.example/api/v1/pi/mapping-sessions',
+                         'upload_token_file':str(folder/'token'),'device_secret_file':str(folder/'secret')}
+            sent=[]
+            def response(request,**kwargs):
+                sent.append(request.get_header('Authorization'))
+                if len(sent)==1:raise urllib.error.HTTPError('https://be.example',401,'expired',{},None)
+                return io.BytesIO(json.dumps({'artifactId':R,'assetHash':'a'*64,'stored':True}).encode())
+            opener=Mock();opener.open.side_effect=response
+            with patch('mediassist.mapping.urllib.request.build_opener',return_value=opener),patch('mediassist.be_token.upload_token',side_effect=['old-test-token','fresh-test-token']) as tokens:
+                self.assertTrue(manager.upload(folder,{'artifact_id':R,'asset_hash':'a'*64}))
+                self.assertTrue(tokens.call_args.kwargs['force'])
+            self.assertEqual(sent,['Bearer old-test-token','Bearer fresh-test-token'])
+            self.assertTrue((folder/'map.tar.gz').is_file())
+
     def test_map_upload_http_failure_preserves_artifact_and_reports_auth_code(self):
         with tempfile.TemporaryDirectory() as directory:
             folder=Path(directory);(folder/'token').write_text('test-only-device-token');(folder/'map.tar.gz').write_bytes(b'local-map-artifact')
@@ -129,7 +149,7 @@ class MappingTests(unittest.IsolatedAsyncioTestCase):
         lease=MappingControlLease();lease.accept(message(),R,T,STATE,now=NOW+timedelta(milliseconds=700),mono=1)
         self.assertEqual(lease.current(1.06),(0,0))
     def test_wrong_session_transport_expired_and_invalid_velocities(self):
-        cases=[{'mappingSessionId':R},{'transportSessionId':R},{'durationMs':5000},{'linearX':-.01},{'linearX':float('nan')},{'linearX':.11},{'angularZ':.31}]
+        cases=[{'mappingSessionId':R},{'transportSessionId':R},{'durationMs':5000},{'linearX':-.16},{'linearX':float('nan')},{'linearX':.16},{'angularZ':.51}]
         for changes in cases:
             with self.subTest(changes=changes),self.assertRaises(StepError):MappingControlLease().accept({**message(),**changes},R,T,STATE,now=NOW,mono=1)
         with self.assertRaises(StepError):MappingControlLease().accept(message(),R,T,STATE,now=NOW+timedelta(seconds=1),mono=1)
@@ -146,6 +166,13 @@ class MappingTests(unittest.IsolatedAsyncioTestCase):
         lease.accept({**second,'sequenceNo':3,'linearX':0},R,T,STATE,now=NOW+timedelta(milliseconds=800),mono=1.4)
         with self.assertRaises(StepError):lease.accept(second,R,T,STATE,now=NOW+timedelta(milliseconds=850),mono=1.45)
         self.assertEqual(lease.current(1.5),(0.,0.))
+
+    def test_m1_reverse_and_longer_lease_cover_jitter_but_still_expire(self):
+        lease=MappingControlLease()
+        m={**message(),'linearX':-.1,'angularZ':-.45,'durationMs':900,'expiresAt':(NOW+timedelta(milliseconds=1500)).isoformat()}
+        lease.accept(m,R,T,STATE,now=NOW+timedelta(milliseconds=500),mono=1.)
+        self.assertEqual(lease.current(1.85),(-.1,-.45))
+        self.assertEqual(lease.current(1.901),(0.,0.))
 
     def test_ramp_is_bounded_and_zero_or_expiry_stops_without_ramp(self):
         ramp=VelocityRamp();values=[ramp.update((.08,.2),i*.05) for i in range(15)]

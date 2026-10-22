@@ -50,6 +50,8 @@ class Probe:
         now = time.monotonic()
         age = self.hardware['motion']['sensor_max_age_sec']
         limits = {'left': age, 'right': age, 'scan': age, 'odom': age, 'gate': 1., 'map': self.mapping['max_map_age_sec']}
+        if not self.hardware["motion"].get("us100_required", True):
+            limits.pop("left"); limits.pop("right")
         missing = [key for key, limit in limits.items() if now - self.samples.get(key, -1e9) > limit]
         if self.mapping.get('static_map') and 'map' in self.samples:
             missing=[key for key in missing if key!='map']

@@ -267,7 +267,9 @@ class RosAdapter:
         def range_ok(key):
             v = data.get(key, {}).get("value")
             return fresh(key) and type(v) in (int, float) and 0.02 <= v <= 4.0
-        return {"sensors_ready": range_ok("left") and range_ok("right") and fresh("scan") and data["scan"]["value"] is True,
+        us100_ready = (not self.cfg["motion"].get("us100_required", True)
+                       or (range_ok("left") and range_ok("right")))
+        return {"sensors_ready": us100_ready and fresh("scan") and data["scan"]["value"] is True,
                 "left_m": data.get("left", {}).get("value"), "right_m": data.get("right", {}).get("value"),
                 "left_fresh": range_ok("left"), "right_fresh": range_ok("right"),
                 "left_age_sec": data.get("left", {}).get("age_sec"), "right_age_sec": data.get("right", {}).get("age_sec"),

@@ -118,6 +118,9 @@ class StepWorker:
             status,error="TIMED_OUT","STEP_TIMEOUT"
         except Exception as exc:
             error=getattr(exc,"code","STEP_EXECUTION_ERROR")
+            # urllib HTTPError.code is an integer, unlike StepError.code.
+            if not isinstance(error,str) or not error:
+                error="STEP_EXECUTION_ERROR"
             if error.startswith("AUDIO_") and isinstance(getattr(exc,"details",None),dict):
                 error_details=exc.details
             status="RECOVERY_REQUIRED" if error in ("BE_ACK_TIMEOUT","CONNECTION_LOST") else "FAILED"
@@ -333,9 +336,13 @@ class StepWorker:
         mapping=self.adapter.mapping
         if not mapping:
             await asyncio.Future()
+        next_tick=time.monotonic()
         while True:
             await mapping.tick(self.connection_ready and not self.session_fault,self.active is None)
-            await asyncio.sleep(.05)
+            next_tick+=.05
+            now=time.monotonic()
+            if next_tick<now-.05:next_tick=now+.05
+            await asyncio.sleep(max(0.,next_tick-now))
 
     async def mapping_media_loop(self, session):
         mapping=self.adapter.mapping

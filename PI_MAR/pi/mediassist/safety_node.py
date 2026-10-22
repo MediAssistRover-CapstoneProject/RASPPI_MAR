@@ -2,6 +2,7 @@
 import argparse
 import json
 import time
+import math
 import signal
 from .contracts import read_json
 from .safety import gate_velocity
@@ -97,7 +98,12 @@ def main():
         cleanup = zero_motors
     else:
         state = {"cmd": (0.0, 0.0, 0.0), "command_at": 0.0, "lease_at": 0.0, "scan_at": 0.0,
-                 "left": (None, 0.0), "right": (None, 0.0), "odom_at": 0.0, "max_speed": cfg["max_speed_mps"]}
+                 "left": (None, 0.0), "right": (None, 0.0), "odom_at": 0.0, "max_speed": cfg["max_speed_mps"],
+                 "rear_reason":"REAR_LIDAR_NOT_READY","rear_at":0.}
+        from .rear_scan import chassis_guard,rear_clearance
+        from tf2_ros import Buffer,TransformListener
+        from rclpy.time import Time
+        rear_tf=Buffer();rear_listener=TransformListener(rear_tf,node)
         pub = node.create_publisher(Twist, cfg["ros"]["safe_cmd_vel"], 10)
         status = node.create_publisher(String, "/mediassist/safety_state", 10)
         def command(msg):
@@ -117,8 +123,30 @@ def main():
         node.create_subscription(String, cfg["ros"]["lease"], lease, 10)
         for side in ("left", "right"):
             node.create_subscription(Range, cfg["ros"][side + "_range"], lambda m, s=side: sample(s, m), qos_profile_sensor_data)
-        node.create_subscription(LaserScan, cfg["ros"]["scan"], lambda m: state.__setitem__("scan_at", time.monotonic()) if m.ranges else None, qos_profile_sensor_data)
+        def scan_seen(msg):
+            if not msg.ranges:return
+            state['scan_at']=time.monotonic()
+            if not cfg['motion'].get('allow_reverse',False):return
+            try:
+                stamp=Time.from_msg(msg.header.stamp)
+                age=(node.get_clock().now().nanoseconds-stamp.nanoseconds)/1e9
+                if not 0<=age<=cfg['motion']['sensor_max_age_sec']:
+                    state['rear_reason']='STALE_REAR_LIDAR';return
+                state['rear_at']=time.monotonic()
+                if msg.header.frame_id==cfg['ros']['base_frame']:
+                    transform=(0.,0.,0.)
+                else:
+                    tf=rear_tf.lookup_transform(cfg['ros']['base_frame'],msg.header.frame_id,Time()).transform
+                    q=tf.rotation
+                    yaw=math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))
+                    transform=(tf.translation.x,tf.translation.y,yaw)
+                state['rear_reason']=rear_clearance(msg,transform,cfg['motion'].get('rear_stop_distance_m',.3))
+                state['rear_at']=time.monotonic()
+            except Exception:
+                state['rear_reason']='REAR_LIDAR_TF_NOT_READY'
+        node.create_subscription(LaserScan, cfg["ros"]["scan"], scan_seen, qos_profile_sensor_data)
         node.create_subscription(Odometry, cfg["ros"]["odom"], lambda m: state.__setitem__("odom_at", time.monotonic()), qos_profile_sensor_data)
+        last_report=[None,0.]
         def tick():
             if time.monotonic() < pause_until[0]:
                 return  # Bench fault injection only; independent watchdog must stop motors.
@@ -126,13 +154,19 @@ def main():
                                        state["command_at"], state["lease_at"], state["scan_at"], cfg["motion"], state["max_speed"])
             if time.monotonic() - state["odom_at"] > cfg["motion"]["sensor_max_age_sec"]:
                 cmd, reason = (0.0, 0.0, 0.0), "STALE_ODOM"
-            # Current cart profile disallows strafe/reverse until a separate model is commissioned.
-            if cmd[0] < 0 or abs(cmd[1]) > 0.001:
-                cmd, reason = (0.0, 0.0, 0.0), "CART_MOTION_NOT_SUPPORTED"
+            cmd,chassis_reason=chassis_guard(cmd,cfg['motion'],state['rear_reason'],time.monotonic()-state['rear_at'])
+            if chassis_reason:reason=chassis_reason
             msg = Twist()
             msg.linear.x, msg.linear.y, msg.angular.z = cmd
             pub.publish(msg)
-            status.publish(String(data=json.dumps({"reason": reason, "moving_command": any(cmd)})))
+            now=time.monotonic()
+            if reason!=last_report[0] and now-last_report[1]>=.5:
+                node.get_logger().info('GATE '+reason+' requested='+str(state['cmd'])+' applied='+str(cmd))
+                last_report[:]=[reason,now]
+            status.publish(String(data=json.dumps({"reason": reason, "moving_command": any(cmd),
+                "requested_velocity":state['cmd'],"applied_velocity":cmd,
+                "command_age_sec":round(time.monotonic()-state['command_at'],3),
+                "lease_age_sec":round(time.monotonic()-state['lease_at'],3),"rear_reason":state['rear_reason']})))
         node.create_timer(0.05, tick)
         cleanup = lambda: pub.publish(Twist())
     spin_and_stop(rclpy, node, cleanup)

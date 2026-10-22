@@ -12,6 +12,7 @@ import time
 import urllib.request
 import urllib.error
 import zlib
+from datetime import datetime,timezone
 from pathlib import Path
 from .contracts import StepError, canonical
 from .store import utcnow
@@ -35,6 +36,7 @@ class MappingManager:
         self.last_preview = 0
         self.last_graph_check = 0
         self.manual = (0., 0., 0.)
+        self.accept_after_ns=0
         from .mapping_control import MappingControlLease, VelocityRamp
         self.remote_control = MappingControlLease()
         self.ramp = VelocityRamp()
@@ -49,6 +51,8 @@ class MappingManager:
         adapter.node.create_subscription(OccupancyGrid, cfg['map_topic'], self.on_map, qos)
         adapter.node.create_subscription(String, '/mediassist/mapping/manual', self.on_manual, 1)
         self.velocity = adapter.node.create_publisher(Twist, adapter.cfg['ros']['raw_cmd_vel'], 1)
+        from std_srvs.srv import Trigger
+        self.reset_client=adapter.node.create_client(Trigger,cfg['reset_service'])
         if cfg.get('camera',{}).get('enabled'):
             from .camera_preview import CameraPreview
             self.camera = CameraPreview(adapter,cfg['camera'],lambda:self.state.get('state')=='MAPPING')
@@ -64,6 +68,9 @@ class MappingManager:
         os.replace(temporary, self.state_file)
 
     def on_map(self, msg):
+        stamp=msg.header.stamp
+        source_ns=int(stamp.sec)*1_000_000_000+int(stamp.nanosec)
+        if source_ns<getattr(self,'accept_after_ns',0):return
         info = msg.info
         if not (0 < info.width*info.height <= self.cfg['max_cells'] and
                 len(msg.data) == info.width*info.height and math.isfinite(info.resolution) and info.resolution > 0):
@@ -77,8 +84,9 @@ class MappingManager:
         yaw = math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))
         snapshot = {'width':info.width, 'height':info.height, 'resolution':info.resolution,
                     'origin':[p.x,p.y,yaw], 'frame_id':msg.header.frame_id,
-                    'captured_at':utcnow(), 'data':msg.data.tobytes()}
+                    'captured_at':datetime.fromtimestamp(source_ns/1e9,timezone.utc).isoformat() if source_ns else utcnow(), 'data':msg.data.tobytes()}
         with self.lock:
+            if source_ns<self.accept_after_ns:return
             self.grid = (snapshot,time.monotonic())
             self.revision += 1
 
@@ -95,7 +103,7 @@ class MappingManager:
                 return
             if type(x) not in (int,float) or type(z) not in (int,float) or not all(math.isfinite(v) for v in (x,z)):
                 return
-            if not 0 <= x <= .10 or abs(z) > .30:
+            if abs(x) > .15 or abs(z) > .50:
                 return
             with self.lock:
                 self.manual = (float(x),float(z),time.monotonic())
@@ -145,14 +153,15 @@ class MappingManager:
                 moving = False
         msg = Twist()
         if moving:
-            target = (min(x, .10, self.adapter.cfg['max_speed_mps']),
+            cap=min(.15,self.adapter.cfg['max_speed_mps'])
+            target = (max(-cap,min(x,cap)),
                       max(-self.adapter.cfg['motion']['max_angular_speed_rps'],
                           min(z, self.adapter.cfg['motion']['max_angular_speed_rps'])))
             msg.linear.x, msg.angular.z = self.ramp.update(target, time.monotonic())
         else:
             self.ramp.reset()
         self.velocity.publish(msg)
-        self.adapter.lease_message(bool(moving and (x or z)), min(.10,self.adapter.cfg['max_speed_mps']))
+        self.adapter.lease_message(bool(moving and (x or z)), min(.15,self.adapter.cfg['max_speed_mps']))
 
     async def preview(self):
         rate = min(self.state.get('preview_rate_hz',0.2), self.cfg.get('max_preview_rate_hz',0.2))
@@ -184,6 +193,25 @@ class MappingManager:
         if self.state.get('session_id') != step['params']['mapping_session_id'] or self.state.get('job_id') != step['jobId']:
             raise StepError('MAPPING_SESSION_MISMATCH')
 
+    async def new_slam_session(self):
+        from std_srvs.srv import Trigger
+        deadline=time.monotonic()+8.
+        while not self.reset_client.service_is_ready():
+            if time.monotonic()>deadline:raise StepError('SLAM_RESET_SERVICE_UNAVAILABLE','Update Pi launch and restart run; old SLAM graph was not reused')
+            await asyncio.sleep(.1)
+        for attempt in range(3):
+            response=await self.adapter.future(self.reset_client.call_async(Trigger.Request()),timeout=20)
+            if response.success:
+                generation=json.loads(response.message)['generation']
+                with self.lock:
+                    self.accept_after_ns=self.adapter.node.get_clock().now().nanoseconds
+                    self.grid=None;self.revision=0;self.last_sent=0;self.last_preview=0
+                self.adapter.node.get_logger().info('MAPPING_NEW_GRAPH '+str(generation))
+                return
+            if response.message!='SLAM_RESET_REQUIRES_STOPPED_GATE':break
+            await asyncio.sleep(.2)
+        raise StepError('SLAM_RESET_FAILED',response.message)
+
     async def perform(self, step):
         p = step['params']
         action = p['action']
@@ -194,11 +222,14 @@ class MappingManager:
             # Existing navigation must be stopped by the local operator first.
             if self.adapter.nav.server_is_ready():
                 raise StepError('STOP_NAVIGATION_BEFORE_MAPPING')
+            self.remote_control.stop()
+            if not await self.adapter.stop():raise StepError('PHYSICAL_STOP_UNCONFIRMED')
             self.state = {'session_id':p['mapping_session_id'], 'job_id':step['jobId'],
                           'state':'STARTING','session_open':True,'preview_rate_hz':min(p.get('preview_rate_hz',0.2),self.cfg.get('max_preview_rate_hz',0.2))}
             self.persist()
             with self.lock:
                 self.grid = None
+                self.manual=(0.,0.,0.)
             if self.cfg['launch_argv']:
                 log = (self.root/'slam.log').open('ab')
                 try:
@@ -206,6 +237,9 @@ class MappingManager:
                         stdout=log,stderr=log,start_new_session=True)
                 finally:
                     log.close()
+            if self.cfg.get('fresh_session',True):
+                await asyncio.sleep(.2)
+                await self.new_slam_session()
             deadline = time.monotonic()+self.cfg['start_timeout_sec']
             while True:
                 if self.process and self.process.returncode is not None:
@@ -282,9 +316,9 @@ class MappingManager:
     def upload(self, folder, metadata):
         import ssl
         url = self.cfg['upload_base_url'].rstrip('/')+'/'+self.state['session_id']+'/artifacts/'+metadata['artifact_id']
-        token = Path(self.cfg['upload_token_file']).read_text().strip()
-        if not token:
-            raise StepError('MAP_UPLOAD_TOKEN_REQUIRED')
+        from .be_token import upload_token
+        robot_id=getattr(self.adapter,'worker',{}).get('robot_id') if hasattr(self,'adapter') else None
+        token=upload_token(self.cfg,robot_id)
         body = (folder/'map.tar.gz').read_bytes()
         context = ssl.create_default_context(cafile=self.cfg.get('upload_ca_file') or None)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect(),
@@ -296,6 +330,18 @@ class MappingManager:
             with opener.open(request,timeout=15) as response:
                 receipt = json.loads(response.read(65536))
         except urllib.error.HTTPError as exc:
+            if exc.code in (401,403) and self.cfg.get('device_secret_file'):
+                token=upload_token(self.cfg,robot_id,force=True)
+                request.remove_header('Authorization');request.add_header('Authorization','Bearer '+token)
+                try:
+                    with opener.open(request,timeout=15) as response:
+                        receipt=json.loads(response.read(65536))
+                except urllib.error.HTTPError as retry:
+                    raise StepError('MAP_UPLOAD_UNAUTHORIZED' if retry.code in (401,403) else 'MAP_UPLOAD_HTTP_ERROR',
+                                    'Map upload HTTP '+str(retry.code)+'; local artifact preserved') from None
+                if (receipt.get('artifactId')!=metadata['artifact_id'] or receipt.get('assetHash')!=metadata['asset_hash'] or receipt.get('stored') is not True):
+                    raise StepError('MAP_UPLOAD_RECEIPT_MISMATCH')
+                return True
             code = 'MAP_UPLOAD_UNAUTHORIZED' if exc.code in (401,403) else 'MAP_UPLOAD_HTTP_ERROR'
             raise StepError(code, 'Map upload HTTP ' + str(exc.code) + '; local artifact preserved') from None
         if (receipt.get('artifactId') != metadata['artifact_id'] or receipt.get('assetHash') != metadata['asset_hash']

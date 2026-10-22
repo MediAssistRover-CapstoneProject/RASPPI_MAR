@@ -7,8 +7,8 @@ from pathlib import Path
 from jsonschema import Draft202012Validator, FormatChecker
 from .contracts import StepError, parse_timestamp
 
-MAX_LINEAR = .10
-MAX_ANGULAR = .30
+MAX_LINEAR = .15
+MAX_ANGULAR = .50
 MAX_PACKET_AGE = 1.501
 
 SCHEMA = json.loads((Path(__file__).resolve().parents[2]/'handoff/mapping-live.schema.json').read_text())

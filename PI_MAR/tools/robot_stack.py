@@ -364,7 +364,9 @@ def main():
             python = str(ROOT / 'pi/.venv/bin/python')
             supervisor.start('watchdog', [python, '-m', 'mediassist.safety_node', '--config', hw, '--motor-watchdog'])
             supervisor.start('gate', [python, '-m', 'mediassist.safety_node', '--config', hw] + (['--bench-pause'] if bench else []))
-            supervisor.start('us100', [python, str(ROOT / 'pi/scripts/us100_dual_ros2.py'), '--config', hw])
+            say("US100_POLICY: " + ("REQUIRED" if hardware["motion"].get("us100_required", True) else "OPTIONAL; echoes are diagnostic only"))
+            supervisor.start('us100', [python, str(ROOT / 'pi/scripts/us100_dual_ros2.py'), '--config', hw],
+                             required=hardware["motion"].get("us100_required", True))
             launch = ['ros2','launch',str(ROOT/'pi/launch/mediassist_demo_slam.launch.py'),'worker_config:='+str(config)]
             if args.mode=='navigation':
                 launch=['ros2','launch',str(ROOT/'pi/launch/mediassist_demo_navigation.launch.py'),

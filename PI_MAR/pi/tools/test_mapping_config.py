@@ -77,6 +77,20 @@ class MappingConfigTests(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text()),output)
             self.assertEqual(len(list(Path(directory).glob('mqtt.worker.*.bak'))),1)
 
+    def test_m1_profile_preserves_motion_flags_sensor_threshold_and_wiring(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path,cfg,hardware,source=self.scenario(directory)
+            options={'max_speed_mps':.15,'motion':{'chassis_model':'MENTORPI_M1_MECANUM','allow_reverse':True,
+                'max_reverse_speed_mps':.1,'rear_stop_distance_m':.3,'max_angular_speed_rps':.5}}
+            with patch.object(tool,'load',side_effect=self.load_candidate):
+                output=tool.write_configuration(path,cfg,hardware,motion_options=options)
+            updated=json.loads(Path(output['hardware_profile']).read_text())
+            self.assertEqual(updated['us100'],hardware['us100']);self.assertEqual(updated['servo'],hardware['servo'])
+            self.assertEqual(updated['motion']['stop_distance_m'],hardware['motion']['stop_distance_m'])
+            for key in ('commissioned','cart_footprint_validated','watchdog_validated'):
+                self.assertEqual(updated['motion'][key],hardware['motion'][key])
+            self.assertTrue(updated['motion']['allow_reverse']);self.assertEqual(updated['motion']['max_angular_speed_rps'],.5)
+
     def test_validation_failure_does_not_replace_config_or_leave_a_new_profile(self):
         with tempfile.TemporaryDirectory() as directory:
             path,cfg,hardware,_=self.scenario(directory)

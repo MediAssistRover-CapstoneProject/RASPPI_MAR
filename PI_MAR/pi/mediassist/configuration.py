@@ -22,8 +22,17 @@ def validate_config(cfg):
             if type(m[key]) is not bool: raise StepError("INVALID_CONFIG", "motion." + key)
         for key in ("sensor_max_age_sec", "lease_timeout_sec", "command_timeout_sec"):
             number(m[key], 0.05, 2, key)
+        if type(m.get("us100_required", True)) is not bool:
+            raise StepError("INVALID_CONFIG", "motion.us100_required")
         number(m["stop_distance_m"], 0.025, 2, "stop_distance_m")
         number(m["max_angular_speed_rps"], 0.01, 0.5, "max_angular_speed_rps")
+        if m.get('allow_reverse',False):
+            if m.get('chassis_model')!='MENTORPI_M1_MECANUM':
+                raise StepError('REVERSE_REQUIRES_M1_PROFILE')
+            number(m.get('max_reverse_speed_mps',.10),.01,.15,'max_reverse_speed_mps')
+            number(m.get('rear_stop_distance_m',.30),.15,1.,'rear_stop_distance_m')
+        if 'allow_reverse' in m and type(m['allow_reverse']) is not bool:
+            raise StepError('INVALID_CONFIG','allow_reverse')
         if s["model"] != "MG996R" or s["port"] != "S6" or s["ros_id"] != 4:
             raise StepError("INVALID_SERVO_PROFILE")
         if type(s["commissioned"]) is not bool or s["physical_feedback_available"] is not False:

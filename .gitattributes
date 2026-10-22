@@ -1,0 +1,4 @@
+# Preserve executable script line endings when checking out on Windows for Pi.
+*.py text eol=lf
+*.sh text eol=lf
+*.zsh text eol=lf

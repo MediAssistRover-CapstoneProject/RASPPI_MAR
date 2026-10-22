@@ -1,0 +1,15 @@
+# Local runtime and credentials; examples remain versioned.
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+mar-secrets/
+PI_MAR/pi/config/mqtt.worker.json
+PI_MAR/pi/config/site.motion.*.json
+PI_MAR/pi/config/site.us100-*.json
+PI_MAR/pi/config/*.bak
+PI_MAR/pi/config/*.new

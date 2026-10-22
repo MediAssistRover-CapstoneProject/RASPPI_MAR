@@ -40,11 +40,12 @@ def check_bench_inputs(adapter, safe_sample, clock=time.monotonic):
     health, snapshot = adapter.health(), adapter.telemetry()
     age = adapter.cfg['motion']['sensor_max_age_sec']
     missing = []
-    for side in ('left', 'right'):
-        if not health.get(side + '_fresh'):
-            missing.append(side + '_range')
-        elif health[side + '_m'] < adapter.cfg['motion']['stop_distance_m']:
-            missing.append(side + '_clearance')
+    if adapter.cfg["motion"].get("us100_required", True):
+        for side in ('left', 'right'):
+            if not health.get(side + '_fresh'):
+                missing.append(side + '_range')
+            elif health[side + '_m'] < adapter.cfg['motion']['stop_distance_m']:
+                missing.append(side + '_clearance')
     if not health.get('sensors_ready'):
         scan = snapshot.get('scan')
         if not scan or scan.get('value') is not True or scan['age_sec'] > age:
@@ -62,10 +63,10 @@ def check_bench_inputs(adapter, safe_sample, clock=time.monotonic):
         raise StepError('BENCH_INPUTS_NOT_READY', 'missing/stale/blocked: ' + ', '.join(missing))
 
 
-def check_test_sensors(health, stop_distance):
+def check_test_sensors(health, stop_distance, us100_required=True):
     if not health.get('sensors_ready'):
         raise StepError('BENCH_SENSORS_LOST', 'Sensor data became unavailable during the stop test; no PASS can be recorded')
-    if any(health[side + '_m'] < stop_distance for side in ('left','right')):
+    if us100_required and any(health[side + '_m'] < stop_distance for side in ('left','right')):
         raise StepError('BENCH_SIDE_OBSTACLE', 'Side clearance changed during the stop test; repeat after fixing the setup')
 
 
@@ -126,7 +127,8 @@ async def run(args):
         while time.monotonic() - start < 4:
             elapsed = time.monotonic() - start
             # A stop caused by sensor loss is not evidence that the injected fault worked.
-            check_test_sensors(adapter.health(), cfg['motion']['stop_distance_m'])
+            check_test_sensors(adapter.health(), cfg['motion']['stop_distance_m'],
+                               cfg['motion'].get('us100_required', True))
             if elapsed >= next_diagnostic:
                 show_diagnostics(adapter, elapsed, safe_sample)
                 next_diagnostic = elapsed + 0.25

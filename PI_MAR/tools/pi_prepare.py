@@ -3,11 +3,8 @@
 import argparse
 import getpass
 import json
-import os
 import sqlite3
-import ssl
 import sys
-import urllib.request
 from contextlib import closing
 from pathlib import Path
 
@@ -22,6 +19,8 @@ def main():
     p.add_argument('--ca-file', type=Path)
     p.add_argument('--robot-code', default='mar-v1')
     p.add_argument('--token-file', type=Path, default=Path('/home/ubuntu/mar-secrets/be-device-token.txt'))
+    p.add_argument('--remember-device-secret',action='store_true',help='Save secret in a private Pi file and enable automatic map-upload token refresh; stop stack first')
+    p.add_argument('--device-secret-file',type=Path,default=Path('/home/ubuntu/mar-secrets/be-device-secret.txt'))
     a = p.parse_args()
     sys.path.insert(0, str(a.config.resolve().parent.parent))
     cfg = json.loads(a.config.read_text(encoding='utf-8-sig'))
@@ -53,19 +52,22 @@ def main():
     if a.action == 'token':
         if not a.base_url or not a.base_url.startswith('https://'):
             p.error('--base-url must be the HTTPS URL reachable FROM PI')
-        context = ssl.create_default_context(cafile=str(a.ca_file) if a.ca_file else None)
-        body = json.dumps({'robotCode':a.robot_code, 'deviceSecret':getpass.getpass('BE device secret (not MQTT password): ')}).encode()
-        req = urllib.request.Request(a.base_url.rstrip('/')+'/api/v1/pi/auth/token', data=body,
-            headers={'Content-Type':'application/json'}, method='POST')
-        with urllib.request.urlopen(req, context=context, timeout=15) as response:
-            result = json.load(response)
-        if result['robotId'].lower() != cfg['robot_id'].lower():
-            raise SystemExit('Token robot ID does not match MQTT profile')
-        a.token_file.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(a.token_file, os.O_WRONLY|os.O_CREAT|os.O_TRUNC, 0o600)
-        with os.fdopen(fd, 'w') as f:
-            f.write(result['accessToken']+'\n')
-        a.token_file.chmod(0o600)
+        from contextlib import nullcontext
+        from mediassist.be_token import request_device_token,write_private
+        from configure_mapping import stopped_configuration,write_configuration
+        with stopped_configuration(a.config) if a.remember_device_secret else nullcontext():
+            secret=getpass.getpass('BE device secret (not MQTT password): ')
+            result=request_device_token(a.base_url,a.ca_file,a.robot_code,secret,cfg['robot_id'])
+            write_private(a.token_file,result['accessToken'])
+            if a.remember_device_secret:
+                write_private(a.device_secret_file,secret)
+                from mediassist.worker_config import load,mapping_upload_base
+                full,hardware=load(a.config)
+                full['mapping'].update(device_secret_file=str(a.device_secret_file.resolve()),robot_code=a.robot_code,
+                    upload_token_file=str(a.token_file.resolve()),upload_base_url=mapping_upload_base(a.base_url),
+                    upload_ca_file=str(a.ca_file.resolve()) if a.ca_file else None)
+                write_configuration(a.config,full,hardware)
+                print('Map upload automatic token refresh enabled; secret saved privately, not printed.')
         print('Token saved:', a.token_file, '; expires:', result['expiresAt'])
         print('No credential was printed. Obtain a fresh token before a later SAVE if expired.')
 

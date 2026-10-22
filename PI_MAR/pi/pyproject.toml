@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mediassist-pi"
-version = "0.12.5"
+version = "0.13.0"
 description = "MentorPi M1 workflow runtime, contracts and commissioned ROS adapters"
 requires-python = ">=3.10"
 dependencies = ["paho-mqtt==2.1.0", "jsonschema==4.23.0", "websockets==15.0.1", "PyYAML==6.0.2"]
