@@ -1,163 +1,330 @@
 {
-  "type": "object",
-  "properties": {
-    "protocolVersion": {
-      "const": "1.0"
-    },
-    "contract": {
-      "const": "MAR-STEP-2"
-    },
-    "messageType": {
-      "const": "COMMAND"
-    },
-    "commandId": {
-      "type": "string",
-      "format": "uuid"
-    },
-    "correlationId": {
-      "type": "string",
-      "format": "uuid"
-    },
-    "robotId": {
-      "type": "string",
-      "format": "uuid"
-    },
-    "commandType": {
-      "enum": [
-        "EXECUTE_STEP",
-        "CANCEL_STEP"
-      ]
-    },
-    "expiresAt": {
-      "type": "string",
-      "format": "date-time"
-    },
-    "step": {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mediassistrover.invalid/contracts/phase0/mqtt-command.schema.json",
+  "title": "MAR-STEP-2 BE to Pi command",
+  "$comment": "Reconstructed from BE handoff Markdown 11/10/2026; original Pi schemas/source NOT verified. Phase 0 reference artifacts only; not connected to runtime validators.",
+  "x-provenance": {
+    "status": "RECONSTRUCTED_UNVERIFIED_PI",
+    "sources": [
+      "../01_Giao_tiep_va_toan_bo_field.md",
+      "../02_Input_Output_11_Step_Type.md"
+    ],
+    "baselineDate": "2026-10-12"
+  },
+  "oneOf": [
+    {
       "type": "object",
       "properties": {
-        "jobId": {
-          "type": "string",
-          "format": "uuid"
+        "protocolVersion": {
+          "const": "1.0"
         },
-        "jobStepId": {
-          "type": "string",
-          "format": "uuid"
+        "contract": {
+          "const": "MAR-STEP-2"
         },
-        "stepId": {
-          "type": "string",
-          "format": "uuid"
+        "messageType": {
+          "const": "COMMAND"
         },
-        "stepCode": {
+        "commandId": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 2000
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
         },
-        "stepType": {
-          "enum": [
-            "MOVE",
-            "INTERACT",
-            "DATA_SERVICE",
-            "AUTHENTICATE",
-            "CONTROL_HARDWARE",
-            "HANDLE_PAYLOAD",
-            "EXECUTE_SENSING",
-            "NOTIFY",
-            "WAIT",
-            "CHECK_CONDITION",
-            "SET_CONTEXT"
+        "correlationId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "commandType": {
+          "const": "EXECUTE_STEP"
+        },
+        "step": {
+          "type": "object",
+          "properties": {
+            "jobId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "jobStepId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "stepId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "stepCode": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            "stepType": {
+              "enum": [
+                "MOVE",
+                "CONTROL_HARDWARE",
+                "EXECUTE_SENSING",
+                "WAIT",
+                "INTERACT"
+              ]
+            },
+            "visitNo": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "operationKey": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 150
+            },
+            "timeoutSec": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 3605
+            },
+            "params": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "jobId",
+            "jobStepId",
+            "stepId",
+            "stepCode",
+            "stepType",
+            "visitNo",
+            "operationKey",
+            "timeoutSec",
+            "params"
+          ],
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "stepType": {
+                    "const": "MOVE"
+                  }
+                },
+                "required": [
+                  "stepType"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "$ref": "pi-step-inputs.schema.json#/$defs/MOVE"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "stepType": {
+                    "const": "CONTROL_HARDWARE"
+                  }
+                },
+                "required": [
+                  "stepType"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "$ref": "pi-step-inputs.schema.json#/$defs/CONTROL_HARDWARE"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "stepType": {
+                    "const": "EXECUTE_SENSING"
+                  }
+                },
+                "required": [
+                  "stepType"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "$ref": "pi-step-inputs.schema.json#/$defs/EXECUTE_SENSING"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "stepType": {
+                    "const": "WAIT"
+                  }
+                },
+                "required": [
+                  "stepType"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "$ref": "pi-step-inputs.schema.json#/$defs/WAIT"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "stepType": {
+                    "const": "INTERACT"
+                  }
+                },
+                "required": [
+                  "stepType"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "params": {
+                    "$ref": "pi-step-inputs.schema.json#/$defs/INTERACT"
+                  }
+                }
+              }
+            }
           ]
         },
-        "visitNo": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "operationKey": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 150
-        },
-        "timeoutSec": {
-          "type": "number",
-          "minimum": 1,
-          "maximum": 3605
-        },
-        "params": {
-          "type": "object"
+        "navigationContext": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "map_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "map_asset_hash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "initialization_revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "profile_hash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "session_id",
+            "map_id",
+            "map_asset_hash",
+            "initialization_revision",
+            "profile_hash"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
-        "jobId",
-        "jobStepId",
-        "stepId",
-        "stepCode",
-        "stepType",
-        "visitNo",
-        "operationKey",
-        "timeoutSec",
-        "params"
+        "protocolVersion",
+        "contract",
+        "messageType",
+        "commandId",
+        "correlationId",
+        "robotId",
+        "transportSessionId",
+        "expiresAt",
+        "commandType",
+        "step"
       ],
       "additionalProperties": false
     },
-    "jobId": {
-      "type": "string",
-      "format": "uuid"
-    },
-    "jobStepId": {
-      "type": "string",
-      "format": "uuid"
-    }
-  },
-  "required": [
-    "protocolVersion",
-    "contract",
-    "messageType",
-    "commandId",
-    "correlationId",
-    "robotId",
-    "commandType",
-    "expiresAt"
-  ],
-  "additionalProperties": false,
-  "oneOf": [
     {
+      "type": "object",
       "properties": {
-        "commandType": {
-          "const": "EXECUTE_STEP"
-        }
-      },
-      "required": [
-        "step"
-      ],
-      "not": {
-        "anyOf": [
-          {
-            "required": [
-              "jobId"
-            ]
-          },
-          {
-            "required": [
-              "jobStepId"
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "properties": {
+        "protocolVersion": {
+          "const": "1.0"
+        },
+        "contract": {
+          "const": "MAR-STEP-2"
+        },
+        "messageType": {
+          "const": "COMMAND"
+        },
+        "commandId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "correlationId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
         "commandType": {
           "const": "CANCEL_STEP"
+        },
+        "jobId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "jobStepId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
         }
       },
       "required": [
+        "protocolVersion",
+        "contract",
+        "messageType",
+        "commandId",
+        "correlationId",
+        "robotId",
+        "transportSessionId",
+        "expiresAt",
+        "commandType",
         "jobId",
         "jobStepId"
       ],
-      "not": {
-        "required": [
-          "step"
-        ]
-      }
+      "additionalProperties": false
     }
   ]
 }

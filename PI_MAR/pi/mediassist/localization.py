@@ -10,7 +10,7 @@ DEFAULTS = dict(enabled=False, mode='global', max_sensor_age_sec=.6, max_pose_ag
 
 def configuration(raw):
     cfg={**DEFAULTS, **raw}
-    if type(cfg['enabled']) is not bool or cfg['mode'] not in ('global','seed'):
+    if type(cfg['enabled']) is not bool or cfg['mode'] not in ('global','seed','manual'):
         raise StepError('INVALID_LOCALIZATION_CONFIG')
     bounds={'max_sensor_age_sec':(.1,2), 'max_pose_age_sec':(.2,1), 'max_xy_std_m':(.02,.5),
             'max_yaw_std_rad':(.03,.6), 'min_scan_match':(.3,1), 'min_known_fraction':(.1,1),
@@ -88,8 +88,13 @@ class GridMatcher:
     def __init__(self,width,height,resolution,origin,cells,distance=.12):
         if width<1 or height<1 or width*height>4_000_000 or len(cells)!=width*height or resolution<=0:raise ValueError('grid')
         self.w,self.h,self.r,self.origin,self.cells=width,height,resolution,origin,cells
-        radius=min(24,math.ceil(distance/resolution))
-        self.offsets=[(x,y) for x in range(-radius,radius+1) for y in range(-radius,radius+1) if math.hypot(x,y)*resolution<=distance]
+        # Build once per loaded map. Each scan endpoint is then an O(1) lookup,
+        # rather than a Python search through hundreds of neighbouring cells.
+        from .frontier_mapping import squared_distances
+        if any(v>=65 for v in cells):
+            distances=squared_distances(bytearray(v>=65 for v in cells),width,height,boundary=False)
+            self.near_occupied=bytes(d*resolution*resolution<=distance*distance+1e-12 for d in distances)
+        else:self.near_occupied=bytes(width*height)
     def index(self,x,y):
         ox,oy,yaw=self.origin;c,s=math.cos(yaw),math.sin(yaw);dx,dy=x-ox,y-oy
         return math.floor((c*dx+s*dy)/self.r),math.floor((-s*dx+c*dy)/self.r)
@@ -99,8 +104,16 @@ class GridMatcher:
             u,v=self.index(x,y)
             if not 0<=u<self.w or not 0<=v<self.h:continue
             if self.cells[v*self.w+u]>=0:known+=1
-            if any(0<=u+dx<self.w and 0<=v+dy<self.h and self.cells[(v+dy)*self.w+u+dx]>=65 for dx,dy in self.offsets):matched+=1
+            if self.near_occupied[v*self.w+u]:matched+=1
         return dict(scan_match=matched/total if total else 0.,known_fraction=known/total if total else 0.,valid_beams=total)
+
+
+def bootstrap_verdict(status,initialized,ever_ready,elapsed,timeout,error):
+    """Timeout requests operator help; later fresh, converged evidence can still pass."""
+    if not initialized:return {**status,'ready':False,'reason':error}
+    if not status['ready'] and not ever_ready and elapsed>timeout:
+        return {**status,'ready':False,'reason':'BOOTSTRAP_TIMEOUT_NEEDS_INITIAL_POSE'}
+    return status
 
 def particle_support(particles,pose):
     """Weighted support near the reported hypothesis; multiple global hypotheses are not ready."""

@@ -1,0 +1,303 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "vehicle": {
+      "enum": [
+        "rigid",
+        "articulated"
+      ]
+    },
+    "available": {
+      "type": "boolean"
+    },
+    "control_selected": {
+      "type": "boolean"
+    },
+    "profile_max_duration_sec": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 600
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "uuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "state": {
+      "enum": [
+        "IDLE",
+        "RUNNING",
+        "STOPPED"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 100
+    },
+    "finished": {
+      "type": "boolean"
+    },
+    "coverage_complete": {
+      "type": "boolean"
+    },
+    "elapsed_sec": {
+      "type": "number",
+      "minimum": 0
+    },
+    "travel_m": {
+      "type": "number",
+      "minimum": 0
+    },
+    "max_duration_sec": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 600
+    },
+    "stop_on_return": {
+      "type": "boolean"
+    },
+    "start_pose": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "x_m": {
+              "type": "number"
+            },
+            "y_m": {
+              "type": "number"
+            },
+            "yaw_rad": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "x_m",
+            "y_m",
+            "yaw_rad"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "exploration_mode": {
+      "enum": [
+        "reactive",
+        "frontier"
+      ]
+    },
+    "manual_lidar_assist": {
+      "type": "boolean"
+    },
+    "manual_assist_reason": {
+      "type": "string",
+      "maxLength": 100
+    },
+    "exploration": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "PLANNING",
+            "BLOCKED",
+            "NO_FRONTIERS",
+            "FRONTIERS_PRESENT",
+            "COMPLETE"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "frontier_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "frontier_cells": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ignored_frontier_cells": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reachable_free_area_m2": {
+          "type": "number",
+          "minimum": 0
+        },
+        "goal": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "x_m": {
+                  "type": "number"
+                },
+                "y_m": {
+                  "type": "number"
+                },
+                "yaw_rad": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "x_m",
+                "y_m",
+                "yaw_rad"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "planning_backend": {
+          "enum": [
+            "nav2",
+            "reactive"
+          ]
+        },
+        "seed_body_clear": {
+          "type": "boolean"
+        },
+        "seed_block_kind": {
+          "enum": [
+            "clear",
+            "occupied",
+            "unknown",
+            "boundary"
+          ]
+        },
+        "planner_cell_m": {
+          "type": "number",
+          "minimum": 0
+        },
+        "clearance_radius_m": {
+          "type": "number",
+          "minimum": 0
+        },
+        "body_radius_m": {
+          "type": "number",
+          "minimum": 0
+        },
+        "seed_obstacle_clearance_m": {
+          "type": "number",
+          "minimum": 0
+        },
+        "seed_unknown_clearance_m": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "manual_control": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "enum": [
+            "local",
+            "mqtt",
+            "gamepad"
+          ]
+        },
+        "layout": {
+          "enum": [
+            "legacy",
+            "vendor_mecanum"
+          ]
+        },
+        "session_required": {
+          "type": "boolean"
+        },
+        "forward_mps": {
+          "type": "number",
+          "minimum": 0.02,
+          "maximum": 0.3
+        },
+        "angular_rps": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 1.0
+        },
+        "continuous": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "save_on_complete": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "coverage_complete"
+        ],
+        "properties": {
+          "coverage_complete": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "state",
+          "finished",
+          "reason",
+          "exploration_mode",
+          "exploration"
+        ],
+        "properties": {
+          "state": {
+            "const": "STOPPED"
+          },
+          "finished": {
+            "const": true
+          },
+          "reason": {
+            "const": "COVERAGE_COMPLETE"
+          },
+          "exploration_mode": {
+            "const": "frontier"
+          },
+          "exploration": {
+            "required": [
+              "enabled",
+              "state",
+              "frontier_count"
+            ],
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "state": {
+                "const": "COMPLETE"
+              },
+              "frontier_count": {
+                "const": 0
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

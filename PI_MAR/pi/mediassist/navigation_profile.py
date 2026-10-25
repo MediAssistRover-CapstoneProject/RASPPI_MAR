@@ -20,6 +20,8 @@ def validate_profile(message, robot_id, hardware, allow_empty=False):
         raise StepError('INVALID_NAV_PROFILE')
     if profile.get('map_id') != hardware.get('map_id'):
         raise StepError('NAV_PROFILE_MAP_MISMATCH')
+    if profile.get('navigation_session_id')!=hardware.get('navigation_session_id'):
+        raise StepError('NAV_PROFILE_SESSION_MISMATCH')
     UUID(profile['map_id'])
     if (not re.fullmatch(r'[0-9a-f]{64}',str(profile.get('map_asset_sha256',''))) or
             profile['map_asset_sha256'] != hardware.get('map_asset_sha256')):
@@ -41,7 +43,7 @@ def validate_profile(message, robot_id, hardware, allow_empty=False):
 
 
 async def apply_profile(message, cfg, hardware, adapter):
-    profile=validate_profile(message,cfg['robot_id'],hardware)
+    profile=validate_profile(message,cfg['robot_id'],hardware,allow_empty=bool(cfg.get('navigation_session')))
     # Compare the actual map_server YAML + image fingerprint, not only config text.
     await adapter._check_map(profile['map_id'])
     destination=Path(cfg['state_path']).with_suffix('.navigation.json')
@@ -59,4 +61,5 @@ async def apply_profile(message, cfg, hardware, adapter):
     # BE resolves endpoint groups. The hardware calibration file is never rewritten.
     hardware['endpoints']=profile['endpoints']
     adapter.cfg['endpoints']=profile['endpoints']
+    adapter.navigation_profile_hash=message['profileHash']
     return snapshot

@@ -1,0 +1,732 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mediassistrover.invalid/contracts/phase0/pi-step-outputs.schema.json",
+  "title": "Pi successful results grouped by StepType",
+  "$comment": "Bundled schema-3 validation contract reconstructed from BE handoff Markdown. Pi implementation remains unverified; semantic and Job-scope checks are implemented in Java.",
+  "x-provenance": {
+    "status": "RECONSTRUCTED_UNVERIFIED_PI",
+    "sources": [
+      "../01_Giao_tiep_va_toan_bo_field.md",
+      "../02_Input_Output_11_Step_Type.md"
+    ],
+    "baselineDate": "2026-10-12"
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "stepType": {
+          "const": "MOVE"
+        },
+        "result": {
+          "$ref": "pi-step-outputs.schema.json#/$defs/MOVE"
+        }
+      },
+      "required": [
+        "stepType",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "stepType": {
+          "const": "CONTROL_HARDWARE"
+        },
+        "result": {
+          "$ref": "pi-step-outputs.schema.json#/$defs/CONTROL_HARDWARE"
+        }
+      },
+      "required": [
+        "stepType",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "stepType": {
+          "const": "WAIT"
+        },
+        "result": {
+          "$ref": "pi-step-outputs.schema.json#/$defs/WAIT"
+        }
+      },
+      "required": [
+        "stepType",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "stepType": {
+          "const": "EXECUTE_SENSING"
+        },
+        "result": {
+          "$ref": "pi-step-outputs.schema.json#/$defs/EXECUTE_SENSING"
+        }
+      },
+      "required": [
+        "stepType",
+        "result"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "$defs": {
+    "MOVE": {
+      "type": "object",
+      "properties": {
+        "reached": {
+          "const": true
+        },
+        "endpoint_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "action_status": {
+          "const": 4
+        },
+        "last_feedback_pose": {
+          "anyOf": [
+            {
+              "$ref": "common.schema.json#/$defs/pose"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "distance_remaining_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endpoint_group_id": {
+          "type": "null"
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "endpoint_id": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              "phase": {
+                "type": "string",
+                "minLength": 1
+              },
+              "outcome": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "endpoint_id",
+              "phase",
+              "outcome"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "verified_pose": {
+          "type": "object",
+          "properties": {
+            "x_m": {
+              "type": "number"
+            },
+            "y_m": {
+              "type": "number"
+            },
+            "yaw_rad": {
+              "type": "number"
+            },
+            "map_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "navigation_session_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "initialization_revision": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "x_m",
+            "y_m",
+            "yaw_rad",
+            "map_id"
+          ],
+          "additionalProperties": false
+        },
+        "position_error_m": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.08
+        },
+        "yaw_error_rad": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.15
+        }
+      },
+      "required": [
+        "reached",
+        "endpoint_id",
+        "action_status",
+        "last_feedback_pose",
+        "distance_remaining_m",
+        "endpoint_group_id",
+        "attempts"
+      ],
+      "additionalProperties": false
+    },
+    "CONTROL_HARDWARE": {
+      "type": "object",
+      "properties": {
+        "compartment_id": {
+          "const": "CART_MAIN"
+        },
+        "action": {
+          "enum": [
+            "LOCK_COMPARTMENT",
+            "UNLOCK_COMPARTMENT"
+          ]
+        },
+        "published": {
+          "const": true
+        },
+        "controller_ack": {
+          "const": false
+        },
+        "verified": {
+          "const": false
+        },
+        "commanded_state": {
+          "enum": [
+            "LOCK",
+            "UNLOCK"
+          ]
+        },
+        "position_raw": {
+          "enum": [
+            1500,
+            2400
+          ]
+        },
+        "ros_servo_id": {
+          "const": 4
+        },
+        "authorization_mode": {
+          "enum": [
+            "DEVICE_COMMAND",
+            "COMMISSIONING_ONLY"
+          ]
+        }
+      },
+      "required": [
+        "compartment_id",
+        "action",
+        "published",
+        "controller_ack",
+        "verified",
+        "commanded_state",
+        "position_raw",
+        "ros_servo_id",
+        "authorization_mode"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "LOCK_COMPARTMENT"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "then": {
+            "properties": {
+              "commanded_state": {
+                "const": "LOCK"
+              },
+              "position_raw": {
+                "const": 1500
+              },
+              "authorization_mode": {
+                "const": "DEVICE_COMMAND"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "commanded_state": {
+                "const": "UNLOCK"
+              },
+              "position_raw": {
+                "const": 2400
+              },
+              "authorization_mode": {
+                "const": "COMMISSIONING_ONLY"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "WAIT": {
+      "type": "object",
+      "properties": {
+        "completed": {
+          "const": true
+        },
+        "wake_reason": {
+          "const": "DURATION"
+        },
+        "elapsed_sec": {
+          "type": "number",
+          "minimum": 0
+        },
+        "event": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "completed",
+        "wake_reason",
+        "elapsed_sec",
+        "event"
+      ],
+      "additionalProperties": false
+    },
+    "EXECUTE_SENSING": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "sensing_type": {
+              "enum": [
+                "ROBOT_HEALTH",
+                "SIDE_CLEARANCE"
+              ]
+            },
+            "metrics": {
+              "type": "object",
+              "properties": {
+                "sensors_ready": {
+                  "type": "boolean"
+                },
+                "left_m": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "right_m": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "left_fresh": {
+                  "type": "boolean"
+                },
+                "right_fresh": {
+                  "type": "boolean"
+                },
+                "left_age_sec": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "right_age_sec": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "battery_age_sec": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "battery_raw": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "battery_percent": {
+                  "type": "null"
+                },
+                "battery_unit": {
+                  "const": "UNVERIFIED_UINT16"
+                }
+              },
+              "required": [
+                "sensors_ready",
+                "left_m",
+                "right_m",
+                "left_fresh",
+                "right_fresh",
+                "left_age_sec",
+                "right_age_sec",
+                "battery_age_sec",
+                "battery_raw",
+                "battery_percent",
+                "battery_unit"
+              ],
+              "additionalProperties": false
+            },
+            "captured_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "evidence_ref": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "sensing_type",
+            "metrics",
+            "captured_at",
+            "evidence_ref"
+          ],
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "sensing_type": {
+                    "const": "SIDE_CLEARANCE"
+                  }
+                },
+                "required": [
+                  "sensing_type"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "metrics": {
+                    "properties": {
+                      "left_fresh": {
+                        "const": true
+                      },
+                      "right_fresh": {
+                        "const": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sensing_type": {
+              "const": "CROWD_DENSITY"
+            },
+            "map_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "zone_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "model_version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "captured_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "metrics": {
+              "type": "object",
+              "properties": {
+                "count": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "count"
+              ],
+              "additionalProperties": true
+            },
+            "evidence_ref": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "sensing_type",
+            "map_id",
+            "zone_id",
+            "model_version",
+            "captured_at",
+            "metrics"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sensing_type": {
+              "const": "RESTRICTED_ZONE"
+            },
+            "map_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "zone_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "model_version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "captured_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "metrics": {
+              "type": "object",
+              "properties": {
+                "intrusion_detected": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "intrusion_detected"
+              ],
+              "additionalProperties": true
+            },
+            "evidence_ref": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "sensing_type",
+            "map_id",
+            "zone_id",
+            "model_version",
+            "captured_at",
+            "metrics"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sensing_type": {
+              "const": "MAPPING"
+            },
+            "mapping_session_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "metrics": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "const": "MAPPING"
+                    },
+                    "preview_ready": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "preview_ready"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "SAVED_LOCAL",
+                        "SAVED"
+                      ]
+                    },
+                    "saved_locally": {
+                      "const": true
+                    },
+                    "uploaded": {
+                      "type": "boolean"
+                    },
+                    "artifact_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                    },
+                    "asset_hash": {
+                      "$ref": "common.schema.json#/$defs/hash"
+                    },
+                    "width_px": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "height_px": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "resolution_m_per_pixel": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "width_m": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "height_m": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "origin_x_m": {
+                      "type": "number"
+                    },
+                    "origin_y_m": {
+                      "type": "number"
+                    },
+                    "origin_yaw_rad": {
+                      "type": "number"
+                    },
+                    "frame_id": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "saved_locally",
+                    "uploaded",
+                    "artifact_id",
+                    "asset_hash",
+                    "width_px",
+                    "height_px",
+                    "resolution_m_per_pixel",
+                    "width_m",
+                    "height_m",
+                    "origin_x_m",
+                    "origin_y_m",
+                    "origin_yaw_rad",
+                    "frame_id"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "stopped": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "stopped"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "captured_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "evidence_ref": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "sensing_type",
+            "mapping_session_id",
+            "metrics",
+            "captured_at",
+            "evidence_ref"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

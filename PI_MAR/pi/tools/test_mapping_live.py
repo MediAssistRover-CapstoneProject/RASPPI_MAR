@@ -149,7 +149,7 @@ class MappingTests(unittest.IsolatedAsyncioTestCase):
         lease=MappingControlLease();lease.accept(message(),R,T,STATE,now=NOW+timedelta(milliseconds=700),mono=1)
         self.assertEqual(lease.current(1.06),(0,0))
     def test_wrong_session_transport_expired_and_invalid_velocities(self):
-        cases=[{'mappingSessionId':R},{'transportSessionId':R},{'durationMs':5000},{'linearX':-.16},{'linearX':float('nan')},{'linearX':.16},{'angularZ':.51}]
+        cases=[{'mappingSessionId':R},{'transportSessionId':R},{'durationMs':5000},{'linearX':-.31},{'linearX':float('nan')},{'linearX':.31},{'angularZ':1.01}]
         for changes in cases:
             with self.subTest(changes=changes),self.assertRaises(StepError):MappingControlLease().accept({**message(),**changes},R,T,STATE,now=NOW,mono=1)
         with self.assertRaises(StepError):MappingControlLease().accept(message(),R,T,STATE,now=NOW+timedelta(seconds=1),mono=1)
@@ -217,7 +217,7 @@ class MappingTests(unittest.IsolatedAsyncioTestCase):
             media_started.set()
             await release_media.wait()
         mapping=SimpleNamespace(tick=tick,preview=preview,camera=None)
-        worker=StepWorker({}, {},None,SimpleNamespace(mapping=mapping));worker.connection_ready=True
+        worker=StepWorker({}, {},SimpleNamespace(blocked=lambda:False),SimpleNamespace(mapping=mapping));worker.connection_ready=True
         a=asyncio.create_task(worker.mapping_loop(None));b=asyncio.create_task(worker.mapping_media_loop(None))
         try:
             await asyncio.wait_for(media_started.wait(),2)

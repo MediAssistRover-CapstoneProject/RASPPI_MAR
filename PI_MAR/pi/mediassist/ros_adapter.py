@@ -21,6 +21,7 @@ class RosAdapter:
         from nav2_msgs.action import NavigateToPose, ComputePathToPose
         from nav_msgs.msg import Odometry
         from sensor_msgs.msg import Range, LaserScan
+        from geometry_msgs.msg import Twist
         from std_msgs.msg import UInt16, String
         from ros_robot_controller_msgs.msg import SetPWMServoState
         from rcl_interfaces.srv import GetParameters
@@ -41,6 +42,11 @@ class RosAdapter:
         self.lease = self.node.create_publisher(String, config["ros"]["lease"], 10)
         self.lock = threading.Lock()
         self.samples, self.goal, self.lease_speed, self.goal_feedback = {}, None, None, None
+        self.nav_velocity_sample=None
+        self.navigation_velocity_output=self.node.create_publisher(Twist,config['ros']['raw_cmd_vel'],1)
+        def nav_velocity(msg):
+            with self.lock:self.nav_velocity_sample=((float(msg.linear.x),float(msg.linear.y),float(msg.angular.z)),time.monotonic())
+        self.node.create_subscription(Twist,'/mediassist/nav2_cmd_vel',nav_velocity,1)
         for side in ("left", "right"):
             self.node.create_subscription(Range, config["ros"][side + "_range"], lambda m, s=side: self._sample(s, float(m.range)), qos_profile_sensor_data)
         self.node.create_subscription(UInt16, config["ros"]["battery"], lambda m: self._sample("battery", int(m.data)), qos_profile_sensor_data)
@@ -65,6 +71,27 @@ class RosAdapter:
 
     def _sample(self, key, value):
         with self.lock: self.samples[key] = (value, time.monotonic())
+
+    def clear_navigation_velocity(self):
+        with self.lock:self.nav_velocity_sample=None
+
+    def navigation_velocity(self):
+        with self.lock:sample=self.nav_velocity_sample
+        if not sample or time.monotonic()-sample[1]>.25 or not all(math.isfinite(x) for x in sample[0]):return (0.,0.,0.),False
+        return sample[0],True
+
+    def publish_navigation_velocity(self,speed):
+        from geometry_msgs.msg import Twist
+        (x,y,z),fresh=self.navigation_velocity();msg=Twist()
+        if fresh:
+            # The norm, not each component, is capped for diagonal Mecanum travel.
+            x=max(0.,x)
+            if self.cfg['motion'].get('allow_strafe') is not True:y=0.
+            scale=min(1.,min(speed,self.cfg['max_speed_mps'])/max(math.hypot(x,y),1e-9))
+            msg.linear.x=x*scale;msg.linear.y=y*scale
+            limit=self.cfg['motion']['max_angular_speed_rps'];msg.angular.z=max(-limit,min(z,limit))
+        self.navigation_velocity_output.publish(msg)
+        return fresh
 
     def _localization_status(self,msg):
         try:
@@ -95,6 +122,18 @@ class RosAdapter:
             data['map_pose']=guarded_pose(localization['value'] if localization else {},
                 localization['age_sec'] if localization else math.inf,self.node.get_clock().now().nanoseconds/1e9,
                 self.cfg['map_id'],self.cfg['map_asset_sha256'],self.cfg['ros']['map_frame'])
+            context=getattr(self,'worker',{}).get('navigation_session')
+            if context:
+                from .navigation_session import expired
+                status=localization['value'] if localization else {}
+                valid=(not expired(context) and status.get('session_id')==context['session_id'])
+                data['localization']={'ready':bool(valid and status.get('ready') is True),
+                    'reason':str(status.get('reason','LOCALIZATION_STATUS_MISSING'))[:100] if valid else 'NAVIGATION_SESSION_EXPIRED_OR_CHANGED',
+                    'session_id':context['session_id'],'map_id':self.cfg['map_id'],'map_asset_hash':self.cfg['map_asset_sha256'],
+                    'initialization_revision':status.get('initialization_revision',0),'age_sec':localization['age_sec'] if localization else 999.}
+                if valid and data['map_pose']['fresh']:
+                    data['map_pose']['value'].update(navigation_session_id=context['session_id'],initialization_revision=status.get('initialization_revision',0))
+                else:data['map_pose']={'value':None,'fresh':False,'age_sec':None}
         return data
 
     def check_capabilities(self, wf):
@@ -125,6 +164,9 @@ class RosAdapter:
 
     async def stop(self):
         self.lease_speed = None
+        if hasattr(self,'navigation_velocity_output'):
+            from geometry_msgs.msg import Twist
+            self.navigation_velocity_output.publish(Twist());self.clear_navigation_velocity()
         if not self.lease_message(False):
             self.motion_uncertain = True
             return False
@@ -179,6 +221,12 @@ class RosAdapter:
         if not self.health()["sensors_ready"]: raise StepError("SENSORS_NOT_READY")
         if not self.telemetry()["map_pose"]["fresh"]:
             raise StepError("LOCALIZATION_NOT_READY" if getattr(self,'localization_required',False) else "MAP_TF_NOT_READY")
+        self._navigation_context()
+
+    def _navigation_context(self):
+        if getattr(self,'worker',{}).get('navigation_session'):
+            from .navigation_session import command_context
+            command_context({'navigationContext':getattr(self,'active_navigation_context',None)},self.worker,self.cfg,self)
 
     def _pose(self, endpoint_id):
         from geometry_msgs.msg import PoseStamped
@@ -223,6 +271,7 @@ class RosAdapter:
         from pathlib import Path
         goal.behavior_tree = str((Path(__file__).resolve().parents[1] / "config/navigate_no_recovery.xml").resolve(strict=True))
         self.goal_feedback = None
+        self.clear_navigation_velocity()
         sent = self.nav.send_goal_async(goal, feedback_callback=lambda m: setattr(self, "goal_feedback", m.feedback))
         received = False
         try:
@@ -230,23 +279,34 @@ class RosAdapter:
             received = True
             if not self.goal.accepted: raise StepError("NAV_GOAL_REJECTED")
             result_future = self.goal.get_result_async()
+            accepted_at=time.monotonic()
             while not result_future.done():
                 self._check_graph()
+                self._navigation_context()
                 state = self.telemetry()
                 if getattr(self,'localization_required',False) and not state['map_pose']['fresh']:
                     raise StepError('LOCALIZATION_LOST')
                 if "gate" not in state or state["gate"]["age_sec"] > 0.6: raise StepError("SAFETY_GATE_LOST")
+                if getattr(self,'worker',{}).get('navigation_runtime') and not self.publish_navigation_velocity(p['max_speed_mps']) and time.monotonic()-accepted_at>2:raise StepError('NAV2_COMMAND_STALE')
                 self.lease_message(True, p["max_speed_mps"])
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.05)
             status = result_future.result().status
             self.goal = None
             if status != 4: raise StepError("NAV_CANCELLED" if status == 5 else "NAV_ABORTED")
+            # Verify the endpoint's position AND final body heading using guarded localization.
+            current=self.telemetry().get('map_pose',{})
+            target=self.cfg['endpoints'][endpoint_id]
+            if not current.get('fresh'):raise StepError('LOCALIZATION_LOST_AT_GOAL')
+            actual=current['value'];position_error=math.hypot(actual['x_m']-target['x_m'],actual['y_m']-target['y_m'])
+            yaw_error=abs(math.atan2(math.sin(actual['yaw_rad']-target['yaw_rad']),math.cos(actual['yaw_rad']-target['yaw_rad'])))
+            if position_error>.08 or yaw_error>.15:raise StepError('ENDPOINT_FINAL_POSE_NOT_CONFIRMED')
             feedback, pose = self.goal_feedback, None
             if feedback is not None:
                 pos, q = feedback.current_pose.pose.position, feedback.current_pose.pose.orientation
                 pose = {"x_m": pos.x, "y_m": pos.y, "yaw_rad": math.atan2(2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y+q.z*q.z))}
             return {"reached": True, "endpoint_id": endpoint_id, "action_status": status, "last_feedback_pose": pose,
-                    "distance_remaining_m": float(feedback.distance_remaining) if feedback else None}
+                    "distance_remaining_m": float(feedback.distance_remaining) if feedback else None,
+                    "verified_pose":actual,"position_error_m":position_error,"yaw_error_rad":yaw_error}
         finally:
             self.lease_message(False)
             if not received: sent.add_done_callback(self._late_cancel)

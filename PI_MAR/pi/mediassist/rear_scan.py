@@ -33,7 +33,7 @@ def rear_clearance(scan, transform, stop_distance):
 
 
 def chassis_guard(cmd,motion,rear_reason,rear_age):
-    if abs(cmd[1])>.001:return (0.,0.,0.),'STRAFE_NOT_ENABLED'
+    if abs(cmd[1])>.001 and not motion.get('allow_strafe',False):return (0.,0.,0.),'STRAFE_NOT_ENABLED'
     if cmd[0]>=0:return cmd,None
     if motion.get('chassis_model')!='MENTORPI_M1_MECANUM' or motion.get('allow_reverse') is not True:
         return (0.,0.,0.),'REVERSE_NOT_ENABLED'

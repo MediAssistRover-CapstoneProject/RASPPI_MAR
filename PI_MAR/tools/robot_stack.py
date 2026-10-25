@@ -48,10 +48,10 @@ def vendor_bringup(info):
 
 def conflict(info):
     a = info['argv']
-    if any(x in a for x in ('mediassist.worker_cli', 'mediassist.safety_node', 'mediassist.cli', 'mediassist.camera_stream','mediassist.slam_session','mediassist.localization_node')):
+    if any(x in a for x in ('mediassist.worker_cli', 'mediassist.safety_node', 'mediassist.cli', 'mediassist.camera_stream','mediassist.vendor_camera','mediassist.slam_session','mediassist.localization_node')):
         return True
     if any(Path(x).name in ('us100_dual_ros2.py', 'manual_mapping.py', 'mediassist_demo_slam.launch.py',
-                            'mediassist_demo_navigation.launch.py', 'slam.launch.py', 'navigation.launch.py') for x in a):
+                            'mediassist_demo_navigation.launch.py','mediassist_nav2_nodes.launch.py', 'slam.launch.py', 'navigation.launch.py') for x in a):
         return True
     return False
 
@@ -153,7 +153,7 @@ def validate_mode(mode, cfg, hardware, runtime_mode='mapping'):
         if runtime_mode == 'navigation':
             if cfg['mapping']['enabled']:raise RuntimeError('MAPPING_MUST_BE_DISABLED_FOR_NAVIGATION')
             localization_only=cfg.get('navigation_runtime',{}).get('localization_only',False)
-            if not hardware.get('map_asset_sha256') or not hardware.get('endpoints') and not localization_only:raise RuntimeError('INSTALL_BE_MAP_AND_ENDPOINTS_FIRST')
+            if not hardware.get('map_asset_sha256') or not hardware.get('endpoints') and not localization_only and not cfg.get('navigation_session'):raise RuntimeError('INSTALL_BE_MAP_AND_ENDPOINTS_FIRST')
             if not cfg.get('localization',{}).get('enabled'):raise RuntimeError('CONFIGURE_LOCALIZATION_FIRST')
             if not localization_only and not all(hardware['motion'][k] for k in ('commissioned','cart_footprint_validated','watchdog_validated')):
                 raise RuntimeError('MOTION_NOT_COMMISSIONED')
@@ -247,8 +247,8 @@ class Supervisor:
     def close(self):
         # Worker first, hardware while gate/watchdog remain available, then sensors
         # and finally gate/watchdog. No automatic restart/replay of a failed job.
-        order = {'worker': 0, 'gamepad': 1, 'camera': 2, 'slam': 3, 'us100': 4, 'gate': 5, 'watchdog': 6}
-        for name, child, identity in sorted(self.children, key=lambda item: order[item[0]]):
+        order = {'worker':0,'gamepad':1,'camera':2,'navigation':3,'localization':4,'slam':5,'us100':6,'gate':7,'watchdog':8}
+        for name, child, identity in sorted(self.children, key=lambda item: order.get(item[0],3)):
             say('STOP ' + name)
             try:
                 if identity:
@@ -282,7 +282,9 @@ def main():
         raise ValueError('ready-timeout must be 15..180 seconds')
     os.umask(0o077)
     config = args.config.resolve(strict=True)
-    state_dir = config.parent.parent / 'state/stack'
+    descriptor=json.loads(config.read_text(encoding='utf-8-sig'))
+    state_dir = Path(descriptor.get('stack_state_dir',str(config.parent.parent / 'state/stack')))
+    if not state_dir.is_absolute():raise RuntimeError('ABSOLUTE_STACK_STATE_DIR_REQUIRED')
     if args.action == 'stop':
         if args.pid is not None:
             record = state_dir / 'supervisor.json'
@@ -373,6 +375,11 @@ def main():
                         'map:='+str(map_yaml),'params_file:='+str(args.nav2_params.resolve()),
                         'localization_only:='+str(cfg.get('navigation_runtime',{}).get('localization_only',False)).lower()]
             supervisor.start('slam',launch)
+            auto=cfg['mapping']['autonomy']
+            if args.mode=='mapping' and args.action=='run' and auto['enabled'] and auto['exploration_mode']=='frontier' and auto['frontier_controller']=='nav2':
+                from mapping_nav2_parameters import create
+                params=create(cfg['mapping'],hardware,state_dir/'mapping-nav2.yaml')
+                supervisor.start('navigation',['ros2','launch',str(ROOT/'pi/launch/mediassist_nav2_nodes.launch.py'),'params_file:='+str(params)])
             if args.mode=='navigation':
                 supervisor.start('localization',[python,'-m','mediassist.localization_node','--config',str(config)])
             from stack_probe import Probe
@@ -406,11 +413,16 @@ def main():
                         raise RuntimeError('STOP_EXISTING_JOY_READER: stop its terminal first; PIDs=' + ','.join(map(str,readers)))
                     from mediassist.gamepad import driver_argv
                     supervisor.start('gamepad', driver_argv(cfg['mapping']), required=False)
-                    say('GAMEPAD: left stick; active mapping session required; return stick to centre to arm; see gamepad/status')
+                    pad=cfg['mapping']['gamepad']
+                    say('GAMEPAD: left XY / right yaw; local manual without mapping job; neutral to arm; see gamepad/status'
+                        if pad.get('layout')=='vendor_mecanum' and not pad.get('session_required',True)
+                        else 'GAMEPAD: session-scoped input; neutral to arm; see gamepad/status')
                 camera = cfg['mapping']['camera']
                 if camera['enabled'] and camera['stream_enabled']:
-                    supervisor.start('camera', [python, '-m', 'mediassist.camera_stream', '--config', str(config)], required=False)
-                    say('CAMERA_STREAM: HTTP port=' + str(camera['stream_port']) + ' topic=' + camera['topic'] + '; see camera.log')
+                    from mediassist.vendor_camera import camera_argv, stream_path
+                    supervisor.start('camera', camera_argv(python, config, camera), required=False)
+                    say('CAMERA_STREAM_REQUESTED: backend=' + camera['stream_backend'] + ' HTTP port=' + str(camera['stream_port']) + '; see camera.log')
+                    say('CAMERA_URL: http://<PI_IP>:' + str(camera['stream_port']) + stream_path(camera))
                 supervisor.start('worker', [python, '-m', 'mediassist.worker_cli', 'run', '--config', str(config)])
                 say('STACK_READY: map/odom/topology checked; localization readiness is in localization.log' if args.mode=='navigation'
                     else 'STACK_READY: map/odom/TF/topology checked; check BE MQTT handshake separately')

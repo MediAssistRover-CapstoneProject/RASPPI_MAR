@@ -26,7 +26,8 @@ class StepWorker:
         mapping=self.adapter.mapping
         if mapping and mapping.state.get("state")=="RECOVERY_REQUIRED":
             return "ERROR"
-        return "BUSY" if self.active or (mapping and mapping.active) else "IDLE"
+        local_busy=bool(mapping and getattr(mapping,'manual_drive',None) and mapping.manual_drive.busy(mapping.gamepad))
+        return "BUSY" if self.active or (mapping and mapping.active) or local_busy else "IDLE"
 
     async def acknowledged(self, mid):
         deadline=time.monotonic()+self.cfg["ack_timeout_sec"]
@@ -75,6 +76,9 @@ class StepWorker:
             self.receipt(command,False,step,errorCode="ROBOT_BUSY")
             return
         mapping=self.adapter.mapping
+        if mapping and getattr(mapping,'manual_drive',None) and mapping.manual_drive.busy(mapping.gamepad):
+            self.receipt(command,False,step,errorCode="RETURN_GAMEPAD_TO_NEUTRAL")
+            return
         if mapping and mapping.active:
             p=step["params"]
             if (step["jobId"]!=mapping.state.get("job_id") or
@@ -84,12 +88,18 @@ class StepWorker:
                 return
         try:
             validate_step(step,self.cfg,self.hardware)
+            if step['stepType']=='MOVE':
+                from .navigation_session import command_context
+                command_context(command,self.cfg,self.hardware,self.adapter)
+                self.adapter.active_navigation_context=command.get('navigationContext')
         except (StepError,ValueError) as exc:
             self.receipt(command,False,step,errorCode=getattr(exc,"code","INVALID_PARAMS"))
             return
         self.store.accept(step)
         ack=self.receipt(command,True,step,status="ACCEPTED")
         self.active=step
+        if mapping and getattr(mapping,'manual_drive',None):
+            mapping.gamepad.stop('WORKFLOW_HANDOFF_RETURN_NEUTRAL')
         self.stop_reason="CANCELLED"
         self.task=asyncio.create_task(self.execute(step,command["correlationId"],ack["messageId"],command["expiresAt"]))
 
@@ -188,7 +198,9 @@ class StepWorker:
             else:
                 # Active execution already performed its stop in execute()/abandoned().
                 # An idle connection failure before ROS startup must not invent a running action.
-                self.adapter.lease_message(False)
+                local=bool(self.adapter.mapping and getattr(self.adapter.mapping,'manual_drive',None)
+                           and not self.adapter.mapping.gamepad.cfg['session_required'] and reason!='PROCESS_SHUTDOWN')
+                if not local:self.adapter.lease_message(False)
                 logging.info("Connection ended; no active worker goal")
         except Exception as exc:
             self.adapter.motion_uncertain=True
@@ -206,6 +218,7 @@ class StepWorker:
                     "currentMapId":None if self.adapter.mapping else self.hardware["map_id"],
                     "mapAssetHash":None if self.adapter.mapping else self.hardware["map_asset_sha256"],
                     "mappingSession":self.adapter.mapping.state if self.adapter.mapping else None,
+                    **({'navigationSession':self.cfg['navigation_session']} if self.cfg.get('navigation_session') else {}),
                     "telemetry":self.adapter.telemetry()}))
                 last_heartbeat=now
             # Bound each replay batch so heartbeat cannot be starved by old events.
@@ -277,6 +290,7 @@ class StepWorker:
             "unlockPolicy":self.cfg["unlock_policy"],"states":self.store.states(),
             "mappingEnabled":self.cfg["mapping"]["enabled"],
             "mappingSession":self.adapter.mapping.state if self.adapter.mapping else None,
+            **({'navigationSession':self.cfg['navigation_session']} if self.cfg.get('navigation_session') else {}),
             "capabilities":self.hardware["capabilities"]}))
         raw=await asyncio.wait_for(ws.recv(),10)
         hello=json.loads(raw)
@@ -338,7 +352,8 @@ class StepWorker:
             await asyncio.Future()
         next_tick=time.monotonic()
         while True:
-            await mapping.tick(self.connection_ready and not self.session_fault,self.active is None)
+            await mapping.tick(self.connection_ready and not self.session_fault,
+                               self.active is None and not self.store.blocked() and not self.session_fault)
             next_tick+=.05
             now=time.monotonic()
             if next_tick<now-.05:next_tick=now+.05
@@ -366,20 +381,26 @@ class StepWorker:
 
     async def run(self):
         delay=1
+        # Local USB input keeps its 20 Hz loop across broker connect/backoff.
+        # It does not depend on a BE mapping session or a transport lease.
+        local_mode=bool(self.adapter.mapping and getattr(self.adapter.mapping,'manual_drive',None)
+                        and not self.adapter.mapping.gamepad.cfg['session_required'])
+        local_mapping=asyncio.create_task(self.mapping_loop(None)) if local_mode else None
         try:
             while True:
                 try:
                     async with MqttSession(self.cfg) as session:
                         connected=asyncio.create_task(self.connected(session))
-                        mapping=asyncio.create_task(self.mapping_loop(session))
+                        mapping=local_mapping or asyncio.create_task(self.mapping_loop(session))
                         media=asyncio.create_task(self.mapping_media_loop(session))
                         try:
                             done,_=await asyncio.wait({connected,mapping,media},return_when=asyncio.FIRST_COMPLETED)
                             for task in done:
                                 task.result()
                         finally:
-                            connected.cancel(); mapping.cancel();media.cancel()
-                            await asyncio.gather(connected,mapping,media,return_exceptions=True)
+                            connected.cancel();media.cancel()
+                            if not local_mode:mapping.cancel()
+                            await asyncio.gather(connected,media,*([] if local_mode else [mapping]),return_exceptions=True)
                             await self.disconnect("CONNECTION_LOST")
                 except asyncio.CancelledError:
                     raise
@@ -388,7 +409,14 @@ class StepWorker:
                         type(exc).__name__,getattr(exc,"code","NETWORK_OR_PROTOCOL"),delay)
                 finally:
                     await self.disconnect("CONNECTION_LOST")
+                if local_mapping and local_mapping.done():
+                    local_mapping.result()
+                    raise StepError('LOCAL_CONTROL_LOOP_STOPPED')
                 await asyncio.sleep(delay)
                 delay=min(delay*2,30)
         finally:
+            if local_mapping:
+                self.adapter.mapping.manual_inhibited=True
+                local_mapping.cancel()
+                await asyncio.gather(local_mapping,return_exceptions=True)
             await self.disconnect("PROCESS_SHUTDOWN")

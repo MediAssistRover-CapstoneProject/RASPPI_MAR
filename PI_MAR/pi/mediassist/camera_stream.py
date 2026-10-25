@@ -23,6 +23,7 @@ class Frames:
         self.client_write_ms = None
         self.max_frame_age = max_frame_age
         self.encode_ms = None
+        self.source_error = None
         self.condition = threading.Condition()
         self.clients = 0
         self.revision = 0
@@ -87,7 +88,7 @@ class Frames:
                 return round((len(recent)-1)/(recent[-1]-recent[0]),1) if len(recent)>1 and recent[-1]>recent[0] else 0.
             return {'topic': self.topic, 'qos': 'BEST_EFFORT / VOLATILE / depth=1',
                     'viewers': self.clients, 'frameRevision': self.revision,
-                    'targetFps':self.target_fps,'encodedFps':rate(self.published),'lastEncodeMs':self.encode_ms,
+                    'lastSourceError':self.source_error,'targetFps':self.target_fps,'encodedFps':rate(self.published),'lastEncodeMs':self.encode_ms,
                     'sourceReceivedFps':rate(self.received),'sourceSize':self.source_size,'streamSize':self.output_size,
                     'lastJpegBytes':self.jpeg_bytes,'lastReceiveToEncodeMs':round(self.input_age*1000,1) if self.frame else None,
                     'lastClientWriteMs':self.client_write_ms,'maxFrameAgeSeconds':self.max_frame_age,
@@ -103,7 +104,7 @@ def handler_for(frames):
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
             super().setup()
-            self.connection.settimeout(5.)
+            self.connection.settimeout(max(.35,min(1.,frames.max_frame_age)))
             self.connection.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
             # Bound per-viewer TCP backlog; slow viewers do not queue more JPEGs in Python.
             self.connection.setsockopt(socket.SOL_SOCKET,socket.SO_SNDBUF,16384)
@@ -159,7 +160,9 @@ def handler_for(frames):
                     self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ' +
                                      str(len(frame[2])).encode() + b'\r\n\r\n' + frame[2] + b'\r\n')
                     self.wfile.flush()
-                    frames.record_write((time.monotonic()-started)*1000)
+                    elapsed=time.monotonic()-started
+                    frames.record_write(elapsed*1000)
+                    if elapsed>frames.max_frame_age:break
                     frame = frames.next(frame[0], timeout=3.)
             except (BrokenPipeError, ConnectionResetError, TimeoutError):
                 pass
@@ -216,12 +219,21 @@ def main():
         pass
     rclpy.init()
     node = rclpy.create_node('mediassist_camera_stream')
+    camera['source_max_age_sec']=camera['stream_max_frame_age_sec']
     preview = CameraPreview(SimpleNamespace(node=node), camera, frames.viewing, frames.observe_source)
+    # ROS receipt stays independent of JPEG encoding. The subscriber replaces
+    # one latest sample; a slow encode cannot build a camera/DDS backlog.
+    from rclpy.executors import SingleThreadedExecutor
+    executor=SingleThreadedExecutor()
+    executor.add_node(node)
+    receiver=threading.Thread(target=executor.spin,daemon=True,name='camera_ros_latest')
+    receiver.start()
     print('CAMERA_HTTP_READY port=' + str(server.server_address[1]) + ' topic=' + camera['topic'] +
           ' target_fps=' + str(camera['stream_rate_hz']) + ' QoS=BEST_EFFORT; waiting for viewers/ROS frames', flush=True)
     try:
         while rclpy.ok():
-            rclpy.spin_once(node, timeout_sec=.005)
+            time.sleep(.002)
+            frames.source_error=preview.error
             if not frames.viewing() or not pacer.due(time.monotonic()):
                 continue
             with preview.lock:
@@ -245,6 +257,8 @@ def main():
         server.shutdown()
         server.server_close()
         thread.join(timeout=2.)
+        executor.shutdown(timeout_sec=2.)
+        receiver.join(timeout=2.)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

@@ -26,7 +26,8 @@ def engine_parameters(source,mapping,ros):
     params.update(use_sim_time=False,mode='mapping',map_frame=ros['map_frame'],odom_frame=ros.get('odom_frame','odom'),
         base_frame=ros['base_frame'],scan_topic=scan_topic,resolution=mapping['slam_resolution_m'],
         minimum_travel_distance=mapping['slam_min_travel_m'],minimum_travel_heading=mapping['slam_min_heading_rad'],
-        minimum_time_interval=mapping['slam_min_interval_sec'],map_update_interval=mapping['slam_map_interval_sec'])
+        minimum_time_interval=mapping['slam_min_interval_sec'],map_update_interval=mapping['slam_map_interval_sec'],
+        transform_timeout=.5,tf_buffer_duration=30.,scan_queue_size=10)
     return {'slam_toolbox':{'ros__parameters':params}}
 
 

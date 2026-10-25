@@ -12,6 +12,7 @@ from launch_ros.actions import SetRemap
 def generate_launch_description():
     nav2 = Path(get_package_share_directory('nav2_bringup')) / 'launch/bringup_launch.py'
     localization = nav2.parent/'localization_launch.py'
+    navigation=Path(__file__).with_name('mediassist_nav2_nodes.launch.py')
     return LaunchDescription([
         DeclareLaunchArgument('map', description='Absolute saved map YAML path'),
         DeclareLaunchArgument('params_file', description='Absolute generated nav2.demo.yaml path'),
@@ -25,11 +26,9 @@ def generate_launch_description():
                 launch_arguments={'sim': 'false', 'robot_name': '/', 'master_name': '/', 'use_joy': 'false'}.items()),
         ]),
         TimerAction(period=10.0, actions=[
-            IncludeLaunchDescription(PythonLaunchDescriptionSource(str(nav2)),condition=UnlessCondition(LaunchConfiguration('localization_only')), launch_arguments={
-                'map': LaunchConfiguration('map'), 'params_file': LaunchConfiguration('params_file'),
-                'namespace': '', 'use_namespace': 'false', 'slam': 'False', 'use_sim_time': 'false',
-                'autostart': 'true', 'use_composition': 'False', 'use_respawn': 'False'}.items()),
-            IncludeLaunchDescription(PythonLaunchDescriptionSource(str(localization)),condition=IfCondition(LaunchConfiguration('localization_only')),launch_arguments={
+            IncludeLaunchDescription(PythonLaunchDescriptionSource(str(navigation)),condition=UnlessCondition(LaunchConfiguration('localization_only')),launch_arguments={
+                'params_file':LaunchConfiguration('params_file')}.items()),
+            IncludeLaunchDescription(PythonLaunchDescriptionSource(str(localization)),launch_arguments={
                 'map':LaunchConfiguration('map'),'params_file':LaunchConfiguration('params_file'),
                 'namespace':'','use_sim_time':'false','autostart':'true','use_composition':'False'}.items())
         ]),

@@ -126,6 +126,7 @@ class BootstrapTests(unittest.TestCase):
         guard.matcher=GridMatcher(10,10,1.,(0,0,0),[0]*100);guard.grid=N(data=[0]*100)
         guard.node=Mock();guard.node.get_clock.return_value.now.return_value.to_msg.return_value=N(sec=10,nanosec=0)
         guard.pending={};guard.global_reset=Mock();guard.call=Mock(return_value=False)
+        guard.authorization_error=None
         return guard
     def modules(self):
         class Pose:
@@ -164,6 +165,7 @@ class MotionLossTests(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import AsyncMock
         import asyncio
         adapter=object.__new__(RosAdapter);adapter.localization_required=True
+        adapter.clear_navigation_velocity=Mock()
         adapter._prerequisites=AsyncMock();adapter._pose=Mock(return_value=N());adapter._check_graph=Mock()
         adapter.nav=Mock();adapter.nav.server_is_ready.return_value=True
         pending=asyncio.get_running_loop().create_future()

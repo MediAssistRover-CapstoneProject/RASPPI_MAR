@@ -39,7 +39,20 @@ class MappingManager:
         self.accept_after_ns=0
         from .mapping_control import MappingControlLease, VelocityRamp
         self.remote_control = MappingControlLease()
-        self.ramp = VelocityRamp()
+        pad_config=cfg.get('gamepad',{})
+        self.ramp = VelocityRamp(pad_config.get('linear_accel',.25),pad_config.get('angular_accel',.8))
+        from .autonomous_mapping import AutoMapper, configuration
+        self.auto = AutoMapper(configuration(cfg))
+        from .frontier_mapping import FrontierWorker
+        self.exploration=FrontierWorker(self.auto.cfg)
+        self.navigator=None
+        if self.auto.cfg['enabled'] and self.auto.cfg['exploration_mode']=='frontier' and self.auto.cfg['frontier_controller']=='nav2':
+            from .mapping_navigator import MappingNavigator
+            self.navigator=MappingNavigator(adapter,self.exploration)
+        self.manual_assist_reason='IDLE'
+        self.auto_selected = False
+        self.auto_scan = (None, 0.)
+        self.state['autonomy'] = self.auto_status()
         self.camera = None
         self.process = None
         from nav_msgs.msg import OccupancyGrid
@@ -50,20 +63,42 @@ class MappingManager:
                          reliability=ReliabilityPolicy.BEST_EFFORT)
         adapter.node.create_subscription(OccupancyGrid, cfg['map_topic'], self.on_map, qos)
         adapter.node.create_subscription(String, '/mediassist/mapping/manual', self.on_manual, 1)
-        self.velocity = adapter.node.create_publisher(Twist, adapter.cfg['ros']['raw_cmd_vel'], 1)
+        if self.auto.cfg['enabled']:
+            from sensor_msgs.msg import LaserScan
+            adapter.node.create_subscription(LaserScan, adapter.cfg['ros']['scan'], self.on_auto_scan, qos)
+        # One worker output, selected between workflow navigation and mapping/manual.
+        self.velocity = adapter.navigation_velocity_output
         from std_srvs.srv import Trigger
         self.reset_client=adapter.node.create_client(Trigger,cfg['reset_service'])
         self.gamepad = None
+        self.manual_drive = None
+        self.manual_inhibited = False
         if cfg.get('control_source') == 'gamepad':
             from .gamepad import GamepadInput, configuration
             from sensor_msgs.msg import Joy
             self.gamepad = GamepadInput(configuration(cfg))
+            if self.gamepad.cfg['layout']=='vendor_mecanum':
+                from .manual_drive import ManualDrive
+                self.manual_drive=ManualDrive(self.gamepad.cfg)
             self.gamepad_status = adapter.node.create_publisher(String, '/mediassist/gamepad/status', 1)
             self.gamepad_report_at, self.gamepad_report = 0., None
             adapter.node.create_subscription(Joy, cfg['gamepad']['topic'], self.on_gamepad, qos)
-        if cfg.get('camera',{}).get('enabled'):
+        if cfg.get('camera',{}).get('enabled') and cfg['camera'].get('mqtt_preview_enabled',cfg['camera'].get('stream_backend')!='web_video_server'):
             from .camera_preview import CameraPreview
             self.camera = CameraPreview(adapter,cfg['camera'],lambda:self.state.get('state')=='MAPPING')
+
+    def auto_status(self):
+        status={**self.auto.status(time.monotonic()), 'control_selected':self.auto_selected,
+                'manual_assist_reason':getattr(self,'manual_assist_reason','IDLE'),
+                'profile_max_duration_sec':self.auto.cfg['max_duration_sec']}
+        pad=self.cfg.get('gamepad',{})
+        status['manual_control']={'source':self.cfg.get('control_source','local'),
+            'layout':pad.get('layout','legacy'),'session_required':pad.get('session_required',True),
+            'forward_mps':pad.get('forward_mps',.10),'angular_rps':pad.get('angular_rps',.35),
+            'continuous':pad.get('max_run_sec',3.)==0}
+        if self.auto.cfg['enabled'] and getattr(self,'exploration',None):
+            status['exploration']=self.exploration.tracker.status()
+        return status
 
     @property
     def active(self):
@@ -107,6 +142,26 @@ class MappingManager:
             return
         self.gamepad.feed(msg.axes, time.monotonic(), stamp)
 
+    def on_auto_scan(self, msg):
+        from .autonomous_mapping import scan_view
+        from rclpy.time import Time
+        age=0.
+        try:
+            age=(self.adapter.node.get_clock().now().nanoseconds-Time.from_msg(msg.header.stamp).nanoseconds)/1e9
+            if not 0<=age<=self.auto.cfg['scan_max_age_sec']:return
+            if msg.header.frame_id==self.adapter.cfg['ros']['base_frame']: transform=(0.,0.,0.)
+            else:
+                tf=self.adapter.tf_buffer.lookup_transform(self.adapter.cfg['ros']['base_frame'],msg.header.frame_id,Time.from_msg(msg.header.stamp)).transform
+                q=tf.rotation
+                norm=q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w
+                normal=1-2*(q.x*q.x+q.y*q.y)
+                if not .99<=norm<=1.01 or abs(normal)<.98:raise ValueError('Non-planar lidar transform')
+                transform=(tf.translation.x,tf.translation.y,math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z)),1 if normal>0 else -1)
+            view=scan_view(msg,transform,self.auto.cfg)
+        except Exception:
+            view={'valid':False,'reason':'LIDAR_TF_NOT_READY'}
+        with self.lock:self.auto_scan=(view,time.monotonic()-max(0.,age))
+
     def gamepad_velocity(self, ready, idle):
         now = time.monotonic()
         active = self.active and self.state.get('state') == 'MAPPING'
@@ -144,14 +199,22 @@ class MappingManager:
             if self.state.get('state') != 'MAPPING' or p['mapping_session_id'] != self.state['session_id']:
                 return
             x, z = p['linear_x'], p['angular_z']
+            if x==0 and z==0 and getattr(self,'auto',None):
+                self.auto.stop('OPERATOR_STOP');self.auto_selected=False
+                self.state['autonomy']=self.auto_status()
+                self.remote_control.stop()
+                if self.gamepad:self.gamepad.stop()
+                with self.lock:self.manual=(0.,0.,time.monotonic())
+                return
             if self.cfg.get('control_source','local') != 'local':
                 if x == 0 and z == 0:
                     self.remote_control.stop()
                     if getattr(self, 'gamepad', None): self.gamepad.stop()
+                    if getattr(self,'auto',None):self.auto.stop('OPERATOR_STOP');self.auto_selected=False
                 return
             if type(x) not in (int,float) or type(z) not in (int,float) or not all(math.isfinite(v) for v in (x,z)):
                 return
-            if abs(x) > .15 or abs(z) > .50:
+            if abs(x) > .30 or abs(z) > 1.0:
                 return
             with self.lock:
                 self.manual = (float(x),float(z),time.monotonic())
@@ -159,6 +222,44 @@ class MappingManager:
             return
 
     def receive_control(self, message, transport_id, ready, idle):
+        auto=getattr(self,'auto',None)
+        options=message.get('autonomy')
+        if options is not None:
+            if message.get('linearX')!=0 or message.get('angularZ')!=0:raise StepError('AUTONOMY_VELOCITY_MUST_BE_ZERO')
+            self.remote_control.accept(message,self.adapter.worker['robot_id'],transport_id,self.state)
+            if options['action']!='STOP':
+                if not ready or not idle or self.adapter.motion_uncertain or self.state.get('state')!='MAPPING':raise StepError('MAPPING_ROBOT_BUSY')
+                if not auto or not auto.cfg['enabled']:raise StepError('AUTONOMY_NOT_CONFIGURED')
+                if not all(self.adapter.cfg['motion'][k] for k in ('commissioned','cart_footprint_validated','watchdog_validated')):raise StepError('MOTION_NOT_COMMISSIONED')
+                telemetry=self.adapter.telemetry()
+                if not self.adapter.health()['sensors_ready'] or telemetry.get('odom_speed',{}).get('age_sec',99)>.5:raise StepError('SENSORS_NOT_READY')
+                sample=telemetry.get('map_pose',{})
+                if not sample.get('fresh'):raise StepError('MAPPING_POSE_NOT_READY')
+                self.adapter._check_graph()
+                if self.gamepad:
+                    with self.gamepad.lock:
+                        if any(abs(v)>.02 for v in self.gamepad.axes):raise StepError('RETURN_GAMEPAD_TO_NEUTRAL')
+                view,at=self.auto_scan
+                if not view or not view.get('valid') or time.monotonic()-at>auto.cfg['scan_max_age_sec']:
+                    raise StepError('AUTONOMY_LIDAR_NOT_READY')
+            else:sample={}
+            if auto is None:raise StepError('AUTONOMY_NOT_CONFIGURED')
+            from .contracts import parse_timestamp
+            remaining=(parse_timestamp(message['expiresAt'])-datetime.now(timezone.utc)).total_seconds()
+            auto.accept(options,time.monotonic(),sample.get('value'),min(message['durationMs']/1000.,remaining))
+            self.auto_selected=options['action']!='STOP'
+            if self.gamepad:self.gamepad.stop()
+            self.state['autonomy']=self.auto_status()
+            if options['action']!='RENEW':self.persist()
+            return
+        if auto and not message.get('linearX') and not message.get('angularZ'):
+            # A normal web STOP releases autonomous ownership, including its latched terminal state.
+            self.remote_control.accept(message,self.adapter.worker['robot_id'],transport_id,self.state)
+            auto.stop('OPERATOR_STOP');self.auto_selected=False
+            if self.gamepad:self.gamepad.stop()
+            self.state['autonomy']=self.auto_status();self.persist()
+            return
+        if getattr(self,'auto_selected',False):raise StepError('AUTONOMY_OWNS_CONTROL')
         if self.cfg.get('control_source') == 'gamepad':
             if message.get('linearX') or message.get('angularZ'):
                 raise StepError('MAPPING_CONTROL_SOURCE_GAMEPAD')
@@ -186,12 +287,22 @@ class MappingManager:
 
     async def tick(self, ready, idle):
         from geometry_msgs.msg import Twist
-        gamepad_velocity = self.gamepad_velocity(ready, idle) if self.cfg.get('control_source') == 'gamepad' else None
+        y=0.
+        navigator=getattr(self,'navigator',None)
+        if navigator and navigator.active and (not self.active or not self.auto_selected or self.auto.phase!='RUNNING'):
+            await navigator.stop()
+        if getattr(self,'manual_drive',None) and not getattr(self,'auto_selected',False):
+            self.manual_drive.tick(self,ready,idle)
+            self.state['autonomy']=self.auto_status()
+            return
+        gamepad_velocity = self.gamepad_velocity(ready, idle) if self.cfg.get('control_source') == 'gamepad' and not getattr(self,'auto_selected',False) else None
         if not self.active:
             return
         with self.lock:
             x, z, captured = self.manual
-        if gamepad_velocity is not None:
+        if getattr(self,'auto_selected',False):
+            x,z,fresh=0.,0.,True
+        elif gamepad_velocity is not None:
             x,z = gamepad_velocity
             fresh = True
         elif self.cfg.get('control_source','local') == 'mqtt':
@@ -209,17 +320,106 @@ class MappingManager:
             odom = self.adapter.telemetry().get('odom_speed')
             if not odom or odom['age_sec'] > .5:
                 moving = False
+        auto=getattr(self,'auto',None)
+        if auto and getattr(self,'auto_selected',False):
+            telemetry=self.adapter.telemetry();sample=telemetry.get('map_pose',{})
+            with self.lock:view,at=self.auto_scan
+            old_phase=auto.phase
+            with self.lock:grid=self.grid;map_revision=self.revision
+            if not grid or time.monotonic()-grid[1]>min(2.,self.cfg['max_map_age_sec']):auto.stop('MAPPING_MAP_STALE')
+            if self.gamepad:
+                with self.gamepad.lock:override=any(abs(v)>.15 for v in self.gamepad.axes)
+                if override:
+                    auto.stop('GAMEPAD_OVERRIDE');self.gamepad.stop('RETURN_NEUTRAL')
+            gate=telemetry.get('gate',{}).get('value')
+            if isinstance(gate,str):
+                try:gate=json.loads(gate)
+                except (ValueError,TypeError):gate={'reason':'INVALID_STATUS'}
+            now=time.monotonic();pose=sample.get('value') if sample.get('fresh') else None
+            plan_result=None;plan_error=None;heading=None
+            if auto.cfg['exploration_mode']=='frontier' and auto.phase=='RUNNING' and grid and pose:
+                from .frontier_mapping import guidance
+                plan_result,plan_error=self.exploration.poll(grid[0],pose,map_revision,now,auto.run_id,now-auto.start_at,auto.travel)
+                heading=guidance(plan_result,pose) if not navigator else None
+            # A failed global plan is a HOLD, never a fallback reactive drive.
+            hold=auto.cfg['exploration_mode']=='frontier' and (plan_result is None or plan_result['state'] in ('NO_FRONTIERS','BLOCKED'))
+            reactive=auto.cfg['exploration_mode']=='reactive' and auto.cfg['vehicle']=='rigid'
+            x,z=auto.current(now,view,now-at,pose,moving,'SENSORS_OR_SESSION_NOT_READY',gate,heading,hold or bool(navigator) or reactive)
+            if reactive and auto.phase=='RUNNING':
+                from .lidar_reactive import LidarReactive
+                if not hasattr(self,'lidar_reactive'):self.lidar_reactive=LidarReactive()
+                (x,y,z),auto.reason=self.lidar_reactive.current(view,auto.cfg,max(0.,now-at),now,auto.run_id)
+                # Observe coverage without using a cached grid to authorize motion.
+                # All actual velocities are bounded from the current raw scan.
+                if grid and pose and getattr(self,'exploration',None):
+                    result,error=self.exploration.poll(grid[0],pose,map_revision,now,auto.run_id,now-auto.start_at,auto.travel)
+                    if result and result['state']=='NO_FRONTIERS' and self.exploration.tracker.complete:
+                        from .frontier_mapping import source_signature
+                        if result['source_signature']==source_signature(grid[0]):
+                            x,z=auto.stop('COVERAGE_COMPLETE');y=0.
+            if auto.phase=='RUNNING' and auto.cfg['exploration_mode']=='frontier':
+                if plan_error:x,z=auto.stop(plan_error)
+                elif plan_result is None:x,z=0.,0.;auto.reason='PLANNING_FRONTIERS'
+                elif plan_result['state']=='BLOCKED':
+                    if plan_result['reason']=='FRONTIERS_UNREACHABLE' and not self.exploration.no_progress(now,True):
+                        x,z=0.,0.;auto.reason='REOBSERVING_FRONTIERS'
+                    elif plan_result.get('seed_block_kind') in ('unknown','boundary') and now-auto.start_at<8.:
+                        x,z=0.,0.;auto.reason='WAITING_FOR_MAP_AROUND_BODY'
+                    else:x,z=auto.stop(plan_result['reason'])
+                elif plan_result['state']=='NO_FRONTIERS':
+                    x,z=0.,0.;auto.reason='CONFIRMING_COVERAGE'
+                    if self.exploration.tracker.complete:
+                        from .frontier_mapping import source_signature
+                        if plan_result['source_signature']==source_signature(grid[0]):x,z=auto.stop('COVERAGE_COMPLETE')
+                elif self.exploration.no_progress(now,bool(heading and heading['hold'])):
+                    x,z=auto.stop('FRONTIER_NO_PROGRESS')
+                elif navigator:
+                    try:
+                        (x,y,z),auto.reason=await navigator.tick(plan_result,pose,now)
+                        from .autonomous_mapping import nav2_assist
+                        limited=nav2_assist((x,y,z),view,auto.cfg,max(0.,now-at))
+                        if limited!=(x,y,z):auto.reason='FOLLOW_FRONTIER_NAV2_SLOWED'
+                        x,y,z=limited
+                    except Exception as error:
+                        x,z=auto.stop(getattr(error,'code','NAV2_MAPPING_FAILED'));y=0.
+            if auto.phase!='RUNNING':x,y,z=0.,0.,0.
+            if navigator and navigator.active and (auto.phase!='RUNNING' or hold):await navigator.stop()
+            self.state['autonomy']=self.auto_status()
+            if old_phase!=auto.phase:
+                self.persist()
+                if auto.phase=='STOPPED':
+                    self.adapter.node.get_logger().info('AUTONOMY_STOP '+json.dumps({
+                        'reason':auto.reason,'front_clearance_m':view.get('front_m') if view else None,
+                        'nearest_lidar_m':view.get('nearest_lidar_m') if view else None,
+                        'lidar_stop_distance_m':auto.cfg['lidar_stop_distance_m'],
+                        'footprint':auto.cfg['footprint'],'plan_reason':plan_result.get('reason') if plan_result else None}))
+                    self.save_autonomy_diagnostic(plan_result,pose,view)
+        elif auto and auto.cfg['enabled'] and auto.cfg['manual_lidar_assist'] and moving:
+            from .autonomous_mapping import manual_assist
+            with self.lock:view,at=self.auto_scan
+            (x,z),self.manual_assist_reason=manual_assist((x,z),view,time.monotonic()-at,auto.cfg)
+            self.state['autonomy']=self.auto_status()
         msg = Twist()
+        auto_cap = auto.cfg['speed_mps'] if auto and getattr(self,'auto_selected',False) else .30
+        cap = min(auto_cap, self.adapter.cfg['max_speed_mps'])
         if moving:
-            cap=min(.15,self.adapter.cfg['max_speed_mps'])
             target = (max(-cap,min(x,cap)),
                       max(-self.adapter.cfg['motion']['max_angular_speed_rps'],
                           min(z, self.adapter.cfg['motion']['max_angular_speed_rps'])))
-            msg.linear.x, msg.angular.z = self.ramp.update(target, time.monotonic())
+            if (navigator or auto and auto.cfg['exploration_mode']=='reactive') and getattr(self,'auto_selected',False):
+                from .mapping_control import HolonomicRamp
+                if not hasattr(self,'holonomic_ramp'):self.holonomic_ramp=HolonomicRamp()
+                if not self.adapter.cfg['motion'].get('allow_strafe',False):y=0.
+                scale=min(1.,cap/max(math.hypot(target[0],y),1e-9))
+                msg.linear.x,msg.linear.y,msg.angular.z=self.holonomic_ramp.update((target[0]*scale,y*scale,target[1]),time.monotonic())
+            else:
+                if hasattr(self,'holonomic_ramp'):self.holonomic_ramp.reset()
+                msg.linear.x, msg.angular.z = self.ramp.update(target, time.monotonic())
         else:
             self.ramp.reset()
+            if hasattr(self,'holonomic_ramp'):self.holonomic_ramp.reset()
         self.velocity.publish(msg)
-        self.adapter.lease_message(bool(moving and (x or z)), min(.15,self.adapter.cfg['max_speed_mps']))
+        self.adapter.lease_message(bool(moving and (x or y or z)), cap)
 
     async def preview(self):
         rate = min(self.state.get('preview_rate_hz',0.2), self.cfg.get('max_preview_rate_hz',0.2))
@@ -276,9 +476,14 @@ class MappingManager:
         if action == 'START':
             if self.active:
                 raise StepError('MAPPING_ALREADY_ACTIVE')
+            if getattr(self,'navigator',None):await self.navigator.stop()
             self.ramp.reset()
+            if getattr(self,'auto',None):
+                from .autonomous_mapping import AutoMapper
+                self.auto=AutoMapper(self.auto.cfg);self.auto_selected=False;self.auto_scan=(None,0.)
+                if getattr(self,'exploration',None):self.exploration.reset(None)
             # Existing navigation must be stopped by the local operator first.
-            if self.adapter.nav.server_is_ready():
+            if self.adapter.nav.server_is_ready() and not getattr(self,'navigator',None):
                 raise StepError('STOP_NAVIGATION_BEFORE_MAPPING')
             self.remote_control.stop()
             if not await self.adapter.stop():raise StepError('PHYSICAL_STOP_UNCONFIRMED')
@@ -315,6 +520,7 @@ class MappingManager:
             if not await self.adapter.stop():
                 raise StepError('PHYSICAL_STOP_UNCONFIRMED')
             self.state['state'] = 'MAPPING'
+            if getattr(self,'auto',None):self.state['autonomy']=self.auto_status()
             self.persist()
             return self.result({'state':'MAPPING','preview_ready':True})
         self.ensure_scope(step)
@@ -328,6 +534,9 @@ class MappingManager:
             raise StepError('ARTIFACT_ID_MISMATCH')
         self.remote_control.stop()
         self.state['state'] = 'SAVING'
+        if getattr(self,'auto',None):
+            self.auto.stop('SAVING_MAP');self.auto_selected=False
+            self.state['autonomy']=self.auto_status()
         self.persist()
         with self.lock:
             self.manual = (0.,0.,0.)
@@ -347,6 +556,19 @@ class MappingManager:
         self.persist()
         return self.result({'state':self.state['state'],'saved_locally':True,'uploaded':uploaded,**metadata})
 
+    def save_autonomy_diagnostic(self,plan_result,pose,view):
+        """Persist exact planner inputs locally on STOP; floorplan never added to heartbeat."""
+        try:
+            with self.lock:grid=self.grid;revision=self.revision
+            if not grid:return
+            snap=grid[0];result={k:v for k,v in (plan_result or {}).items() if k not in ('planning_grid','path')}
+            report={'observed_at':utcnow(),'run_id':self.auto.run_id,'mapping_session_id':self.state.get('session_id'),
+                'map_revision':revision,'pose':pose,'scan_view':view,'autonomy':self.auto.cfg,'plan':result,
+                'snapshot':{**snap,'data':base64.b64encode(zlib.compress(snap['data'])).decode()}}
+            folder=self.root/'diagnostics';folder.mkdir(exist_ok=True)
+            (folder/(self.auto.run_id+'.json')).write_text(json.dumps(report,allow_nan=False))
+        except Exception:self.adapter.node.get_logger().warning('AUTONOMY_DIAGNOSTIC_WRITE_FAILED')
+
     def save_files(self, folder, snap, artifact):
         import yaml
         folder.mkdir(parents=True,exist_ok=True)
@@ -359,7 +581,7 @@ class MappingManager:
             pixels[row*width:(row+1)*width] for row in range(height-1,-1,-1))
         (folder/'map.pgm').write_bytes(pgm)
         text = yaml.safe_dump({'image':'map.pgm','mode':'trinary','resolution':snap['resolution'],
-             'origin':snap['origin'],'negate':0,'occupied_thresh':.65,'free_thresh':.25},sort_keys=False).encode()
+             'origin':snap['origin'],'negate':0,'occupied_thresh':.65,'free_thresh':.196},sort_keys=False).encode()
         (folder/'map.yaml').write_bytes(text)
         metadata = {'artifact_id':artifact,'asset_hash':hashlib.sha256(text+b'\x00'+pgm).hexdigest(),
             'width_px':width,'height_px':height,'resolution_m_per_pixel':snap['resolution'],
@@ -414,7 +636,13 @@ class MappingManager:
     async def abort(self, reason):
         if not self.state:
             return
+        previous_inhibit=getattr(self,'manual_inhibited',False)
+        self.manual_inhibited=True
         self.remote_control.stop()
+        if self.gamepad:self.gamepad.stop('RETURN_NEUTRAL')
+        if getattr(self,'auto',None):
+            self.auto.stop(reason);self.auto_selected=False
+            self.state['autonomy']=self.auto_status()
         needs_reconciliation = self.state.get('state') == 'RECOVERY_REQUIRED'
         with self.lock:
             self.manual = (0.,0.,0.)
@@ -433,5 +661,6 @@ class MappingManager:
         elif not stopped or self.state.get('state') not in ('SAVED','SAVED_LOCAL'):
             self.state['state'] = reason if stopped else 'RECOVERY_REQUIRED'
         self.persist()
+        self.manual_inhibited=previous_inhibit
         if not stopped:
             raise StepError('PHYSICAL_STOP_UNCONFIRMED')

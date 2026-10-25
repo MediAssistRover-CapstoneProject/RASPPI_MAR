@@ -165,6 +165,15 @@ class ProcessTests(unittest.TestCase):
             supervisor.close()
         self.assertEqual(stopped, [104, 103, 102, 101, 100])
 
+    def test_shutdown_also_stops_owned_nav2_and_localization_before_hardware(self):
+        supervisor=stack.Supervisor(Path('.'));names=['watchdog','gate','us100','slam','navigation','localization','worker']
+        supervisor.children=[(name,Mock(),{'pid':i+100}) for i,name in enumerate(names)]
+        stopped=[]
+        with patch.object(stack,'terminate_tree',side_effect=lambda root,**kw:stopped.append(names[root['pid']-100])),patch.object(stack,'say'):
+            supervisor.close()
+        self.assertEqual(stopped,['worker','navigation','localization','slam','us100','gate','watchdog'])
+        self.assertTrue(stack.conflict({'argv':['ros2','launch','/owned/mediassist_nav2_nodes.launch.py']}))
+
     def test_us100_direct_execution_can_import_project_without_pythonpath(self):
         with tempfile.TemporaryDirectory() as directory:
             missing = Path(directory) / 'not-present.json'

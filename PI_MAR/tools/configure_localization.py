@@ -18,6 +18,16 @@ def nav_parameters(base,hardware):
                 tf_broadcast=True,transform_tolerance=.3,scan_topic=hardware['ros']['scan'],
                 base_frame_id=hardware['ros']['base_frame'],global_frame_id=hardware['ros']['map_frame'],
                 odom_frame_id='odom',update_min_d=.05,update_min_a=.05)
+    ros=hardware['ros']
+    for name in ('local_costmap','global_costmap'):
+        if name not in output:continue
+        costmap=output[name][name]['ros__parameters']
+        costmap.update(global_frame=ros['map_frame'] if name=='global_costmap' else 'odom',robot_base_frame=ros['base_frame'])
+        for layer in ('voxel_layer','obstacle_layer'):
+            for source in costmap.get(layer,{}).get('observation_sources','').split():
+                if source in costmap[layer]:costmap[layer][source]['topic']=ros['scan']
+    if 'bt_navigator' in output:output['bt_navigator']['ros__parameters'].update(global_frame=ros['map_frame'],robot_base_frame=ros['base_frame'],odom_topic=ros['odom'])
+    if 'velocity_smoother' in output:output['velocity_smoother']['ros__parameters']['odom_topic']=ros['odom']
     return output
 
 def main():

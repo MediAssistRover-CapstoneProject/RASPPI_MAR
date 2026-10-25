@@ -7,8 +7,8 @@ from pathlib import Path
 from jsonschema import Draft202012Validator, FormatChecker
 from .contracts import StepError, parse_timestamp
 
-MAX_LINEAR = .15
-MAX_ANGULAR = .50
+MAX_LINEAR = .30
+MAX_ANGULAR = 1.0
 MAX_PACKET_AGE = 1.501
 
 SCHEMA = json.loads((Path(__file__).resolve().parents[2]/'handoff/mapping-live.schema.json').read_text())
@@ -79,3 +79,19 @@ class VelocityRamp:
         self.value = (approach(self.value[0], target[0], self.linear_accel * dt),
                       approach(self.value[1], target[1], self.angular_accel * dt))
         return self.value
+
+
+class HolonomicRamp:
+    """Rate limit the translation vector; a reduced clearance limit takes effect now."""
+    def __init__(self,linear_accel=.4,angular_accel=1.2):
+        self.linear_accel=linear_accel;self.angular_accel=angular_accel;self.reset()
+    def reset(self):self.value=(0.,0.,0.);self.at=None
+    def update(self,target,now):
+        if not any(target):self.reset();return self.value
+        dt=.05 if self.at is None else max(0.,min(.1,now-self.at));self.at=now
+        # Never coast through a new obstacle limit while decelerating.
+        previous=tuple(min(max(v,0.),t) if t>=0 else max(min(v,0.),t) for v,t in zip(self.value,target))
+        dx,dy=target[0]-previous[0],target[1]-previous[1]
+        scale=min(1.,self.linear_accel*dt/max(__import__('math').hypot(dx,dy),1e-9))
+        z=previous[2]+max(-self.angular_accel*dt,min(self.angular_accel*dt,target[2]-previous[2]))
+        self.value=(previous[0]+dx*scale,previous[1]+dy*scale,z);return self.value

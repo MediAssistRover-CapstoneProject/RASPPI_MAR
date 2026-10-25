@@ -1,0 +1,1784 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mediassistrover.invalid/contracts/phase0/mqtt-pi-message.schema.json",
+  "title": "Pi events heartbeat presence preview",
+  "$comment": "MAR-STEP-2 with MQTT navigation profile synchronization.",
+  "$defs": {
+    "HELLO": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "MAR-STEP-2"
+        },
+        "runtimeVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "simulation": {
+          "type": "boolean"
+        },
+        "enabledStepTypes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "MOVE",
+              "CONTROL_HARDWARE",
+              "EXECUTE_SENSING",
+              "WAIT",
+              "INTERACT"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "unlockPolicy": {
+          "enum": [
+            "DISABLED",
+            "COMMISSIONING_ONLY"
+          ]
+        },
+        "mappingEnabled": {
+          "type": "boolean"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "states": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "jobId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              "jobStepId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+              },
+              "operationKey": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "enum": [
+                  "ACCEPTED",
+                  "RUNNING",
+                  "SUCCEEDED",
+                  "FAILED",
+                  "TIMED_OUT",
+                  "CANCELLED",
+                  "RECOVERY_REQUIRED"
+                ]
+              }
+            },
+            "required": [
+              "jobId",
+              "jobStepId",
+              "operationKey",
+              "status"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "mappingSession": {
+          "anyOf": [
+            {
+              "$ref": "common.schema.json#/$defs/mappingSession"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "navigationSession": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                },
+                "map_id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                },
+                "map_asset_hash": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "expires_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "session_id",
+                "map_id",
+                "map_asset_hash",
+                "expires_at"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "contract",
+        "runtimeVersion",
+        "simulation",
+        "enabledStepTypes",
+        "unlockPolicy",
+        "mappingEnabled",
+        "capabilities",
+        "states",
+        "mappingSession"
+      ],
+      "additionalProperties": false
+    },
+    "HEARTBEAT": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "enum": [
+            "IDLE",
+            "BUSY",
+            "ERROR"
+          ]
+        },
+        "runtimeVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "protocolMajor": {
+          "const": 1
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "activeJobStepId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "currentMapId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mapAssetHash": {
+          "anyOf": [
+            {
+              "$ref": "common.schema.json#/$defs/hash"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mappingSession": {
+          "anyOf": [
+            {
+              "$ref": "common.schema.json#/$defs/mappingSession"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "telemetry": {
+          "$ref": "mqtt-pi-message.schema.json#/$defs/telemetry"
+        },
+        "navigationSession": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                },
+                "map_id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                },
+                "map_asset_hash": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "expires_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "session_id",
+                "map_id",
+                "map_asset_hash",
+                "expires_at"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "runtimeVersion",
+        "protocolMajor",
+        "capabilities",
+        "activeJobStepId",
+        "currentMapId",
+        "mapAssetHash",
+        "mappingSession",
+        "telemetry"
+      ],
+      "additionalProperties": false
+    },
+    "COMMAND_ACK": {
+      "type": "object",
+      "properties": {
+        "commandId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "commandType": {
+          "enum": [
+            "EXECUTE_STEP",
+            "CANCEL_STEP"
+          ]
+        },
+        "accepted": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "errorCode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "replayed": {
+          "type": "boolean"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "physicalStopConfirmed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "commandId",
+        "commandType",
+        "accepted"
+      ],
+      "additionalProperties": false
+    },
+    "STEP_STARTED": {
+      "type": "object",
+      "properties": {
+        "attemptNo": {
+          "const": 1
+        },
+        "stepType": {
+          "enum": [
+            "MOVE",
+            "CONTROL_HARDWARE",
+            "EXECUTE_SENSING",
+            "WAIT",
+            "INTERACT"
+          ]
+        },
+        "resolvedInputs": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "attemptNo",
+        "stepType",
+        "resolvedInputs"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "stepType": {
+                "const": "MOVE"
+              }
+            },
+            "required": [
+              "stepType"
+            ]
+          },
+          "then": {
+            "properties": {
+              "resolvedInputs": {
+                "$ref": "pi-step-inputs.schema.json#/$defs/MOVE"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "stepType": {
+                "const": "CONTROL_HARDWARE"
+              }
+            },
+            "required": [
+              "stepType"
+            ]
+          },
+          "then": {
+            "properties": {
+              "resolvedInputs": {
+                "$ref": "pi-step-inputs.schema.json#/$defs/CONTROL_HARDWARE"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "stepType": {
+                "const": "EXECUTE_SENSING"
+              }
+            },
+            "required": [
+              "stepType"
+            ]
+          },
+          "then": {
+            "properties": {
+              "resolvedInputs": {
+                "$ref": "pi-step-inputs.schema.json#/$defs/EXECUTE_SENSING"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "stepType": {
+                "const": "WAIT"
+              }
+            },
+            "required": [
+              "stepType"
+            ]
+          },
+          "then": {
+            "properties": {
+              "resolvedInputs": {
+                "$ref": "pi-step-inputs.schema.json#/$defs/WAIT"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "STEP_RESULT": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "const": "SUCCEEDED"
+        },
+        "result": {
+          "type": "object"
+        },
+        "errorCode": {
+          "type": "null"
+        },
+        "retryable": {
+          "const": false
+        },
+        "details": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "physicalStopConfirmed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stepType": {
+          "enum": [
+            "AUTHENTICATE",
+            "CONTROL_HARDWARE",
+            "MOVE",
+            "WAIT",
+            "INTERACT",
+            "HANDLE_PAYLOAD",
+            "DATA_SERVICE",
+            "SET_CONTEXT",
+            "CHECK_CONDITION",
+            "EXECUTE_SENSING",
+            "NOTIFY"
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "result",
+        "errorCode",
+        "retryable",
+        "details",
+        "physicalStopConfirmed"
+      ],
+      "additionalProperties": false
+    },
+    "STEP_ERROR": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "enum": [
+            "FAILED",
+            "TIMED_OUT",
+            "CANCELLED",
+            "RECOVERY_REQUIRED"
+          ]
+        },
+        "result": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "errorCode": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retryable": {
+          "const": false
+        },
+        "details": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "physicalStopConfirmed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stepType": {
+          "enum": [
+            "AUTHENTICATE",
+            "CONTROL_HARDWARE",
+            "MOVE",
+            "WAIT",
+            "INTERACT",
+            "HANDLE_PAYLOAD",
+            "DATA_SERVICE",
+            "SET_CONTEXT",
+            "CHECK_CONDITION",
+            "EXECUTE_SENSING",
+            "NOTIFY"
+          ]
+        },
+        "errorMessage": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "required": [
+        "status",
+        "errorCode",
+        "retryable",
+        "details"
+      ],
+      "additionalProperties": false
+    },
+    "OPERATOR_RECONCILED": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "const": "CANCELLED"
+        }
+      },
+      "required": [
+        "reason",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "PROTOCOL_ERROR": {
+      "type": "object",
+      "properties": {
+        "commandId": {
+          "description": "Echo of received ID may be malformed or null; do not validate as UUID."
+        },
+        "errorCode": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "commandId",
+        "errorCode"
+      ],
+      "additionalProperties": false
+    },
+    "telemetry": {
+      "type": "object",
+      "properties": {
+        "left": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "age_sec": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "value",
+            "age_sec"
+          ],
+          "additionalProperties": false
+        },
+        "right": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "age_sec": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "value",
+            "age_sec"
+          ],
+          "additionalProperties": false
+        },
+        "battery": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "integer"
+            },
+            "age_sec": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "value",
+            "age_sec"
+          ],
+          "additionalProperties": false
+        },
+        "scan": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "boolean"
+            },
+            "age_sec": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "value",
+            "age_sec"
+          ],
+          "additionalProperties": false
+        },
+        "odom_speed": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "age_sec": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "value",
+            "age_sec"
+          ],
+          "additionalProperties": false
+        },
+        "gate": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string",
+              "minLength": 1
+            },
+            "age_sec": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "value",
+            "age_sec"
+          ],
+          "additionalProperties": false
+        },
+        "map_pose": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "x_m": {
+                      "type": "number",
+                      "minimum": -99999999.9999,
+                      "maximum": 99999999.9999
+                    },
+                    "y_m": {
+                      "type": "number",
+                      "minimum": -99999999.9999,
+                      "maximum": 99999999.9999
+                    },
+                    "yaw_rad": {
+                      "type": "number",
+                      "minimum": -3.141593,
+                      "maximum": 3.141593
+                    },
+                    "map_id": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "mapping_session_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                    },
+                    "navigation_session_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                    },
+                    "initialization_revision": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "x_m",
+                    "y_m",
+                    "yaw_rad",
+                    "map_id"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "age_sec": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "fresh": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "value",
+            "age_sec",
+            "fresh"
+          ],
+          "additionalProperties": false
+        },
+        "localization": {
+          "type": "object",
+          "properties": {
+            "ready": {
+              "type": "boolean"
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "session_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "initialization_revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "map_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "map_asset_hash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "age_sec": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "ready",
+            "reason",
+            "session_id",
+            "initialization_revision",
+            "map_id",
+            "map_asset_hash",
+            "age_sec"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": "1.0"
+        },
+        "messageId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "operationKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "jobId": {
+          "type": "null"
+        },
+        "jobStepId": {
+          "type": "null"
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "producerSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "sequenceNo": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "messageType": {
+          "const": "HELLO"
+        },
+        "payload": {
+          "$ref": "mqtt-pi-message.schema.json#/$defs/HELLO"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "messageId",
+        "operationKey",
+        "correlationId",
+        "robotId",
+        "jobId",
+        "jobStepId",
+        "occurredAt",
+        "producerSessionId",
+        "sequenceNo",
+        "transportSessionId",
+        "messageType",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": "1.0"
+        },
+        "messageId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "operationKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "jobId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "jobStepId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "producerSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "sequenceNo": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "messageType": {
+          "const": "HEARTBEAT"
+        },
+        "payload": {
+          "$ref": "mqtt-pi-message.schema.json#/$defs/HEARTBEAT"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "messageId",
+        "operationKey",
+        "correlationId",
+        "robotId",
+        "jobId",
+        "jobStepId",
+        "occurredAt",
+        "producerSessionId",
+        "sequenceNo",
+        "transportSessionId",
+        "messageType",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": "1.0"
+        },
+        "messageId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "operationKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "jobId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "jobStepId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "producerSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "sequenceNo": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "messageType": {
+          "const": "COMMAND_ACK"
+        },
+        "payload": {
+          "$ref": "mqtt-pi-message.schema.json#/$defs/COMMAND_ACK"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "messageId",
+        "operationKey",
+        "correlationId",
+        "robotId",
+        "jobId",
+        "jobStepId",
+        "occurredAt",
+        "producerSessionId",
+        "sequenceNo",
+        "transportSessionId",
+        "messageType",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": "1.0"
+        },
+        "messageId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "operationKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "jobId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "jobStepId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "producerSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "sequenceNo": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "messageType": {
+          "const": "STEP_STARTED"
+        },
+        "payload": {
+          "$ref": "mqtt-pi-message.schema.json#/$defs/STEP_STARTED"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "messageId",
+        "operationKey",
+        "correlationId",
+        "robotId",
+        "jobId",
+        "jobStepId",
+        "occurredAt",
+        "producerSessionId",
+        "sequenceNo",
+        "transportSessionId",
+        "messageType",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": "1.0"
+        },
+        "messageId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "operationKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "jobId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "jobStepId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "producerSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "sequenceNo": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "messageType": {
+          "const": "STEP_RESULT"
+        },
+        "payload": {
+          "$ref": "mqtt-pi-message.schema.json#/$defs/STEP_RESULT"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "messageId",
+        "operationKey",
+        "correlationId",
+        "robotId",
+        "jobId",
+        "jobStepId",
+        "occurredAt",
+        "producerSessionId",
+        "sequenceNo",
+        "transportSessionId",
+        "messageType",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": "1.0"
+        },
+        "messageId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "operationKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "jobId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "jobStepId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "producerSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "sequenceNo": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "messageType": {
+          "const": "STEP_ERROR"
+        },
+        "payload": {
+          "$ref": "mqtt-pi-message.schema.json#/$defs/STEP_ERROR"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "messageId",
+        "operationKey",
+        "correlationId",
+        "robotId",
+        "jobId",
+        "jobStepId",
+        "occurredAt",
+        "producerSessionId",
+        "sequenceNo",
+        "transportSessionId",
+        "messageType",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": "1.0"
+        },
+        "messageId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "operationKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "jobId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "jobStepId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "producerSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "sequenceNo": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "messageType": {
+          "const": "OPERATOR_RECONCILED"
+        },
+        "payload": {
+          "$ref": "mqtt-pi-message.schema.json#/$defs/OPERATOR_RECONCILED"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "messageId",
+        "operationKey",
+        "correlationId",
+        "robotId",
+        "jobId",
+        "jobStepId",
+        "occurredAt",
+        "producerSessionId",
+        "sequenceNo",
+        "transportSessionId",
+        "messageType",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": "1.0"
+        },
+        "messageId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "operationKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlationId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "jobId": {
+          "type": "null"
+        },
+        "jobStepId": {
+          "type": "null"
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "producerSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "sequenceNo": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "messageType": {
+          "const": "PROTOCOL_ERROR"
+        },
+        "payload": {
+          "$ref": "mqtt-pi-message.schema.json#/$defs/PROTOCOL_ERROR"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "messageId",
+        "operationKey",
+        "correlationId",
+        "robotId",
+        "jobId",
+        "jobStepId",
+        "occurredAt",
+        "producerSessionId",
+        "sequenceNo",
+        "transportSessionId",
+        "messageType",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "robotId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "online": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "robotId",
+        "transportSessionId",
+        "online"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "robotId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "messageType": {
+          "const": "MAP_PREVIEW"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "mapping_session_id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "width": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "resolution": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "origin": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "items": false,
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "frame_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "captured_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "pose": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "anyOf": [
+                    {
+                      "$ref": "common.schema.json#/$defs/pose"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "age_sec": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "fresh": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "value",
+                "age_sec",
+                "fresh"
+              ],
+              "additionalProperties": false
+            },
+            "encoding": {
+              "const": "zlib-base64-int8-row-major-bottom-up"
+            },
+            "data": {
+              "type": "string",
+              "maxLength": 850000,
+              "contentEncoding": "base64"
+            }
+          },
+          "required": [
+            "mapping_session_id",
+            "revision",
+            "width",
+            "height",
+            "resolution",
+            "origin",
+            "frame_id",
+            "captured_at",
+            "pose",
+            "encoding",
+            "data"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "robotId",
+        "transportSessionId",
+        "messageType",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "messageType": {
+          "const": "NAV_PROFILE_ACK"
+        },
+        "robotId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "producerSessionId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "profileHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "accepted": {
+          "type": "boolean"
+        },
+        "mapId": {
+          "oneOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mapAssetHash": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "errorCode": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "messageType",
+        "robotId",
+        "transportSessionId",
+        "producerSessionId",
+        "profileHash",
+        "accepted",
+        "mapId",
+        "mapAssetHash",
+        "errorCode"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "accepted": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "mapId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              },
+              "mapAssetHash": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "errorCode": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

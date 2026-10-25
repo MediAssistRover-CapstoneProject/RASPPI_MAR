@@ -27,6 +27,21 @@ class CameraTests(unittest.TestCase):
     def tearDown(self):
         self.frames.close();self.server.shutdown();self.server.server_close();self.thread.join(2.)
 
+    def test_source_timestamp_rejects_old_frames_even_if_callback_is_new(self):
+        preview=object.__new__(CameraPreview)
+        preview.cfg={'sample_every_frame':True,'source_max_age_sec':.35}
+        preview.active=lambda:True;preview.last_sample=0.;preview.error=None
+        preview.lock=threading.Lock();preview.sample=None
+        preview.source_clock=SimpleNamespace(now=lambda:SimpleNamespace(nanoseconds=2_000_000_000))
+        msg=SimpleNamespace(encoding='rgb8',width=1,height=1,step=3,data=b'abc',
+                            header=SimpleNamespace(stamp=SimpleNamespace(sec=1,nanosec=0)))
+        preview.on_image(msg)
+        self.assertIsNone(preview.sample);self.assertEqual(preview.error,'CAMERA_SOURCE_STALE')
+        msg.header.stamp=SimpleNamespace(sec=1,nanosec=900_000_000)
+        preview.on_image(msg)
+        self.assertIsNotNone(preview.sample)
+        self.assertTrue(preview.sample[5].startswith('1970-01-01T00:00:01.900'))
+
     def test_index_and_health_report_configured_topic(self):
         with self.http.open(self.base+'/',timeout=2) as r:
             self.assertIn(b'/stream?topic=',r.read())

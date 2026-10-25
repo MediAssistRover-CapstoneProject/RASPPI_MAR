@@ -1,0 +1,524 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mediassistrover.invalid/contracts/phase0/common.schema.json",
+  "title": "Shared contract fields",
+  "$comment": "Bundled schema-3 validation contract reconstructed from BE handoff Markdown. Pi implementation remains unverified; semantic and Job-scope checks are implemented in Java.",
+  "x-provenance": {
+    "status": "RECONSTRUCTED_UNVERIFIED_PI",
+    "sources": [
+      "../01_Giao_tiep_va_toan_bo_field.md",
+      "../02_Input_Output_11_Step_Type.md"
+    ],
+    "baselineDate": "2026-10-12"
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "dateTime": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
+    "pose": {
+      "type": "object",
+      "properties": {
+        "x_m": {
+          "type": "number"
+        },
+        "y_m": {
+          "type": "number"
+        },
+        "yaw_rad": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "x_m",
+        "y_m",
+        "yaw_rad"
+      ],
+      "additionalProperties": false
+    },
+    "item": {
+      "type": "object",
+      "properties": {
+        "item_code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quantity": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "item_code",
+        "quantity"
+      ],
+      "additionalProperties": false
+    },
+    "endpoint": {
+      "type": "object",
+      "properties": {
+        "endpoint_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "endpoint_code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "endpoint_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "x_m": {
+          "type": "number"
+        },
+        "y_m": {
+          "type": "number"
+        },
+        "yaw_rad": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "endpoint_id",
+        "endpoint_code",
+        "endpoint_name",
+        "x_m",
+        "y_m",
+        "yaw_rad"
+      ],
+      "additionalProperties": false
+    },
+    "mappingSession": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "job_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "state": {
+          "enum": [
+            "STARTING",
+            "MAPPING",
+            "SAVING",
+            "SAVED_LOCAL",
+            "SAVED",
+            "STOPPED",
+            "ABORTED",
+            "RECOVERY_REQUIRED",
+            "OPERATOR_RECONCILED"
+          ]
+        },
+        "session_open": {
+          "type": "boolean"
+        },
+        "preview_rate_hz": {
+          "type": "number",
+          "minimum": 0.2,
+          "maximum": 1
+        },
+        "artifact_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "artifact_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reconciliation_reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reconciled_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "autonomy": {
+          "type": "object",
+          "properties": {
+            "vehicle": {
+              "enum": [
+                "rigid",
+                "articulated"
+              ]
+            },
+            "available": {
+              "type": "boolean"
+            },
+            "control_selected": {
+              "type": "boolean"
+            },
+            "profile_max_duration_sec": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 600
+            },
+            "run_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "state": {
+              "enum": [
+                "IDLE",
+                "RUNNING",
+                "STOPPED"
+              ]
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "finished": {
+              "type": "boolean"
+            },
+            "coverage_complete": {
+              "type": "boolean"
+            },
+            "elapsed_sec": {
+              "type": "number",
+              "minimum": 0
+            },
+            "travel_m": {
+              "type": "number",
+              "minimum": 0
+            },
+            "max_duration_sec": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 600
+            },
+            "stop_on_return": {
+              "type": "boolean"
+            },
+            "start_pose": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "x_m": {
+                      "type": "number"
+                    },
+                    "y_m": {
+                      "type": "number"
+                    },
+                    "yaw_rad": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "x_m",
+                    "y_m",
+                    "yaw_rad"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "exploration_mode": {
+              "enum": [
+                "reactive",
+                "frontier"
+              ]
+            },
+            "manual_lidar_assist": {
+              "type": "boolean"
+            },
+            "manual_assist_reason": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "exploration": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "state": {
+                  "enum": [
+                    "PLANNING",
+                    "BLOCKED",
+                    "NO_FRONTIERS",
+                    "FRONTIERS_PRESENT",
+                    "COMPLETE"
+                  ]
+                },
+                "reason": {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                "frontier_count": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "frontier_cells": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "ignored_frontier_cells": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "reachable_free_area_m2": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "goal": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "x_m": {
+                          "type": "number"
+                        },
+                        "y_m": {
+                          "type": "number"
+                        },
+                        "yaw_rad": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "x_m",
+                        "y_m",
+                        "yaw_rad"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "planning_backend": {
+                  "enum": [
+                    "nav2",
+                    "reactive"
+                  ]
+                },
+                "seed_body_clear": {
+                  "type": "boolean"
+                },
+                "seed_block_kind": {
+                  "enum": [
+                    "clear",
+                    "occupied",
+                    "unknown",
+                    "boundary"
+                  ]
+                },
+                "planner_cell_m": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "clearance_radius_m": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "body_radius_m": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "seed_obstacle_clearance_m": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "seed_unknown_clearance_m": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
+            "manual_control": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "enum": [
+                    "local",
+                    "mqtt",
+                    "gamepad"
+                  ]
+                },
+                "layout": {
+                  "enum": [
+                    "legacy",
+                    "vendor_mecanum"
+                  ]
+                },
+                "session_required": {
+                  "type": "boolean"
+                },
+                "forward_mps": {
+                  "type": "number",
+                  "minimum": 0.02,
+                  "maximum": 0.3
+                },
+                "angular_rps": {
+                  "type": "number",
+                  "minimum": 0.1,
+                  "maximum": 1.0
+                },
+                "continuous": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            },
+            "save_on_complete": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "required": [
+                  "coverage_complete"
+                ],
+                "properties": {
+                  "coverage_complete": {
+                    "const": true
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "state",
+                  "finished",
+                  "reason",
+                  "exploration_mode",
+                  "exploration"
+                ],
+                "properties": {
+                  "state": {
+                    "const": "STOPPED"
+                  },
+                  "finished": {
+                    "const": true
+                  },
+                  "reason": {
+                    "const": "COVERAGE_COMPLETE"
+                  },
+                  "exploration_mode": {
+                    "const": "frontier"
+                  },
+                  "exploration": {
+                    "required": [
+                      "enabled",
+                      "state",
+                      "frontier_count"
+                    ],
+                    "properties": {
+                      "enabled": {
+                        "const": true
+                      },
+                      "state": {
+                        "const": "COMPLETE"
+                      },
+                      "frontier_count": {
+                        "const": 0
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "properties": {
+        "artifact_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "asset_hash": {
+          "$ref": "common.schema.json#/$defs/hash"
+        },
+        "width_px": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height_px": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "resolution_m_per_pixel": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "width_m": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "height_m": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "origin_x_m": {
+          "type": "number"
+        },
+        "origin_y_m": {
+          "type": "number"
+        },
+        "origin_yaw_rad": {
+          "type": "number"
+        },
+        "frame_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "artifact_id",
+        "asset_hash",
+        "width_px",
+        "height_px",
+        "resolution_m_per_pixel",
+        "width_m",
+        "height_m",
+        "origin_x_m",
+        "origin_y_m",
+        "origin_yaw_rad",
+        "frame_id"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

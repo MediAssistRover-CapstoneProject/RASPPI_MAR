@@ -13,7 +13,9 @@ def validate_config(cfg):
     try:
         if not isinstance(cfg["robot_id"], str) or not cfg["robot_id"]:
             raise StepError("INVALID_CONFIG", "robot_id")
-        number(cfg["max_speed_mps"], 0.001, 0.3, "max_speed_mps")
+        # Higher translation is opt-in on M1 Mecanum; other chassis keep their cap.
+        mecanum = cfg.get('motion', {}).get('chassis_model') == 'MENTORPI_M1_MECANUM'
+        number(cfg["max_speed_mps"], 0.001, 1.0 if mecanum else 0.3, "max_speed_mps")
         for name in ("capabilities", "allowed_workflows"):
             if not isinstance(cfg[name], list) or any(not isinstance(v, str) for v in cfg[name]):
                 raise StepError("INVALID_CONFIG", name)
@@ -25,11 +27,13 @@ def validate_config(cfg):
         if type(m.get("us100_required", True)) is not bool:
             raise StepError("INVALID_CONFIG", "motion.us100_required")
         number(m["stop_distance_m"], 0.025, 2, "stop_distance_m")
-        number(m["max_angular_speed_rps"], 0.01, 0.5, "max_angular_speed_rps")
+        number(m["max_angular_speed_rps"], 0.01, 1.0, "max_angular_speed_rps")
+        if 'allow_strafe' in m and (type(m['allow_strafe']) is not bool or m['allow_strafe'] and m.get('chassis_model')!='MENTORPI_M1_MECANUM'):
+            raise StepError('INVALID_CONFIG','allow_strafe requires Mecanum')
         if m.get('allow_reverse',False):
             if m.get('chassis_model')!='MENTORPI_M1_MECANUM':
                 raise StepError('REVERSE_REQUIRES_M1_PROFILE')
-            number(m.get('max_reverse_speed_mps',.10),.01,.15,'max_reverse_speed_mps')
+            number(m.get('max_reverse_speed_mps',.10),.01,.30,'max_reverse_speed_mps')
             number(m.get('rear_stop_distance_m',.30),.15,1.,'rear_stop_distance_m')
         if 'allow_reverse' in m and type(m['allow_reverse']) is not bool:
             raise StepError('INVALID_CONFIG','allow_reverse')

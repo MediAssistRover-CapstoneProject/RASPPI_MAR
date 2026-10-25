@@ -5,7 +5,7 @@ import math
 import os
 from pathlib import Path
 import time
-from .localization import QualityGate,GridMatcher,angle,particle_support
+from .localization import QualityGate,GridMatcher,angle,particle_support,bootstrap_verdict
 from .map_tools import map_fingerprint
 
 
@@ -32,6 +32,11 @@ class LocalizationNode:
         self.map_file_ok=False;self.file_verified_at=-1e9;self.active={};self.pending={}
         self.boot_at=None;self.boot_ros=math.inf;self.initialized=False;self.ever_ready=False
         self.last_poll=-1e9;self.last_nomotion=-1e9;self.error='WAITING_FOR_MAP';self.last_reason=None
+        self.session_context=cfg.get('navigation_session');self.initialization_revision=0;self.authorization_error=None
+        self.session_poller=None
+        if self.session_context:
+            from .navigation_session import SessionPoller
+            self.session_poller=SessionPoller(cfg)
         self.output=self.node.create_publisher(String,'/mediassist/localization/status',10)
         self.initial=self.node.create_publisher(PoseWithCovarianceStamped,'/initialpose',10)
         qos=QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL,reliability=ReliabilityPolicy.RELIABLE)
@@ -116,6 +121,8 @@ class LocalizationNode:
         from geometry_msgs.msg import PoseWithCovarianceStamped
         from std_srvs.srv import Empty
         if not self.map_ready(now) or not self.lifecycle_ready(now):return
+        if self.authorization_error:return
+        if self.cfg['mode']=='manual':self.error='WAITING_FOR_INITIAL_POSE';return
         if not self.initialized:
             if self.odom is None or abs(self.ros_now()-self.seconds(self.odom.header.stamp))>.6:return
             velocity=self.odom.twist.twist
@@ -138,7 +145,9 @@ class LocalizationNode:
                     # The first post-reset scan/cloud may arrive before the service response callback.
                     self.boot_ros=self.ros_now();self.pose=None;self.particles=[];self.gate.reset()
                     self.call('global',self.global_reset,Empty.Request(),initialized)
-        if self.initialized and now-self.last_nomotion>=.5:
+        # AMCL otherwise only updates after movement. Keep a stationary bootstrap
+        # supplied with new filter updates, without inventing new pose timestamps.
+        if self.initialized and now-self.last_nomotion>=.25:
             if self.call('nomotion',self.nomotion,Empty.Request(),lambda r:None):self.last_nomotion=now
 
     def evidence(self,now):
@@ -160,29 +169,42 @@ class LocalizationNode:
             s.update(tf_fresh=-.5<=age<=1.,pose=dict(x_m=p.x,y_m=p.y,yaw_rad=yaw(transform.transform.rotation)))
             s['particle_support']=particle_support(self.particles,s['pose'])
             sensor=self.tf.lookup_transform(self.hw['ros']['map_frame'],scan.header.frame_id,Time.from_msg(scan.header.stamp))
-            t=sensor.transform.translation;q=sensor.transform.rotation;a=yaw(q);points=[]
+            from .geometry_diagnostics import planar_transform,scan_points
+            transform=planar_transform(sensor.transform);points=[]
             step=max(1,len(scan.ranges)//240)
-            for i in range(0,len(scan.ranges),step):
-                distance=scan.ranges[i]
+            for _,distance,x,y in scan_points(scan,transform,step):
                 if not math.isfinite(distance) or not max(.05,scan.range_min)<distance<min(scan.range_max*.99,12.):continue
-                heading=a+scan.angle_min+i*scan.angle_increment
-                points.append((t.x+distance*math.cos(heading),t.y+distance*math.sin(heading)))
+                points.append((x,y))
             if self.matcher:s.update(self.matcher.score(points))
         except Exception:pass
         return s
 
     def tick(self):
         from std_msgs.msg import String
-        now=time.monotonic();self.poll_services(now);self.bootstrap(now)
+        now=time.monotonic()
+        if self.session_poller:
+            descriptor,self.authorization_error=self.session_poller.current()
+            if descriptor:
+                initialization=descriptor['initialization'];revision=initialization['revision']
+                if revision!=self.initialization_revision:
+                    self.initialization_revision=revision;self.cfg['mode']=initialization['mode'].lower()
+                    if initialization['mode']=='SEED':self.cfg['initial_pose']=initialization['pose']
+                    self.initialized=self.ever_ready=False;self.boot_at=None;self.boot_ros=math.inf
+                    self.pose=None;self.particles=[];self.gate=QualityGate(self.cfg);self.error='INITIALIZATION_REQUESTED'
+                    if 'global' in self.pending:
+                        future,_=self.pending.pop('global');future.cancel()
+        self.poll_services(now);self.bootstrap(now)
         sample=self.evidence(now);status=self.gate.update(now,sample)
-        if not self.initialized:status.update(ready=False,reason=self.error)
-        elif not self.ever_ready and now-self.boot_at>self.cfg['bootstrap_timeout_sec']:
-            status.update(ready=False,reason='BOOTSTRAP_TIMEOUT_NEEDS_INITIAL_POSE')
+        status=bootstrap_verdict(status,self.initialized,self.ever_ready,
+            now-self.boot_at if self.boot_at is not None else 0.,self.cfg['bootstrap_timeout_sec'],self.error)
         if status['ready']:self.ever_ready=True
+        if self.authorization_error:
+            status.update(ready=False,reason=self.authorization_error);self.gate.reset()
         pose=sample.get('pose')
         if pose and not all(math.isfinite(v) for v in pose.values()):pose=None
         status.update(map_id=self.cfg['map_id'],map_asset_hash=self.cfg['map_asset_hash'],frame_id=self.hw['ros']['map_frame'],
                       observed_at_sec=self.ros_now(),pose=pose,pose_age_sec=sample.get('pose_age_sec'),mode=self.cfg['mode'])
+        if self.session_context:status.update(session_id=self.session_context['session_id'],initialization_revision=self.initialization_revision)
         raw=json.dumps(status,allow_nan=False);self.output.publish(String(data=raw))
         if status['reason']!=self.last_reason:
             self.node.get_logger().info('LOCALIZATION '+status['reason']);self.last_reason=status['reason']
@@ -201,6 +223,7 @@ def main():
     try:rclpy.spin(guard.node)
     except KeyboardInterrupt:pass
     finally:
+        if guard.session_poller:guard.session_poller.close()
         guard.node.destroy_node()
         if rclpy.ok():rclpy.shutdown()
 

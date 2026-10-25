@@ -7,7 +7,7 @@ from configure_mapping import ROOT, load, stopped_configuration, write_configura
 from mediassist.gamepad import configuration
 
 
-def configure(config, source, device_id=None, linear_sign=None, angular_sign=None, us100=None):
+def configure(config, source, device_id=None, linear_sign=None, angular_sign=None, us100=None, forward=None, reverse=None, angular=None):
     if source not in ('mqtt', 'gamepad'):
         raise ValueError('source must be mqtt or gamepad')
     config = Path(config).resolve(strict=True)
@@ -19,7 +19,11 @@ def configure(config, source, device_id=None, linear_sign=None, angular_sign=Non
         for key, value in (('device_id', device_id), ('linear_sign', linear_sign), ('angular_sign', angular_sign)):
             if value is not None:
                 pad[key] = value
+        for key,value in (('forward_mps',forward),('reverse_mps',reverse),('angular_rps',angular)):
+            if value is not None:pad[key]=value
         configuration(cfg['mapping'])
+        if (forward is not None and pad['forward_mps']>hardware['max_speed_mps'] or angular is not None and pad['angular_rps']>hardware['motion']['max_angular_speed_rps']):
+            raise ValueError('Gamepad speed exceeds the existing hardware profile; no files changed')
         options = None
         if us100 is not None:
             if us100 not in ('required', 'optional'):
@@ -43,8 +47,11 @@ def main():
     parser.add_argument('--linear-sign', type=int, choices=(-1, 1))
     parser.add_argument('--angular-sign', type=int, choices=(-1, 1))
     parser.add_argument('--us100', choices=('required', 'optional'))
+    parser.add_argument('--forward',type=float,help='Forward m/s, .02..15')
+    parser.add_argument('--reverse',type=float,help='Reverse m/s, .02..10')
+    parser.add_argument('--angular',type=float,help='Yaw rad/s, .10..50')
     args = parser.parse_args()
-    configure(args.config, args.source, args.device_id, args.linear_sign, args.angular_sign, args.us100)
+    configure(args.config, args.source, args.device_id, args.linear_sign, args.angular_sign, args.us100, args.forward, args.reverse, args.angular)
 
 
 if __name__ == '__main__':

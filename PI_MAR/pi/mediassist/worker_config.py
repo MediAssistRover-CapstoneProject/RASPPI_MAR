@@ -28,7 +28,12 @@ def camera_config(mapping):
     camera=mapping.setdefault('camera',{})
     for key,value in {'enabled':False,'topic':'/ascamera/camera_publisher/rgb0/image','rate_hz':.5,
                       'max_width':320,'max_height':240,'jpeg_quality':50,'max_jpeg_bytes':65536,
-                      'stream_enabled':True,'stream_bind':'0.0.0.0','stream_port':8081,'stream_rate_hz':15.}.items():camera.setdefault(key,value)
+                      'stream_backend':'python','stream_enabled':True,'stream_bind':'0.0.0.0','stream_port':8081,'stream_rate_hz':15.}.items():camera.setdefault(key,value)
+    if camera['stream_backend'] not in ('python','web_video_server'):
+        raise StepError('INVALID_CAMERA_STREAM_BACKEND')
+    camera.setdefault('mqtt_preview_enabled',camera['stream_backend']!='web_video_server')
+    if type(camera['mqtt_preview_enabled']) is not bool:
+        raise StepError('INVALID_CAMERA_CONFIG','mqtt_preview_enabled')
     if type(camera['enabled']) is not bool or not isinstance(camera['topic'],str) or not camera['topic'].startswith('/'):
         raise StepError('INVALID_CAMERA_CONFIG')
     for key,lo,hi in (('rate_hz',.2,1),('max_width',64,640),('max_height',48,480),('jpeg_quality',20,80),('max_jpeg_bytes',4096,65536)):
@@ -37,7 +42,7 @@ def camera_config(mapping):
             raise StepError('INVALID_CAMERA_CONFIG',key)
     for key in ('max_width','max_height','jpeg_quality'):
         camera.setdefault('stream_'+key,camera[key])
-    camera.setdefault('stream_max_frame_age_sec',2.)
+    camera.setdefault('stream_max_frame_age_sec',.35)
     for key,lo,hi in (('stream_max_width',64,640),('stream_max_height',48,480),('stream_jpeg_quality',20,80)):
         if type(camera[key]) is not int or not lo<=camera[key]<=hi:
             raise StepError('INVALID_CAMERA_STREAM_CONFIG',key)
@@ -55,6 +60,10 @@ def camera_config(mapping):
         or not 1024 <= camera['stream_port'] <= 65535
         or type(camera['stream_rate_hz']) not in (int,float) or not 1 <= camera['stream_rate_hz'] <= 30):
         raise StepError('INVALID_CAMERA_STREAM_CONFIG')
+    # The Hiwonder build was observed ignoring ROS port overrides. Use its
+    # tested defaults rather than advertise a port/address it may not bind.
+    if camera['stream_backend']=='web_video_server' and (camera['stream_port']!=8080 or camera['stream_bind']!='0.0.0.0'):
+        raise StepError('VENDOR_CAMERA_REQUIRES_DEFAULT_BIND','0.0.0.0:8080')
     return camera
 
 
@@ -116,6 +125,8 @@ def load(path):
     if type(ai.get("max_age_sec")) not in (int,float) or not 0.1 <= ai["max_age_sec"] <= 10:
         raise StepError("INVALID_AI_CONFIG")
     mapping=cfg["mapping"]
+    from .autonomous_mapping import configuration as autonomy_configuration
+    autonomy_configuration(mapping)
     for key,value in {'fresh_session':True,'reset_service':'/mediassist/slam/new_session','slam_resolution_m':.025,
         'slam_min_travel_m':.05,'slam_min_heading_rad':.10,'slam_min_interval_sec':.15,'slam_map_interval_sec':.5}.items():mapping.setdefault(key,value)
     if type(mapping['fresh_session']) is not bool or not isinstance(mapping['reset_service'],str) or not mapping['reset_service'].startswith('/'):
@@ -158,6 +169,8 @@ def load(path):
     cfg['localization']=localization_configuration(cfg.get('localization',{}))
     if cfg['localization']['enabled'] and not Path(cfg['localization'].get('status_file','')).is_absolute():
         raise StepError('LOCALIZATION_STATUS_PATH_REQUIRED')
+    from .navigation_session import configuration as session_configuration
+    session_configuration(cfg,hardware)
     return cfg, hardware
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
