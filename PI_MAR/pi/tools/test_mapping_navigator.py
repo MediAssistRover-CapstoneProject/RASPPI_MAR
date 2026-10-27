@@ -34,12 +34,22 @@ class NavigatorTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(sys.modules,self.modules):velocity,reason=await self.navigator.tick(self.plan,self.pose,10.)
         self.assertEqual(velocity,(0.,0.,0.));self.assertEqual(reason,'REPLANNING_REJECTED_FRONTIER');self.assertFalse(self.navigator.active)
         self.adapter.navigation_velocity.assert_not_called()
-    async def test_stale_velocity_fails_and_stop_confirms_goal_cancellation(self):
+    async def test_stale_velocity_holds_zero_then_cancels_before_selecting_another_goal(self):
         with patch.dict(sys.modules,self.modules):await self.navigator.tick(self.plan,self.pose,10.)
         self.adapter.navigation_velocity.return_value=((1.,1.,1.),False)
-        with patch.dict(sys.modules,self.modules),self.assertRaisesRegex(StepError,'NAV2_COMMAND_STALE'):
-            await self.navigator.tick(self.plan,self.pose,12.1)
-        await self.navigator.stop();self.adapter.stop.assert_awaited_once();self.assertFalse(self.navigator.active)
+        with patch.dict(sys.modules,self.modules):
+            velocity,reason=await self.navigator.tick(self.plan,self.pose,12.1)
+            self.assertEqual(velocity,(0.,0.,0.));self.assertEqual(reason,'WAITING_FOR_NAV2_VELOCITY')
+            velocity,reason=await self.navigator.tick(self.plan,self.pose,15.5)
+        self.assertEqual(velocity,(0.,0.,0.));self.assertEqual(reason,'REPLANNING_STALE_NAV2')
+        self.adapter.stop.assert_awaited_once();self.assertFalse(self.navigator.active)
+        self.exploration.exclude_goal.assert_called_once()
+    async def test_goal_without_progress_is_stopped_and_excluded_instead_of_spinning_forever(self):
+        with patch.dict(sys.modules,self.modules):
+            await self.navigator.tick(self.plan,self.pose,10.)
+            velocity,reason=await self.navigator.tick(self.plan,self.pose,31.)
+        self.assertEqual(velocity,(0.,0.,0.));self.assertEqual(reason,'REPLANNING_STALLED_FRONTIER')
+        self.adapter.stop.assert_awaited_once();self.assertFalse(self.navigator.active)
     async def test_missing_server_stays_stopped(self):
         self.adapter.nav.server_is_ready.return_value=False
         with patch.dict(sys.modules,self.modules),self.assertRaisesRegex(StepError,'NAV2_MAPPING_NOT_READY'):

@@ -2,9 +2,18 @@
   <BehaviorTree ID="MainTree">
     <PipelineSequence name="PlanAndFollow">
       <RateController hz="1.0">
-        <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+        <RecoveryNode number_of_retries="2" name="BoundedPlanningRetry">
+          <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+          <Sequence>
+            <Wait wait_duration="0.5"/>
+            <ClearEntireCostmap name="ClearGlobalForReplan" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </Sequence>
+        </RecoveryNode>
       </RateController>
-      <FollowPath path="{path}" controller_id="FollowPath"/>
+      <RecoveryNode number_of_retries="1" name="BoundedControllerRetry">
+        <FollowPath path="{path}" controller_id="FollowPath"/>
+        <ClearEntireCostmap name="ClearLocalForRetry" service_name="local_costmap/clear_entirely_local_costmap"/>
+      </RecoveryNode>
     </PipelineSequence>
   </BehaviorTree>
 </root>

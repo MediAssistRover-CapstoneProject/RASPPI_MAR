@@ -27,6 +27,18 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
         costmap['footprint'] = json.dumps(footprint)
         costmap['footprint_padding'] = 0.03
         costmap['inflation_layer']['inflation_radius'] = max(0.3, costmap['inflation_layer'].get('inflation_radius', 0.3))
+        if not fast_mapping:
+            # A broad cost gradient prefers corridor clearance over wall-hugging shortcuts.
+            costmap['inflation_layer'].update(inflation_radius=max(.45,costmap['inflation_layer']['inflation_radius']),
+                                             cost_scaling_factor=3.0)
+        for layer_name in ('obstacle_layer','voxel_layer'):
+            layer=costmap.get(layer_name)
+            if not layer:continue
+            if layer_name=='voxel_layer':layer['publish_voxel_map']=False
+            for source in layer.get('observation_sources','').split():
+                scan=layer.get(source,{})
+                # Rays must clear at least as far as they can mark, or moving objects leave ghosts.
+                scan['raytrace_max_range']=max(scan.get('raytrace_max_range',3.),scan.get('obstacle_max_range',2.5)+.5)
     ctl = result['controller_server']['ros__parameters']
     follow = ctl['FollowPath']
     if follow.get('plugin') != 'dwb_core::DWBLocalPlanner':
@@ -45,7 +57,7 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
     follow['ObstacleFootprint.scale'] = 1.0
     ctl['progress_checker'].update(required_movement_radius=0.1, movement_time_allowance=20.0)
     ctl['general_goal_checker'].update(xy_goal_tolerance=.05,yaw_goal_tolerance=.10)
-    ctl.update(min_y_velocity_threshold=.001)
+    ctl.update(min_y_velocity_threshold=.001,speed_limit_topic='/mediassist/navigation_speed_limit')
     follow.update(acc_lim_x=.40,decel_lim_x=-.6,acc_lim_y=.40 if mecanum else 0.,
                   decel_lim_y=-.6 if mecanum else 0.,acc_lim_theta=1.2,decel_lim_theta=-1.8)
     result['velocity_smoother']['ros__parameters'].update(
@@ -54,6 +66,16 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
         max_accel=[.40,.40 if mecanum else 0.,1.2],max_decel=[-.6,-.6 if mecanum else 0.,-1.8],velocity_timeout=.25)
     result['planner_server']['ros__parameters']['GridBased']['allow_unknown'] = False
     result['planner_server']['ros__parameters']['GridBased']['tolerance'] = .05
+    planner=result['planner_server']['ros__parameters']['GridBased']
+    if not fast_mapping:
+        if planner.get('plugin','nav2_navfn_planner/NavfnPlanner') not in ('nav2_navfn_planner/NavfnPlanner','nav2_navfn_planner::NavfnPlanner'):
+            raise ValueError('Expected installed Navfn planner for saved-map navigation')
+        # Shortest cost on the current grid includes obstacle clearance, not just Euclidean length.
+        planner['use_astar']=True
+    navigator=result.get('bt_navigator',{}).get('ros__parameters',{})
+    if 'plugin_lib_names' in navigator:
+        for plugin in ('nav2_recovery_node_bt_node','nav2_clear_costmap_service_bt_node','nav2_wait_action_bt_node'):
+            if plugin not in navigator['plugin_lib_names']:navigator['plugin_lib_names'].append(plugin)
     return result
 
 

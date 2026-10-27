@@ -110,6 +110,25 @@ class ManualTests(unittest.TestCase):
 
 
 class WorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_scoped_cleanup_stop_preempts_held_stick_but_other_steps_do_not(self):
+        for action,job,session,accepted in [('STOP','job','session',True),('STOP','other','session',False),
+                                           ('STOP','job','other',False),('START','job','session',False),('SAVE','job','session',False)]:
+            mapping=NS(state={'job_id':'job','session_id':'session'},active=True,manual_drive=Mock(),gamepad=Mock())
+            mapping.manual_drive.busy.return_value=True
+            store=Mock();store.cached_command.return_value=False;store.previous.return_value=None;store.blocked.return_value=False
+            store.emit.return_value={'messageId':'ack'}
+            worker=StepWorker({'robot_id':'robot'}, {}, store, NS(mapping=mapping,motion_uncertain=False));worker.execute=AsyncMock()
+            command={'commandType':'EXECUTE_STEP','commandId':'cmd','correlationId':'correlation','expiresAt':'later',
+                'step':{'stepType':'EXECUTE_SENSING','jobId':job,'params':{'sensing_type':'MAPPING','action':action,'mapping_session_id':session}}}
+            with patch('mediassist.step_worker.validate_command'),patch('mediassist.step_worker.validate_step'):
+                await worker.command(command)
+                if worker.task:await worker.task
+            self.assertEqual(store.accept.called,accepted,(action,job,session))
+            if accepted:
+                mapping.gamepad.stop.assert_called_once_with('WORKFLOW_HANDOFF_RETURN_NEUTRAL')
+                self.assertIsNotNone(worker.active)
+            else:worker.execute.assert_not_called()
+
     async def test_local_loop_runs_while_mqtt_connection_is_waiting(self):
         mapping=NS(manual_drive=Mock(),gamepad=NS(cfg={'session_required':False}),tick=AsyncMock())
         store=Mock();store.blocked.return_value=False

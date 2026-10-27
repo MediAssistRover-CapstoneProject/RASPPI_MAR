@@ -44,6 +44,8 @@ class RosAdapter:
         self.samples, self.goal, self.lease_speed, self.goal_feedback = {}, None, None, None
         self.nav_velocity_sample=None
         self.navigation_velocity_output=self.node.create_publisher(Twist,config['ros']['raw_cmd_vel'],1)
+        from nav2_msgs.msg import SpeedLimit
+        self.navigation_speed_output=self.node.create_publisher(SpeedLimit,'/mediassist/navigation_speed_limit',10)
         def nav_velocity(msg):
             with self.lock:self.nav_velocity_sample=((float(msg.linear.x),float(msg.linear.y),float(msg.angular.z)),time.monotonic())
         self.node.create_subscription(Twist,'/mediassist/nav2_cmd_vel',nav_velocity,1)
@@ -74,6 +76,7 @@ class RosAdapter:
 
     def clear_navigation_velocity(self):
         with self.lock:self.nav_velocity_sample=None
+        self.navigation_resume_ramp=None
 
     def navigation_velocity(self):
         with self.lock:sample=self.nav_velocity_sample
@@ -90,8 +93,27 @@ class RosAdapter:
             scale=min(1.,min(speed,self.cfg['max_speed_mps'])/max(math.hypot(x,y),1e-9))
             msg.linear.x=x*scale;msg.linear.y=y*scale
             limit=self.cfg['motion']['max_angular_speed_rps'];msg.angular.z=max(-limit,min(z,limit))
+            ramp=getattr(self,'navigation_resume_ramp',None)
+            if ramp is not None:
+                msg.linear.x,msg.linear.y,msg.angular.z=ramp.update((msg.linear.x,msg.linear.y,msg.angular.z),time.monotonic())
+        elif getattr(self,'navigation_resume_ramp',None) is not None:self.navigation_resume_ramp.reset()
         self.navigation_velocity_output.publish(msg)
         return fresh
+
+    def navigation_speed_limit(self,speed):
+        from nav2_msgs.msg import SpeedLimit
+        if type(speed) not in (int,float) or not math.isfinite(speed) or not 0<speed<=self.cfg['max_speed_mps']:
+            raise StepError('SPEED_POLICY_EXCEEDED')
+        msg=SpeedLimit();msg.header.stamp=self.node.get_clock().now().to_msg()
+        msg.percentage=False;msg.speed_limit=float(speed)
+        self.navigation_speed_output.publish(msg)
+
+    def hold_navigation_velocity(self):
+        from geometry_msgs.msg import Twist
+        self.navigation_velocity_output.publish(Twist())
+        self.clear_navigation_velocity();self.lease_message(False)
+        from .mapping_control import HolonomicRamp
+        self.navigation_resume_ramp=HolonomicRamp()
 
     def _localization_status(self,msg):
         try:
@@ -223,10 +245,12 @@ class RosAdapter:
             raise StepError("LOCALIZATION_NOT_READY" if getattr(self,'localization_required',False) else "MAP_TF_NOT_READY")
         self._navigation_context()
 
-    def _navigation_context(self):
+    def _navigation_context(self,allow_localization_pause=False):
         if getattr(self,'worker',{}).get('navigation_session'):
             from .navigation_session import command_context
-            command_context({'navigationContext':getattr(self,'active_navigation_context',None)},self.worker,self.cfg,self)
+            return command_context({'navigationContext':getattr(self,'active_navigation_context',None)},self.worker,self.cfg,self,
+                                   require_localization=not allow_localization_pause)
+        return True
 
     def _pose(self, endpoint_id):
         from geometry_msgs.msg import PoseStamped
@@ -239,7 +263,7 @@ class RosAdapter:
         pose.pose.orientation.w = math.cos(endpoint["yaw_rad"] / 2)
         return pose
 
-    async def _plan(self, p, endpoint_id):
+    async def _plan(self, p, endpoint_id, meta=None):
         from nav2_msgs.action import ComputePathToPose
         await self._prerequisites(p)
         if not self.planner.server_is_ready(): raise StepError("PLANNER_UNAVAILABLE")
@@ -258,6 +282,35 @@ class RosAdapter:
             if result.status == 6 or (result.status == 4 and not result.result.path.poses):
                 raise StepError("PATH_UNAVAILABLE")
             if result.status != 4: raise StepError("PLAN_CANCELLED")
+            context=getattr(self,'worker',{}).get('navigation_session')
+            if context:
+                # BE must acknowledge this exact Nav2 plan before motor navigation starts.
+                # A failed HTTPS publish leaves the robot stopped rather than displaying a
+                # misleading line from an older map or goal.
+                from .navigation_session import SessionClient
+                frozen=getattr(self,'active_navigation_context',None)
+                if not meta or not isinstance(frozen,dict):raise StepError('NAVIGATION_PLAN_CONTEXT_MISSING')
+                path=result.result.path
+                if path.header.frame_id!=self.cfg['ros']['map_frame']:raise StepError('NAVIGATION_PLAN_FRAME_MISMATCH')
+                poses=path.poses
+                if len(poses)<2:raise StepError('PATH_UNAVAILABLE')
+                indexes=sorted(set(round(i*(len(poses)-1)/min(255,len(poses)-1)) for i in range(min(255,len(poses)-1)+1)))
+                points=[]
+                for i in indexes:
+                    position=poses[i].pose.position
+                    if not math.isfinite(position.x) or not math.isfinite(position.y):raise StepError('NAVIGATION_PLAN_INVALID')
+                    points.append({'xM':round(position.x,4),'yM':round(position.y,4)})
+                body={'sessionId':context['session_id'],'mapId':context['map_id'],
+                      'mapAssetHash':context['map_asset_hash'],
+                      'initializationRevision':frozen['initialization_revision'],
+                      'jobId':meta['job_id'],'jobStepId':meta['job_step_id'],
+                      'endpointId':endpoint_id,'points':points}
+                try:
+                    reply=await asyncio.to_thread(SessionClient(self.worker).request,
+                        '/api/v1/pi/navigation-session/plan',body,4096)
+                    if not json.loads(reply).get('accepted'):raise StepError('NAVIGATION_PLAN_NOT_ACKNOWLEDGED')
+                except StepError:raise
+                except Exception as exc:raise StepError('NAVIGATION_PLAN_BE_UNREACHABLE') from exc
         finally:
             if not received: sent.add_done_callback(self._late_cancel)
             if not await self.stop(): raise StepError("GOAL_STOP_UNCONFIRMED")
@@ -272,6 +325,7 @@ class RosAdapter:
         goal.behavior_tree = str((Path(__file__).resolve().parents[1] / "config/navigate_no_recovery.xml").resolve(strict=True))
         self.goal_feedback = None
         self.clear_navigation_velocity()
+        self.navigation_speed_limit(p['max_speed_mps'])
         sent = self.nav.send_goal_async(goal, feedback_callback=lambda m: setattr(self, "goal_feedback", m.feedback))
         received = False
         try:
@@ -280,14 +334,30 @@ class RosAdapter:
             if not self.goal.accepted: raise StepError("NAV_GOAL_REJECTED")
             result_future = self.goal.get_result_async()
             accepted_at=time.monotonic()
+            localization_pause=None;velocity_pause=None
             while not result_future.done():
                 self._check_graph()
-                self._navigation_context()
+                context_ready=self._navigation_context(allow_localization_pause=True)
                 state = self.telemetry()
-                if getattr(self,'localization_required',False) and not state['map_pose']['fresh']:
-                    raise StepError('LOCALIZATION_LOST')
+                if getattr(self,'localization_required',False) and (not context_ready or not state['map_pose']['fresh']):
+                    self.hold_navigation_velocity()
+                    if localization_pause is None:
+                        import logging
+                        logging.warning('Navigation held: LOCALIZATION_NOT_READY; waiting at most 2 seconds')
+                        localization_pause=time.monotonic()
+                    if time.monotonic()-localization_pause>2.:raise StepError('LOCALIZATION_LOST')
+                    await asyncio.sleep(.05);continue
+                if localization_pause is not None:
+                    import logging
+                    logging.info('Navigation resumed: fresh localization verified on unchanged session')
+                localization_pause=None
                 if "gate" not in state or state["gate"]["age_sec"] > 0.6: raise StepError("SAFETY_GATE_LOST")
-                if getattr(self,'worker',{}).get('navigation_runtime') and not self.publish_navigation_velocity(p['max_speed_mps']) and time.monotonic()-accepted_at>2:raise StepError('NAV2_COMMAND_STALE')
+                if getattr(self,'worker',{}).get('navigation_runtime') and not self.publish_navigation_velocity(p['max_speed_mps']):
+                    self.lease_message(False)
+                    if velocity_pause is None:velocity_pause=time.monotonic()
+                    if time.monotonic()-velocity_pause>3. and time.monotonic()-accepted_at>5.:raise StepError('NAV2_COMMAND_STALE')
+                    await asyncio.sleep(.05);continue
+                velocity_pause=None
                 self.lease_message(True, p["max_speed_mps"])
                 await asyncio.sleep(0.05)
             status = result_future.result().status
@@ -318,7 +388,7 @@ class RosAdapter:
             if self.event_sink:
                 self.event_sink(meta["job_id"], "ENDPOINT_ATTEMPT", {**meta, **data})
         return await select_and_move(p, self.cfg,
-            lambda eid: self._plan(p, eid), lambda eid: self._move_one(p, eid), report)
+            lambda eid: self._plan(p, eid, meta), lambda eid: self._move_one(p, eid), report)
 
     def health(self):
         data = self.telemetry()

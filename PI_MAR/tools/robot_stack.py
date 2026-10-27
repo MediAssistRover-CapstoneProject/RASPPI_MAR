@@ -213,6 +213,7 @@ class Supervisor:
         self.owned = {}
         self.optional = set()
         self.reported_optional = set()
+        self.next_process_scan = 0.
 
     def start(self, name, argv, required=True):
         log = (self.directory / (name + '.log')).open('ab', buffering=0)
@@ -230,9 +231,13 @@ class Supervisor:
         say('START ' + name + ': ' + str(self.directory / (name + '.log')))
 
     def alive(self):
-        table = processes()
+        # DDS can wake spin_once hundreds of times/second. Poll child exits every
+        # call, but enumerate /proc only twice/second to avoid consuming a CPU core.
+        now=time.monotonic()
+        table = processes() if now >= self.next_process_scan else None
+        if table is not None:self.next_process_scan=now+.5
         for name, child, identity in self.children:
-            if identity:
+            if identity and table is not None:
                 saved = self.owned.setdefault(name, {})
                 for entry in descendants(identity, table):
                     saved[(entry['pid'], entry['ticks'])] = entry
@@ -445,6 +450,8 @@ def main():
                 if time.monotonic() < report:
                     continue
                 report = time.monotonic() + 1
+                problem=probe.imu_problem()
+                if problem:raise RuntimeError('IMU_RUNTIME_NOT_READY: '+problem)
                 if any(vendor_bringup(p) for p in processes().values()):
                     raise RuntimeError('VENDOR_BRINGUP_RESPAWNED')
                 try:

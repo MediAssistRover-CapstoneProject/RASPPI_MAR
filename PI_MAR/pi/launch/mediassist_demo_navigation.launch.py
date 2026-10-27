@@ -2,7 +2,8 @@
 from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, TimerAction
+from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, TimerAction, OpaqueFunction
+import sys
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch.conditions import IfCondition,UnlessCondition
@@ -10,6 +11,9 @@ from launch_ros.actions import SetRemap
 
 
 def generate_launch_description():
+    root=Path(__file__).resolve().parents[2]
+    sys.path.insert(0,str(root/'tools'))
+    from vendor_hardware_launch import include
     nav2 = Path(get_package_share_directory('nav2_bringup')) / 'launch/bringup_launch.py'
     localization = nav2.parent/'localization_launch.py'
     navigation=Path(__file__).with_name('mediassist_nav2_nodes.launch.py')
@@ -22,8 +26,7 @@ def generate_launch_description():
             SetRemap(src='odom_publisher:controller/cmd_vel', dst='/mediassist/cmd_vel_safe'),
             SetRemap(src='odom_publisher:cmd_vel', dst='/mediassist/unused_cmd_vel'),
             SetRemap(src='odom_publisher:app/cmd_vel', dst='/mediassist/unused_app_cmd_vel'),
-            IncludeLaunchDescription(PythonLaunchDescriptionSource(LaunchConfiguration('vendor_robot_launch')),
-                launch_arguments={'sim': 'false', 'robot_name': '/', 'master_name': '/', 'use_joy': 'false'}.items()),
+            OpaqueFunction(function=lambda context:include(context,root)),
         ]),
         TimerAction(period=10.0, actions=[
             IncludeLaunchDescription(PythonLaunchDescriptionSource(str(navigation)),condition=UnlessCondition(LaunchConfiguration('localization_only')),launch_arguments={

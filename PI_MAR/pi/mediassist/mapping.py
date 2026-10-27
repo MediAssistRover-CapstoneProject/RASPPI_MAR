@@ -345,7 +345,14 @@ class MappingManager:
             hold=auto.cfg['exploration_mode']=='frontier' and (plan_result is None or plan_result['state'] in ('NO_FRONTIERS','BLOCKED'))
             reactive=auto.cfg['exploration_mode']=='reactive' and auto.cfg['vehicle']=='rigid'
             x,z=auto.current(now,view,now-at,pose,moving,'SENSORS_OR_SESSION_NOT_READY',gate,heading,hold or bool(navigator) or reactive)
-            if reactive and auto.phase=='RUNNING':
+            rear_blocked=auto.reason=='REPLANNING_REAR_BLOCKED' and auto.phase=='RUNNING'
+            if rear_blocked and navigator and navigator.active:
+                target=dict(navigator.target)
+                await navigator.stop()
+                self.exploration.exclude_goal(target,now,ttl=15.)
+                plan_result=None
+            authorized=auto.phase=='RUNNING' and now<auto.deadline
+            if reactive and authorized:
                 from .lidar_reactive import LidarReactive
                 if not hasattr(self,'lidar_reactive'):self.lidar_reactive=LidarReactive()
                 (x,y,z),auto.reason=self.lidar_reactive.current(view,auto.cfg,max(0.,now-at),now,auto.run_id)
@@ -357,8 +364,9 @@ class MappingManager:
                         from .frontier_mapping import source_signature
                         if result['source_signature']==source_signature(grid[0]):
                             x,z=auto.stop('COVERAGE_COMPLETE');y=0.
-            if auto.phase=='RUNNING' and auto.cfg['exploration_mode']=='frontier':
-                if plan_error:x,z=auto.stop(plan_error)
+            if authorized and auto.cfg['exploration_mode']=='frontier':
+                if rear_blocked:x,y,z=0.,0.,0.
+                elif plan_error:x,z=auto.stop(plan_error)
                 elif plan_result is None:x,z=0.,0.;auto.reason='PLANNING_FRONTIERS'
                 elif plan_result['state']=='BLOCKED':
                     if plan_result['reason']=='FRONTIERS_UNREACHABLE' and not self.exploration.no_progress(now,True):
@@ -382,7 +390,7 @@ class MappingManager:
                         x,y,z=limited
                     except Exception as error:
                         x,z=auto.stop(getattr(error,'code','NAV2_MAPPING_FAILED'));y=0.
-            if auto.phase!='RUNNING':x,y,z=0.,0.,0.
+            if not authorized or auto.phase!='RUNNING':x,y,z=0.,0.,0.
             if navigator and navigator.active and (auto.phase!='RUNNING' or hold):await navigator.stop()
             self.state['autonomy']=self.auto_status()
             if old_phase!=auto.phase:
@@ -436,7 +444,9 @@ class MappingManager:
         if len(encoded) > self.cfg.get('max_preview_bytes',131072):
             return None
         self.last_sent = rev
-        pose = self.adapter.telemetry()['map_pose']
+        # Pair the marker with this OccupancyGrid's timestamp. A latest TF read
+        # after PNG compression can belong to a later SLAM correction/robot pose.
+        pose = self.preview_pose(snap)
         # Pose belongs to the live session, not the previously commissioned map UUID.
         if pose.get('value'):
             # The outer payload already identifies the SLAM session. Worker
@@ -446,6 +456,19 @@ class MappingManager:
         return {**{k:v for k,v in snap.items() if k!='data'}, 'revision':rev,
                 'mapping_session_id':self.state['session_id'], 'pose':pose,
                 'encoding':'zlib-base64-int8-row-major-bottom-up', 'data':encoded}
+
+    def preview_pose(self,snapshot):
+        try:
+            from rclpy.time import Time
+            stamp=datetime.fromisoformat(snapshot['captured_at'].replace('Z','+00:00')).timestamp()
+            transform=self.adapter.tf_buffer.lookup_transform(snapshot['frame_id'],
+                self.adapter.cfg['ros']['base_frame'],Time(nanoseconds=round(stamp*1e9)))
+            t,q=transform.transform.translation,transform.transform.rotation
+            value=dict(x_m=t.x,y_m=t.y,yaw_rad=math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z)))
+            if not all(math.isfinite(v) for v in value.values()):raise ValueError('Invalid map pose')
+            return {'value':value,'age_sec':0.,'fresh':True}
+        except Exception:
+            return {'value':None,'age_sec':None,'fresh':False}
 
     def ensure_scope(self, step):
         if self.state.get('session_id') != step['params']['mapping_session_id'] or self.state.get('job_id') != step['jobId']:
@@ -563,7 +586,8 @@ class MappingManager:
             if not grid:return
             snap=grid[0];result={k:v for k,v in (plan_result or {}).items() if k not in ('planning_grid','path')}
             report={'observed_at':utcnow(),'run_id':self.auto.run_id,'mapping_session_id':self.state.get('session_id'),
-                'map_revision':revision,'pose':pose,'scan_view':view,'autonomy':self.auto.cfg,'plan':result,
+                'map_revision':revision,'pose':pose,'pose_jump':getattr(self.auto,'pose_jump',None),
+                'scan_view':view,'autonomy':self.auto.cfg,'plan':result,
                 'snapshot':{**snap,'data':base64.b64encode(zlib.compress(snap['data'])).decode()}}
             folder=self.root/'diagnostics';folder.mkdir(exist_ok=True)
             (folder/(self.auto.run_id+'.json')).write_text(json.dumps(report,allow_nan=False))

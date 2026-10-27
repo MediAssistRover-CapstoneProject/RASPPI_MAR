@@ -84,17 +84,20 @@ class SessionPoller:
         return value,None
     def close(self):self.quit.set()
 
-def command_context(command,cfg,hardware,adapter):
+def command_context(command,cfg,hardware,adapter,require_localization=True):
     """Freeze map, session, initialization and profile for exactly this MOVE acceptance."""
     context=cfg.get('navigation_session');received=command.get('navigationContext')
     if not context:
         if received is not None:raise StepError('UNEXPECTED_NAVIGATION_CONTEXT')
-        return
+        return True
     if expired(context) or not isinstance(received,dict):raise StepError('NAVIGATION_SESSION_REQUIRED')
     for key in ('session_id','map_id','map_asset_hash'):
         if received.get(key)!=context[key]:raise StepError('NAVIGATION_SESSION_MISMATCH')
     local=adapter.telemetry().get('localization',{})
-    if local.get('ready') is not True or local.get('age_sec',math.inf)>.75:raise StepError('LOCALIZATION_NOT_READY')
+    age=local.get('age_sec')
+    ready=(local.get('ready') is True and type(age) in (int,float) and math.isfinite(age) and 0<=age<=.75)
+    if require_localization and not ready:raise StepError('LOCALIZATION_NOT_READY')
     if local.get('initialization_revision')!=received.get('initialization_revision'):raise StepError('LOCALIZATION_REVISION_CHANGED')
     deployed=getattr(adapter,'navigation_profile_hash',None)
     if deployed is None or received.get('profile_hash')!=deployed:raise StepError('NAVIGATION_PROFILE_NOT_SYNCED')
+    return ready

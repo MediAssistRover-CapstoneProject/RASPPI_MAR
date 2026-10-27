@@ -45,7 +45,9 @@ def covariance_std(cov):
 
 class QualityGate:
     def __init__(self,cfg):self.cfg=configuration(cfg);self.reset()
-    def reset(self):self.since=None;self.count=0;self.last_scan=None;self.previous_pose=None
+    def reset(self):
+        self.since=None;self.count=0;self.last_scan=None;self.previous_pose=None
+        self.had_lock=False;self.last_good_at=None;self.recovering=False;self.tracking=False
     def update(self,now,sample):
         c=self.cfg;reasons=[];metrics={}
         for key,code in (('map_verified','MAP_NOT_VERIFIED'),('amcl_active','AMCL_NOT_ACTIVE'),('tf_fresh','TF_NOT_READY')):
@@ -75,12 +77,22 @@ class QualityGate:
             if not math.isfinite(support) or support<c['min_particle_support']:reasons.append('PARTICLES_NOT_CONVERGED')
             metrics['particle_support']=support if math.isfinite(support) else None
         if reasons:
+            transient={'SCAN_AGE_SEC_STALE','ODOM_AGE_SEC_STALE','POSE_AGE_SEC_STALE',
+                       'SCAN_MATCH_LOW','KNOWN_FRACTION_LOW','VALID_BEAMS_LOW'}
+            self.recovering=bool(self.had_lock and self.last_good_at is not None and now-self.last_good_at<=2.
+                                 and set(reasons)<=transient)
+            if not self.recovering:self.had_lock=False
+            self.tracking=False
             self.since=None;self.count=0;self.last_scan=None
             return dict(ready=False,reason=reasons[0],reasons=reasons,stable_scans=0,metrics=metrics)
         if sample.get('scan_sequence')!=self.last_scan:
             self.last_scan=sample.get('scan_sequence');self.count+=1
             if self.since is None:self.since=now
-        ready=self.count>=c['stable_scans'] and self.since is not None and now-self.since>=c['stable_sec']
+        if self.recovering and now-self.last_good_at>2.:
+            self.recovering=False;self.had_lock=False
+        needed_scans,needed_sec=(2,.5) if self.recovering else (c['stable_scans'],c['stable_sec'])
+        ready=self.tracking or (self.count>=needed_scans and self.since is not None and now-self.since>=needed_sec)
+        if ready:self.had_lock=True;self.last_good_at=now;self.recovering=False;self.tracking=True
         return dict(ready=ready,reason='LOCALIZED' if ready else 'VERIFYING',reasons=[],stable_scans=self.count,metrics=metrics)
 
 class GridMatcher:

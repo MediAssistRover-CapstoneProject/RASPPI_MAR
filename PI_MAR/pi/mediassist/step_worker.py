@@ -76,7 +76,14 @@ class StepWorker:
             self.receipt(command,False,step,errorCode="ROBOT_BUSY")
             return
         mapping=self.adapter.mapping
-        if mapping and getattr(mapping,'manual_drive',None) and mapping.manual_drive.busy(mapping.gamepad):
+        params=step['params']
+        mapping_stop=bool(mapping and step['stepType']=='EXECUTE_SENSING'
+            and params.get('sensing_type')=='MAPPING' and params.get('action')=='STOP'
+            and step['jobId']==mapping.state.get('job_id')
+            and params.get('mapping_session_id')==mapping.state.get('session_id'))
+        # A scoped cleanup STOP must not be rejected because a stick is held.
+        # Accepting it inhibits manual drive below; abort still confirms zero odometry.
+        if not mapping_stop and mapping and getattr(mapping,'manual_drive',None) and mapping.manual_drive.busy(mapping.gamepad):
             self.receipt(command,False,step,errorCode="RETURN_GAMEPAD_TO_NEUTRAL")
             return
         if mapping and mapping.active:

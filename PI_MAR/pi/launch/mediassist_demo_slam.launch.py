@@ -1,10 +1,11 @@
 """Vendor SLAM with both chassis velocity inputs remapped behind the local gate."""
 from launch import LaunchDescription
-from launch.actions import GroupAction, IncludeLaunchDescription, DeclareLaunchArgument,ExecuteProcess,TimerAction,RegisterEventHandler,EmitEvent
+from launch.actions import GroupAction, IncludeLaunchDescription, DeclareLaunchArgument,ExecuteProcess,TimerAction,RegisterEventHandler,EmitEvent,OpaqueFunction
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from pathlib import Path
 import os
+import sys
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import SetRemap
@@ -19,6 +20,8 @@ def engine_environment(root):
 
 def generate_launch_description():
     root=Path(__file__).resolve().parents[2]
+    sys.path.insert(0,str(root/'tools'))
+    from vendor_hardware_launch import include
     engine=ExecuteProcess(cmd=[str(root/'pi/.venv/bin/python'),'-m','mediassist.slam_session',
         '--config',LaunchConfiguration('worker_config')],output='screen',
         additional_env=engine_environment(root))
@@ -29,8 +32,7 @@ def generate_launch_description():
             SetRemap(src='odom_publisher:controller/cmd_vel', dst='/mediassist/cmd_vel_safe'),
             SetRemap(src='odom_publisher:cmd_vel', dst='/mediassist/unused_cmd_vel'),
             SetRemap(src='odom_publisher:app/cmd_vel', dst='/mediassist/unused_app_cmd_vel'),
-            IncludeLaunchDescription(PythonLaunchDescriptionSource(LaunchConfiguration('vendor_robot_launch')),
-                launch_arguments={'sim': 'false', 'robot_name': '/', 'master_name': '/', 'use_joy': 'false'}.items())
+            OpaqueFunction(function=lambda context:include(context,root))
         ]),
         RegisterEventHandler(OnProcessExit(target_action=engine,on_exit=[EmitEvent(event=Shutdown(reason='SLAM session controller exited'))])),
         TimerAction(period=10.,actions=[engine])

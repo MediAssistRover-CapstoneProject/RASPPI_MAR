@@ -106,13 +106,19 @@ class MappingTests(unittest.IsolatedAsyncioTestCase):
             telemetry=adapter.telemetry()
         self.assertEqual(telemetry['map_pose']['value']['mapping_session_id'],S)
         manager=object.__new__(MappingManager)
-        manager.adapter=SimpleNamespace(telemetry=lambda:telemetry)
+        transform=SimpleNamespace(transform=SimpleNamespace(translation=SimpleNamespace(x=.1,y=.2),
+            rotation=SimpleNamespace(x=0.,y=0.,z=0.,w=1.)))
+        lookup=Mock(return_value=transform)
+        manager.adapter=SimpleNamespace(telemetry=lambda:telemetry,tf_buffer=SimpleNamespace(lookup_transform=lookup),
+            cfg={'ros':{'base_frame':'base_footprint'}})
         manager.cfg={'max_preview_rate_hz':1.,'max_map_age_sec':10,'max_preview_bytes':131072}
         manager.state={**STATE,'preview_rate_hz':1.}
         manager.lock=threading.Lock();manager.last_preview=0;manager.last_sent=0;manager.revision=3
         manager.grid=({'width':2,'height':2,'resolution':.05,'origin':[0.,0.,0.],
                        'frame_id':'map','captured_at':NOW.isoformat(),'data':bytes([255,0,50,100])},time.monotonic())
-        payload=await manager.preview()
+        with patch.dict(sys.modules,{'rclpy.time':SimpleNamespace(Time=lambda **kwargs:kwargs)}):
+            payload=await manager.preview()
+        self.assertEqual(lookup.call_args.args,('map','base_footprint',{'nanoseconds':round(NOW.timestamp()*1e9)}))
         self.assertEqual(set(payload['pose']['value']),{'x_m','y_m','yaw_rad'})
         self.assertEqual(payload['mapping_session_id'],S)
         # Preview normalization must not mutate heartbeat session identity.
@@ -120,6 +126,15 @@ class MappingTests(unittest.IsolatedAsyncioTestCase):
         target=os.environ.get('MAR_PI_PREVIEW_FIXTURE')
         if target:
             Path(target).write_text(json.dumps({'robotId':R,'transportSessionId':T,'messageType':'MAP_PREVIEW','payload':payload}),encoding='utf-8')
+
+    def test_preview_missing_historic_tf_does_not_use_latest_heartbeat(self):
+        manager=object.__new__(MappingManager)
+        telemetry=Mock()
+        manager.adapter=SimpleNamespace(telemetry=telemetry,tf_buffer=SimpleNamespace(lookup_transform=Mock(side_effect=LookupError())),
+            cfg={'ros':{'base_frame':'base_footprint'}})
+        with patch.dict(sys.modules,{'rclpy.time':SimpleNamespace(Time=lambda **kwargs:kwargs)}):
+            result=manager.preview_pose({'captured_at':NOW.isoformat(),'frame_id':'map'})
+        self.assertFalse(result['fresh']);self.assertIsNone(result['value']);telemetry.assert_not_called()
 
     def test_idle_slam_does_not_report_navigation_pose(self):
         adapter=object.__new__(WorkerAdapter);adapter.mapping=SimpleNamespace(active=False)

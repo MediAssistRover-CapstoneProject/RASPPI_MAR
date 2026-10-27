@@ -12,13 +12,17 @@ def configuration(mapping):
                     scan_max_age_sec=.4, blocked_timeout_sec=8.,exploration_mode='reactive',
                     manual_lidar_assist=False,frontier_min_length_m=.20,coverage_stable_sec=15.,
                     coverage_min_duration_sec=30.,coverage_min_travel_m=0.,coverage_min_area_m2=.5,
-                    frontier_no_progress_sec=15.,lidar_stop_distance_m=.10,frontier_controller='nav2')
+                    frontier_no_progress_sec=15.,lidar_stop_distance_m=.10,frontier_controller='nav2',
+                    visit_known_space=False,visit_radius_m=.6,reverse_enabled=False,max_reverse_mps=.1,control_pause_sec=0.)
     for key, value in defaults.items(): cfg.setdefault(key, value)
     if cfg['vehicle'] not in ('rigid','articulated'):raise StepError('INVALID_AUTONOMY_VEHICLE')
     if cfg['frontier_controller'] not in ('nav2','reactive'):raise StepError('INVALID_FRONTIER_CONTROLLER')
     if cfg['exploration_mode'] not in ('reactive','frontier') or type(cfg['manual_lidar_assist']) is not bool:
         raise StepError('INVALID_EXPLORATION_CONFIG')
     if type(cfg.get('enabled')) is not bool: raise StepError('INVALID_AUTONOMY_CONFIG')
+    if any(type(cfg[k]) is not bool for k in ('visit_known_space','reverse_enabled')):raise StepError('INVALID_AUTONOMY_CONFIG')
+    if cfg['reverse_enabled'] and (cfg['vehicle']!='rigid' or cfg['frontier_controller']!='nav2' or cfg['exploration_mode']!='frontier'):
+        raise StepError('AUTONOMOUS_REVERSE_REQUIRES_RIGID_NAV2')
     for key, low, high in (('speed_mps', .02, 1.00), ('angular_rps', .10, .80),
                           ('stop_margin_m', .05, .4), ('turn_clearance_m', .2, 1.),
                           ('slow_clearance_m', .3, 2.), ('max_duration_sec', 10, 600),
@@ -27,7 +31,8 @@ def configuration(mapping):
                           ('blocked_timeout_sec', 2, 20), ('min_turn_radius_m', .5, 2.),
                           ('frontier_min_length_m',.10,.5),('coverage_stable_sec',10,60),
                           ('coverage_min_duration_sec',20,120),('coverage_min_travel_m',0.,5.),
-                          ('coverage_min_area_m2',.3,10.),('frontier_no_progress_sec',10,60),('lidar_stop_distance_m',.05,.50)):
+                          ('coverage_min_area_m2',.3,10.),('frontier_no_progress_sec',10,60),('lidar_stop_distance_m',.05,.50),
+                          ('visit_radius_m',.3,1.5),('max_reverse_mps',.02,.1),('control_pause_sec',0.,2.)):
         value = cfg[key]
         if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
             raise StepError('INVALID_AUTONOMY_CONFIG', key)
@@ -118,6 +123,8 @@ class AutoMapper:
         self.stop_on_return = False; self.duration = cfg['max_duration_sec']
         self.last_now = self.end_at = None
         self.save_on_complete=False
+        self.pose_jump=None
+        self.gate_blocked_at=None
 
     def accept(self, message, now, pose, lease_sec):
         self.last_now=now
@@ -133,7 +140,7 @@ class AutoMapper:
                 if self.phase != 'RUNNING': raise StepError('AUTONOMY_RUN_FINISHED')
                 if (message['maxDurationSec'],message['stopOnReturn'],save_on_complete) != (self.duration,self.stop_on_return,self.save_on_complete):
                     raise StepError('AUTONOMY_RUN_OPTIONS_CHANGED')
-                if now >= self.deadline:
+                if now >= self.deadline+self.cfg.get('control_pause_sec',0.):
                     self.stop('CONTROL_LEASE_EXPIRED'); raise StepError('AUTONOMY_RUN_FINISHED')
             else:
                 if self.phase == 'RUNNING': raise StepError('AUTONOMY_ALREADY_RUNNING')
@@ -148,11 +155,13 @@ class AutoMapper:
                 self.save_on_complete=save_on_complete
                 self.phase, self.reason = 'RUNNING','STARTED'
                 self.end_at=None
+                self.pose_jump=None
+                self.gate_blocked_at=None
         elif action == 'RENEW':
             if run != self.run_id or self.phase != 'RUNNING': raise StepError('AUTONOMY_NOT_RUNNING')
             if (message['maxDurationSec'],message['stopOnReturn'],save_on_complete) != (self.duration,self.stop_on_return,self.save_on_complete):
                 raise StepError('AUTONOMY_RUN_OPTIONS_CHANGED')
-            if now >= self.deadline:
+            if now >= self.deadline+self.cfg.get('control_pause_sec',0.):
                 self.stop('CONTROL_LEASE_EXPIRED'); raise StepError('AUTONOMY_RUN_FINISHED')
         else: raise StepError('INVALID_AUTONOMY_ACTION')
         self.deadline = now + min(.9, max(0., lease_sec))
@@ -162,12 +171,16 @@ class AutoMapper:
             self.phase, self.reason = 'STOPPED',reason
             self.end_at=self.last_now
         self.turn_at = None
+        self.gate_blocked_at=None
         return (0.,0.)
 
     def current(self, now, view, age, pose, allowed, blocked_reason='NOT_READY', gate=None, guidance=None, hold=False):
         self.last_now=now
         if self.phase != 'RUNNING': return (0.,0.)
-        if now >= self.deadline: return self.stop('CONTROL_LEASE_EXPIRED')
+        if now >= self.deadline:
+            if now-self.deadline < self.cfg.get('control_pause_sec',0.):
+                self.reason='WAITING_FOR_CONTROL_LEASE';return (0.,0.)
+            return self.stop('CONTROL_LEASE_EXPIRED')
         if now - self.start_at >= self.duration: return self.stop('TIME_LIMIT')
         if not allowed: return self.stop(blocked_reason)
         if not view or not view.get('valid') or not 0 <= age <= self.cfg['scan_max_age_sec']:
@@ -178,10 +191,18 @@ class AutoMapper:
             return self.stop('MAPPING_POSE_NOT_READY')
         if gate is not None and (not isinstance(gate,dict) or gate.get('reason') not in ('CLEAR','NO_LEASE','STALE_COMMAND')):
             if not isinstance(gate,dict):return self.stop('GATE_INVALID_STATUS')
+            if gate.get('reason')=='REAR_OBSTACLE':
+                if self.gate_blocked_at is None:self.gate_blocked_at=now
+                if now-self.gate_blocked_at<self.cfg['blocked_timeout_sec']:
+                    self.reason='REPLANNING_REAR_BLOCKED';return (0.,0.)
             return self.stop('GATE_' + str(gate.get('reason','UNKNOWN')))
+        self.gate_blocked_at=None
         previous, at = self.last_pose; dt = max(0.,now-at)
         delta = math.hypot(pose['x_m']-previous['x_m'],pose['y_m']-previous['y_m'])
-        if delta > .20 + max(.4,1.5*self.cfg['speed_mps'])*dt: return self.stop('MAP_POSE_JUMP')
+        limit=.20 + max(.4,1.5*self.cfg['speed_mps'])*dt
+        if delta > limit:
+            self.pose_jump=dict(previous=previous,current=dict(pose),delta_m=delta,dt_sec=dt,limit_m=limit)
+            return self.stop('MAP_POSE_JUMP')
         self.travel += delta; self.last_pose = (dict(pose),now)
         distance = math.hypot(pose['x_m']-self.start_pose['x_m'],pose['y_m']-self.start_pose['y_m'])
         self.departed |= distance > self.cfg['return_radius_m']*2
@@ -272,7 +293,12 @@ def nav2_assist(velocity,view,cfg,scan_age=0.):
     legacy=len(velocity)==2
     x,y,z=(velocity[0],0.,velocity[1]) if legacy else velocity
     if not all(math.isfinite(v) for v in (x,y,z)):return (0.,0.) if legacy else (0.,0.,0.)
-    x=max(0.,x)  # Autonomous reverse remains disabled; lateral escape is available.
+    reverse=cfg.get('reverse_enabled',False) and cfg.get('vehicle')=='rigid'
+    x=max(-cfg.get('max_reverse_mps',.1),x) if reverse else max(0.,x)
+    # DWB can add millimetres-per-second of reverse drift to a sideways
+    # command.  Treat that as zero before the independent rear guard sees it;
+    # meaningful reverse motion is still checked against the rear sector.
+    if abs(x)<.005:x=0.
     def factor(gap):
         return min(1.,max(0.,(gap-cfg['stop_margin_m'])/(cfg['slow_clearance_m']-cfg['stop_margin_m'])))
     # A configured maximum is never permission to outrun sensor latency and
@@ -282,10 +308,11 @@ def nav2_assist(velocity,view,cfg,scan_age=0.):
         available=max(0.,gap-cfg['stop_margin_m'])
         reaction=scan_age+.35
         return max(0.,math.sqrt((.6*reaction)**2+1.2*available)-.6*reaction)
-    x*=factor(view['front_m'])
+    longitudinal_gap=view.get('back_m',0.) if x<0 else view['front_m']
+    x*=factor(longitudinal_gap)
     if y:y*=factor(view.get('lateral_left_m' if y>0 else 'lateral_right_m',0.))
     if cfg['speed_mps'] > .25:
-        x=min(x,braking_cap(view['front_m']))
+        x=math.copysign(min(abs(x),braking_cap(longitudinal_gap)),x)
         if y:
             cap=braking_cap(view.get('lateral_left_m' if y>0 else 'lateral_right_m',0.))
             y=math.copysign(min(abs(y),cap),y)

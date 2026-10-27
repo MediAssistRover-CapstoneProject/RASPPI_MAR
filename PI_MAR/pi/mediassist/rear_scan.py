@@ -34,6 +34,10 @@ def rear_clearance(scan, transform, stop_distance):
 
 def chassis_guard(cmd,motion,rear_reason,rear_age):
     if abs(cmd[1])>.001 and not motion.get('allow_strafe',False):return (0.,0.,0.),'STRAFE_NOT_ENABLED'
+    # The local planner may leave a tiny negative x while turning or strafing.
+    # Normalize it at the final chassis gate, after upstream speed scaling.
+    # A real reverse command still requires a fresh, clear rear sector.
+    if abs(cmd[0])<.005:cmd=(0.,cmd[1],cmd[2])
     if cmd[0]>=0:return cmd,None
     if motion.get('chassis_model')!='MENTORPI_M1_MECANUM' or motion.get('allow_reverse') is not True:
         return (0.,0.,0.),'REVERSE_NOT_ENABLED'

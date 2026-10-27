@@ -1,6 +1,7 @@
 """Read-only ROS probe. Checks samples and TF, not merely topic names."""
 import math
 import time
+import json
 
 
 class Probe:
@@ -18,6 +19,8 @@ class Probe:
         self.buffer = Buffer()
         self.listener = TransformListener(self.buffer, self.node)
         self.samples = {}
+        self.imu_status = None
+        self.node.create_subscription(String,'/mediassist/imu_status',self.on_imu_status,10)
         def sample(key, valid):
             if valid:
                 self.samples[key] = time.monotonic()
@@ -42,6 +45,18 @@ class Probe:
     def spin(self):
         self.rclpy.spin_once(self.node, timeout_sec=.1)
 
+    def on_imu_status(self,msg):
+        try:
+            status=json.loads(msg.data)
+            if isinstance(status,dict):self.imu_status=(status,time.monotonic())
+        except (ValueError,TypeError):pass
+
+    def imu_problem(self):
+        status=getattr(self,'imu_status',None)
+        if not status or time.monotonic()-status[1]>2.5:return 'IMU_STATUS_MISSING'
+        if status[0].get('state')!='READY':return str(status[0].get('reason','IMU_NOT_READY'))
+        return None
+
     def graph(self):
         from mediassist.velocity_graph import check_velocity_graph
         check_velocity_graph(self.node, self.hardware['ros'])
@@ -53,6 +68,8 @@ class Probe:
         if not self.hardware["motion"].get("us100_required", True):
             limits.pop("left"); limits.pop("right")
         missing = [key for key, limit in limits.items() if now - self.samples.get(key, -1e9) > limit]
+        problem=self.imu_problem()
+        if problem:missing.append(problem)
         if self.mapping.get('static_map') and 'map' in self.samples:
             missing=[key for key in missing if key!='map']
         try:
