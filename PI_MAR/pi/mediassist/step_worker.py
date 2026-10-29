@@ -97,7 +97,10 @@ class StepWorker:
             validate_step(step,self.cfg,self.hardware)
             if step['stepType']=='MOVE':
                 from .navigation_session import command_context
-                command_context(command,self.cfg,self.hardware,self.adapter)
+                # Freeze identity now; transient localization is checked before
+                # any Nav2 action in the accepted operation. A transient sample
+                # must finish with journalled stop evidence, not an orphaned reject.
+                command_context(command,self.cfg,self.hardware,self.adapter,require_localization=False)
                 self.adapter.active_navigation_context=command.get('navigationContext')
         except (StepError,ValueError) as exc:
             self.receipt(command,False,step,errorCode=getattr(exc,"code","INVALID_PARAMS"))
@@ -237,7 +240,9 @@ class StepWorker:
                     # Register before awaiting MQTT PUBACK: BE EVENT_ACK can arrive first.
                     await send(event)
                     count+=1
-                    if count>=4:
+                    # A slow PUBACK must not postpone the next heartbeat behind
+                    # the remaining replay batch. No change to protocol timeouts.
+                    if count>=4 or time.monotonic()-last_heartbeat>=self.cfg['heartbeat_sec']:
                         break
             await asyncio.sleep(0.2)
 

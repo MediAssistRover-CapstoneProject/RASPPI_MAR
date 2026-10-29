@@ -6,6 +6,11 @@ def finite(value):
     return type(value) in (int, float) and math.isfinite(value)
 
 
+def angular_deadband(yaw):
+    """Suppress sub-0.1 rad/s commands; never amplify a collision-limited turn."""
+    return yaw if finite(yaw) and abs(yaw)>=.1 else 0.0
+
+
 def gate_velocity(cmd, ranges, now, last_command, last_lease, last_scan, config, max_speed):
     if not config["commissioned"] or not config["cart_footprint_validated"] or not config["watchdog_validated"]:
         return (0.0, 0.0, 0.0), "NOT_COMMISSIONED"
@@ -23,4 +28,4 @@ def gate_velocity(cmd, ranges, now, last_command, last_lease, last_scan, config,
     speed = math.hypot(x, y)
     if speed > max_speed: x, y = x * max_speed / speed, y * max_speed / speed
     yaw = min(config["max_angular_speed_rps"], max(-config["max_angular_speed_rps"], yaw))
-    return (x, y, yaw), "CLEAR"
+    return (x, y, angular_deadband(yaw)), "CLEAR"

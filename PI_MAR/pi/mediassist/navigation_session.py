@@ -58,7 +58,14 @@ class SessionClient:
                 return raw
             except urllib.error.HTTPError as error:
                 if error.code in (401,403) and attempt==0:continue
-                raise StepError('NAVIGATION_SESSION_HTTP_'+str(error.code)) from None
+                # Retain only recognized, non-secret protocol reasons. These two
+                # responses can race the MQTT heartbeat/STEP_STARTED commit.
+                code='NAVIGATION_SESSION_HTTP_'+str(error.code)
+                try:message=json.loads(error.read(4096)).get('message','')
+                except (ValueError,TypeError):message=''
+                transient=message in ('Navigation plan session or localization changed',
+                                      'Navigation plan does not belong to the active MOVE step')
+                raise StepError(code,retryable=error.code==422 and transient) from None
         raise StepError('NAVIGATION_SESSION_AUTH_FAILED')
     def get(self,expected=None):return validate_descriptor(json.loads(self.request('/api/v1/pi/navigation-session')),self.cfg['robot_id'],expected)
 

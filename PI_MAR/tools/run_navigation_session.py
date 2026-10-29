@@ -32,10 +32,11 @@ def prepare(config,session_id=None):
     polygon=footprint_rectangle(**extent)
     base=yaml.safe_load(Path('/home/ubuntu/ros2_ws/src/navigation/config/nav2_params.yaml').read_text())
     controller=yaml.safe_load(Path('/home/ubuntu/ros2_ws/src/navigation/config/nav2_controller_dwb.yaml').read_text())
+    mecanum=hw['motion'].get('chassis_model')=='MENTORPI_M1_MECANUM' and hw['motion'].get('allow_strafe') is True
     params=nav_parameters(nav2_params(base,controller,polygon,
         speed=min(.25,cfg['mapping']['autonomy']['speed_mps'],hw['max_speed_mps']),
-        angular=min(.6,cfg['mapping']['autonomy']['angular_rps'],hw['motion']['max_angular_speed_rps']),
-        mecanum=hw['motion'].get('chassis_model')=='MENTORPI_M1_MECANUM' and hw['motion'].get('allow_strafe') is True),hardware)
+        angular=min(.8 if mecanum else .6,cfg['mapping']['autonomy']['angular_rps'],hw['motion']['max_angular_speed_rps']),
+        mecanum=mecanum),hardware)
     (root/'nav2.yaml').write_text(yaml.safe_dump(params,sort_keys=False),encoding='utf-8')
     write_private(root/'hardware.json',json.dumps(hardware,indent=2))
     runtime=copy.deepcopy(cfg);runtime['hardware_profile']=str(root/'hardware.json');runtime['navigation_session']=context

@@ -32,7 +32,7 @@ def configuration(mapping):
                           ('frontier_min_length_m',.10,.5),('coverage_stable_sec',10,60),
                           ('coverage_min_duration_sec',20,120),('coverage_min_travel_m',0.,5.),
                           ('coverage_min_area_m2',.3,10.),('frontier_no_progress_sec',10,60),('lidar_stop_distance_m',.05,.50),
-                          ('visit_radius_m',.3,1.5),('max_reverse_mps',.02,.1),('control_pause_sec',0.,2.)):
+                          ('visit_radius_m',.3,1.5),('max_reverse_mps',.02,.3),('control_pause_sec',0.,2.)):
         value = cfg[key]
         if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
             raise StepError('INVALID_AUTONOMY_CONFIG', key)
@@ -311,7 +311,7 @@ def nav2_assist(velocity,view,cfg,scan_age=0.):
     longitudinal_gap=view.get('back_m',0.) if x<0 else view['front_m']
     x*=factor(longitudinal_gap)
     if y:y*=factor(view.get('lateral_left_m' if y>0 else 'lateral_right_m',0.))
-    if cfg['speed_mps'] > .25:
+    if cfg['speed_mps'] > .25 or x < 0:
         x=math.copysign(min(abs(x),braking_cap(longitudinal_gap)),x)
         if y:
             cap=braking_cap(view.get('lateral_left_m' if y>0 else 'lateral_right_m',0.))

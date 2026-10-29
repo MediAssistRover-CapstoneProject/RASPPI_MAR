@@ -21,12 +21,13 @@ class MappingNavigator:
             terminal=self.result.result();target=self.target
             if not await self.adapter.stop():raise StepError('GOAL_STOP_UNCONFIRMED')
             self.target=None;self.result=None
-            self.exploration.exclude_goal(target,now,ttl=5. if terminal.status==4 else 30.)
+            self.exploration.exclude_goal(target,now,ttl=5. if terminal.status==4 else 30.,
+                                          radius=.12 if terminal.status==4 else .35)
             return (0.,0.,0.),'OBSERVING_FRONTIER' if terminal.status==4 else 'REPLANNING_UNREACHABLE_FRONTIER'
         if self.target is None:
             goal=plan['goal']
             if math.hypot(goal['x_m']-pose['x_m'],goal['y_m']-pose['y_m'])<.06:
-                self.exploration.exclude_goal(goal,now,ttl=5.);return (0.,0.,0.),'OBSERVING_FRONTIER'
+                self.exploration.exclude_goal(goal,now,ttl=5.,radius=.08);return (0.,0.,0.),'OBSERVING_FRONTIER'
             if not self.adapter.nav.server_is_ready():raise StepError('NAV2_MAPPING_NOT_READY')
             msg=PoseStamped();msg.header.frame_id=self.adapter.cfg['ros']['map_frame'];msg.header.stamp=self.adapter.node.get_clock().now().to_msg()
             msg.pose.position.x=float(goal['x_m']);msg.pose.position.y=float(goal['y_m'])

@@ -8,7 +8,7 @@ def mapping_motion_parameters(params,auto,hardware):
     follow=params['controller_server']['ros__parameters']['FollowPath']
     if auto.get('reverse_enabled'):
         if hardware['motion'].get('allow_reverse') is not True:raise RuntimeError('HARDWARE_REVERSE_NOT_ENABLED')
-        reverse=min(.1,auto['max_reverse_mps'],hardware['motion']['max_reverse_speed_mps'])
+        reverse=min(.3,auto['max_reverse_mps'],auto['speed_mps'],hardware['motion']['max_reverse_speed_mps'])
         follow['min_vel_x']=-reverse
         params['velocity_smoother']['ros__parameters']['min_velocity'][0]=-reverse
     # Mapping uses a 360-degree scan. A viewpoint does not need a forced final spin.

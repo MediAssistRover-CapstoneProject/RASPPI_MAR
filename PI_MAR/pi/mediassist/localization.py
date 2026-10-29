@@ -6,7 +6,8 @@ DEFAULTS = dict(enabled=False, mode='global', max_sensor_age_sec=.6, max_pose_ag
                 max_xy_std_m=.15, max_yaw_std_rad=.20, min_scan_match=.60,
                 min_known_fraction=.50, min_valid_beams=40, match_distance_m=.12,min_particle_support=.85,
                 stable_sec=3., stable_scans=8, bootstrap_timeout_sec=60.,
-                max_tf_amcl_distance_m=.35, max_tf_amcl_yaw_rad=.4)
+                max_tf_amcl_distance_m=.35, max_tf_amcl_yaw_rad=.4,
+                tracking_quality_grace_sec=1.0)
 
 def configuration(raw):
     cfg={**DEFAULTS, **raw}
@@ -18,6 +19,7 @@ def configuration(raw):
             'stable_scans':(3,100), 'bootstrap_timeout_sec':(10,300),
             'max_tf_amcl_distance_m':(.05,.6), 'max_tf_amcl_yaw_rad':(.05,.7)}
     bounds['min_particle_support']=(.7,1)
+    bounds['tracking_quality_grace_sec']=(0.,2.)
     for key,(lo,hi) in bounds.items():
         value=cfg[key]
         if type(value) not in (int,float) or not math.isfinite(value) or not lo<=value<=hi:
@@ -52,6 +54,7 @@ class QualityGate:
         c=self.cfg;reasons=[];metrics={}
         for key,code in (('map_verified','MAP_NOT_VERIFIED'),('amcl_active','AMCL_NOT_ACTIVE'),('tf_fresh','TF_NOT_READY')):
             if sample.get(key) is not True:reasons.append(code)
+        if sample.get('body_clear') is not True:reasons.append('LOCALIZATION_FOOTPRINT_NOT_CLEAR')
         for key,limit in (('scan_age_sec',c['max_sensor_age_sec']),('odom_age_sec',c['max_sensor_age_sec']),('pose_age_sec',c['max_pose_age_sec'])):
             age=sample.get(key)
             if type(age) not in (int,float) or not math.isfinite(age) or not 0<=age<=limit:reasons.append(key.upper()+'_STALE')
@@ -61,8 +64,12 @@ class QualityGate:
         except (ValueError,TypeError):reasons.append('AMCL_COVARIANCE_INVALID')
         try:
             p,a=sample['pose'],sample['amcl_pose']
+            # Compare AMCL with TF at the AMCL timestamp, not with a moving
+            # robot's newer TF pose. Current pose still drives jump/body checks.
+            aligned=sample.get('amcl_tf_pose',p)
             if any(not math.isfinite(p[k]) or not math.isfinite(a[k]) for k in ('x_m','y_m','yaw_rad')):raise ValueError()
-            if math.hypot(p['x_m']-a['x_m'],p['y_m']-a['y_m'])>c['max_tf_amcl_distance_m'] or abs(angle(p['yaw_rad']-a['yaw_rad']))>c['max_tf_amcl_yaw_rad']:reasons.append('TF_AMCL_DISAGREE')
+            if any(not math.isfinite(aligned[k]) for k in ('x_m','y_m','yaw_rad')):raise ValueError()
+            if math.hypot(aligned['x_m']-a['x_m'],aligned['y_m']-a['y_m'])>c['max_tf_amcl_distance_m'] or abs(angle(aligned['yaw_rad']-a['yaw_rad']))>c['max_tf_amcl_yaw_rad']:reasons.append('TF_AMCL_DISAGREE')
             if self.previous_pose:
                 old,at=self.previous_pose;dt=max(0,now-at)
                 if math.hypot(p['x_m']-old['x_m'],p['y_m']-old['y_m'])>.3+.35*dt or abs(angle(p['yaw_rad']-old['yaw_rad']))>.4+.6*dt:reasons.append('POSE_JUMP')
@@ -76,6 +83,22 @@ class QualityGate:
             support=sample.get('particle_support',0.)
             if not math.isfinite(support) or support<c['min_particle_support']:reasons.append('PARTICLES_NOT_CONVERGED')
             metrics['particle_support']=support if math.isfinite(support) else None
+        warnings=[]
+        if self.tracking and 'KNOWN_FRACTION_LOW' in reasons:
+            # Unknown endpoints are common at doors and beyond a saved map.
+            # They cannot invalidate an established hypothesis if enough laser
+            # endpoints still match actual walls. Bootstrap remains strict.
+            if (sample.get('scan_match',0)>=c['min_scan_match']
+                    and sample.get('valid_beams',0)*sample.get('scan_match',0)>=c['min_valid_beams']):
+                reasons.remove('KNOWN_FRACTION_LOW');warnings.append('KNOWN_FRACTION_LOW')
+        if (reasons and self.tracking and self.last_good_at is not None
+                and 0<=now-self.last_good_at<=c['tracking_quality_grace_sec']
+                and set(reasons)<={'SCAN_MATCH_LOW','KNOWN_FRACTION_LOW'}
+                and sample.get('scan_match',0)>=.45):
+            # Bounded hysteresis for scan-quality flicker only. Stale sensors,
+            # TF loss, uncertain covariance and pose jumps still stop at once.
+            return dict(ready=True,reason='TRACKING_SCAN_GRACE',reasons=[],warnings=reasons,
+                        stable_scans=self.count,metrics=metrics)
         if reasons:
             transient={'SCAN_AGE_SEC_STALE','ODOM_AGE_SEC_STALE','POSE_AGE_SEC_STALE',
                        'SCAN_MATCH_LOW','KNOWN_FRACTION_LOW','VALID_BEAMS_LOW'}
@@ -93,7 +116,7 @@ class QualityGate:
         needed_scans,needed_sec=(2,.5) if self.recovering else (c['stable_scans'],c['stable_sec'])
         ready=self.tracking or (self.count>=needed_scans and self.since is not None and now-self.since>=needed_sec)
         if ready:self.had_lock=True;self.last_good_at=now;self.recovering=False;self.tracking=True
-        return dict(ready=ready,reason='LOCALIZED' if ready else 'VERIFYING',reasons=[],stable_scans=self.count,metrics=metrics)
+        return dict(ready=ready,reason='LOCALIZED' if ready else 'VERIFYING',reasons=[],warnings=warnings,stable_scans=self.count,metrics=metrics)
 
 class GridMatcher:
     """Checks laser hit endpoints against occupied cells; never interprets unknown as free."""

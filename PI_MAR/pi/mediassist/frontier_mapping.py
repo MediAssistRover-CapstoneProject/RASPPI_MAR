@@ -5,6 +5,12 @@ import hashlib
 import math
 
 
+def excluded_goal(x,y,goals):
+    # A reached viewpoint is not a failed route. Keep the larger retry buffer
+    # only for failed goals; otherwise a small initial map can lose every goal.
+    return any(math.hypot(x-g[0],y-g[1])<(g[2] if len(g)>2 else .35) for g in goals)
+
+
 def source_signature(snapshot):
     geometry=tuple(snapshot[k] for k in ('width','height','resolution','origin','frame_id'))
     return hashlib.sha256(repr(geometry).encode()+snapshot['data']).hexdigest()
@@ -164,7 +170,7 @@ def plan(snapshot,pose,cfg):
                     ux=(i%w+.5)*cell;uy=(i//w+.5)*cell;wx=origin[0]+c*ux-s*uy;wy=origin[1]+s*ux+c*uy
                     # Failed Nav2 goals often reappear one or two grid cells
                     # away. Exclude the whole local goal cluster, not one cell.
-                    if not any(math.hypot(wx-g[0],wy-g[1])<.35 for g in excluded):
+                    if not excluded_goal(wx,wy,excluded):
                         candidates.append(i);continue
                 for j in neighbors(i,w,h):
                     if cells[j]==0 and j not in source:source[j]=source[i];q.append(j)
@@ -199,7 +205,7 @@ def plan(snapshot,pose,cfg):
         for i in uncovered:
             ux=(i%w+.5)*cell;uy=(i//w+.5)*cell
             wx,wy=origin[0]+c*ux-s*uy,origin[1]+s*ux+c*uy
-            if not any(math.hypot(wx-g[0],wy-g[1])<.35 for g in cfg.get('_excluded_goals',[])):candidates.append(i)
+            if not excluded_goal(wx,wy,cfg.get('_excluded_goals',[])):candidates.append(i)
         if candidates:
             # A region with appreciable unvisited floor gets a goal inside it,
             # rather than another observation point outside the door. Keep a
@@ -279,8 +285,8 @@ class FrontierWorker:
         self.excluded=[];self.replan=False
         self.visited=[]
 
-    def exclude_goal(self,goal,now,ttl=30.):
-        self.excluded.append((goal['x_m'],goal['y_m'],now+ttl));self.excluded=self.excluded[-64:]
+    def exclude_goal(self,goal,now,ttl=30.,radius=.35):
+        self.excluded.append((goal['x_m'],goal['y_m'],now+ttl,radius));self.excluded=self.excluded[-64:]
         # Do not corrupt the timestamp of a plan still running in the executor.
         # Discard that result and submit a new plan with the exclusion applied.
         self.replan=True
@@ -310,7 +316,7 @@ class FrontierWorker:
             self.replan=False
             self.pending_revision=revision;self.submitted_at=now
             self.excluded=[g for g in self.excluded if now<g[2]]
-            options={**self.cfg,'_excluded_goals':[(x,y) for x,y,_ in self.excluded], '_visited_poses':list(self.visited)}
+            options={**self.cfg,'_excluded_goals':[(x,y,radius) for x,y,_,radius in self.excluded], '_visited_poses':list(self.visited)}
             self.task=asyncio.create_task(asyncio.to_thread(plan,snapshot,dict(pose),options))
         if self.tracker.result and now-self.observed_at>3.:return None,'EXPLORATION_PLAN_STALE'
         return self.tracker.result,None

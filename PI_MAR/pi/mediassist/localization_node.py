@@ -25,6 +25,11 @@ class LocalizationNode:
         from tf2_ros import Buffer,TransformListener
         self.rclpy=rclpy;self.node=rclpy.create_node('mediassist_localization')
         self.cfg=cfg['localization'];self.hw=hardware;self.gate=QualityGate(self.cfg);self.grid_topic=cfg['mapping']['map_topic']
+        # Use the same measured body that creates this session's Nav2 footprint.
+        self.footprint=cfg['mapping'].get('autonomy',{}).get('footprint')
+        from .navigation_setup import footprint_rectangle
+        if not self.footprint:raise RuntimeError('LOCALIZATION_FOOTPRINT_REQUIRED')
+        footprint_rectangle(**self.footprint)
         self.map_yaml=Path(cfg['navigation_runtime']['map_yaml']);self.meta=json.loads((self.map_yaml.parent/'metadata.json').read_text())
         if map_fingerprint(self.map_yaml)!=self.cfg['map_asset_hash']:raise RuntimeError('LOCALIZATION_MAP_HASH_MISMATCH')
         self.tf=Buffer();self.listener=TransformListener(self.tf,self.node)
@@ -152,7 +157,7 @@ class LocalizationNode:
 
     def evidence(self,now):
         from rclpy.time import Time
-        s=dict(map_verified=self.map_ready(now),amcl_active=self.lifecycle_ready(now),tf_fresh=False)
+        s=dict(map_verified=self.map_ready(now),amcl_active=self.lifecycle_ready(now),tf_fresh=False,body_clear=False)
         ros=self.ros_now()
         if self.odom is not None:
             velocity=self.odom.twist.twist
@@ -167,6 +172,16 @@ class LocalizationNode:
             transform=self.tf.lookup_transform(self.hw['ros']['map_frame'],self.hw['ros']['base_frame'],Time())
             age=ros-self.seconds(transform.header.stamp);p=transform.transform.translation
             s.update(tf_fresh=-.5<=age<=1.,pose=dict(x_m=p.x,y_m=p.y,yaw_rad=yaw(transform.transform.rotation)))
+            if self.pose is not None:
+                aligned=self.tf.lookup_transform(self.hw['ros']['map_frame'],self.hw['ros']['base_frame'],Time.from_msg(self.pose.header.stamp))
+                a=aligned.transform.translation
+                s['amcl_tf_pose']=dict(x_m=a.x,y_m=a.y,yaw_rad=yaw(aligned.transform.rotation))
+            if self.grid is not None:
+                from .footprint import body_clear
+                g=self.grid;origin=g.info.origin
+                snapshot=dict(width=g.info.width,height=g.info.height,resolution=g.info.resolution,
+                    origin=[origin.position.x,origin.position.y,yaw(origin.orientation)],data=g.data)
+                s['body_clear']=body_clear(snapshot,s['pose'],self.footprint)['clear']
             s['particle_support']=particle_support(self.particles,s['pose'])
             sensor=self.tf.lookup_transform(self.hw['ros']['map_frame'],scan.header.frame_id,Time.from_msg(scan.header.stamp))
             from .geometry_diagnostics import planar_transform,scan_points
@@ -207,7 +222,7 @@ class LocalizationNode:
         if self.session_context:status.update(session_id=self.session_context['session_id'],initialization_revision=self.initialization_revision)
         raw=json.dumps(status,allow_nan=False);self.output.publish(String(data=raw))
         if status['reason']!=self.last_reason:
-            self.node.get_logger().info('LOCALIZATION '+status['reason']);self.last_reason=status['reason']
+            self.node.get_logger().info('LOCALIZATION '+status['reason']+' metrics='+json.dumps(status.get('metrics',{}),allow_nan=False));self.last_reason=status['reason']
         destination=Path(self.cfg['status_file']);destination.parent.mkdir(parents=True,exist_ok=True)
         temporary=destination.with_suffix('.new');temporary.write_text(raw+'\n');os.replace(temporary,destination)
 

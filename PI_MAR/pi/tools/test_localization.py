@@ -19,11 +19,26 @@ ID='11111111-1111-4111-8111-111111111111';HASH='a'*64
 def cfg():return configuration(dict(enabled=True,map_id=ID,map_asset_hash=HASH))
 def evidence(seq=1):
     cov=[0.]*36;cov[0]=cov[7]=.01;cov[35]=.01
-    return dict(map_verified=True,amcl_active=True,tf_fresh=True,scan_age_sec=.1,odom_age_sec=.1,
+    return dict(map_verified=True,amcl_active=True,tf_fresh=True,body_clear=True,scan_age_sec=.1,odom_age_sec=.1,
                 pose_age_sec=.1,covariance=cov,pose=dict(x_m=0.,y_m=0.,yaw_rad=0.),
                 amcl_pose=dict(x_m=0.,y_m=0.,yaw_rad=0.),scan_match=.9,known_fraction=.9,valid_beams=100,scan_sequence=seq,particle_support=.95)
 
 class LocalizationTests(unittest.TestCase):
+    def test_confident_scan_match_cannot_accept_body_inside_wall_or_unknown(self):
+        from mediassist.footprint import body_clear
+        grid=dict(width=40,height=40,resolution=.025,origin=[0.,0.,0.],data=[0]*1600)
+        pose=dict(x_m=.5,y_m=.5,yaw_rad=0.)
+        extent=dict(front=.12,rear=.12,left=.1,right=.1)
+        for cell_value in (100,-1):
+            grid['data'][20*40+22]=cell_value
+            sample=evidence();sample['body_clear']=body_clear(grid,pose,extent)['clear']
+            gate=QualityGate(cfg())
+            for i in range(12):
+                sample['scan_sequence']=i;status=gate.update(i*.5,sample)
+            self.assertFalse(status['ready'])
+            self.assertIn('LOCALIZATION_FOOTPRINT_NOT_CLEAR',status['reasons'])
+        grid['data'][20*40+22]=0
+        self.assertTrue(body_clear(grid,pose,extent)['clear'])
     def test_distinct_scan_evidence_and_elapsed_time_required(self):
         gate=QualityGate(cfg())
         for i in range(7):self.assertFalse(gate.update(i*.5,evidence(i))['ready'])
@@ -166,6 +181,7 @@ class MotionLossTests(unittest.IsolatedAsyncioTestCase):
         import asyncio
         adapter=object.__new__(RosAdapter);adapter.localization_required=True
         adapter.clear_navigation_velocity=Mock();adapter.navigation_speed_limit=Mock();adapter.hold_navigation_velocity=Mock()
+        adapter.navigation_diagnostic=Mock()
         adapter._prerequisites=AsyncMock();adapter._pose=Mock(return_value=N());adapter._check_graph=Mock()
         adapter.nav=Mock();adapter.nav.server_is_ready.return_value=True
         pending=asyncio.get_running_loop().create_future()

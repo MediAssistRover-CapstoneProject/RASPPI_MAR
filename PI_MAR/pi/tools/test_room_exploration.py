@@ -23,6 +23,19 @@ def rooms():
     return dict(width=w,height=h,resolution=.05,origin=[0.,0.,0.],frame_id='map',data=bytes(data))
 
 class RoomTests(unittest.TestCase):
+    def test_faster_reverse_remains_braking_and_hardware_limited(self):
+        cfg=profile();cfg.update(max_reverse_mps=.2,speed_mps=.2)
+        configuration({'autonomy':cfg})
+        view=dict(front_m=1.,back_m=2.,lateral_left_m=1.,lateral_right_m=1.)
+        self.assertAlmostEqual(nav2_assist((-.4,0.,0.),view,cfg,.1)[0],-.2)
+        near={**view,'back_m':.12}
+        speed=abs(nav2_assist((-.4,0.,0.),near,cfg,.4)[0])
+        self.assertLessEqual(speed*(.4+.35)+speed**2/(2*.6),.12-cfg['stop_margin_m']+1e-9)
+        from mapping_nav2_parameters import mapping_motion_parameters
+        params={'controller_server':{'ros__parameters':{'FollowPath':{'critics':['ObstacleFootprint','RotateToGoal']},
+            'general_goal_checker':{}}},'velocity_smoother':{'ros__parameters':{'min_velocity':[0.,0.,0.]}}}
+        mapping_motion_parameters(params,cfg,{'motion':{'allow_reverse':True,'max_reverse_speed_mps':.15}})
+        self.assertEqual(params['controller_server']['ros__parameters']['FollowPath']['min_vel_x'],-.15)
     def test_white_room_seen_from_corridor_is_not_coverage_complete(self):
         cfg=profile();snapshot=rooms();pose=dict(x_m=2.,y_m=2.,yaw_rad=0.)
         cfg['_visited_poses']=[(x/10,y/10) for x in range(4,28,3) for y in range(4,43,3)]

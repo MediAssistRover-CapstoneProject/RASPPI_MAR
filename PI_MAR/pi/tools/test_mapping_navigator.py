@@ -29,6 +29,31 @@ class NavigatorTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(sys.modules,self.modules):velocity,reason=await self.navigator.tick(self.plan,self.pose,11.)
         self.assertEqual(velocity,(0.,0.,0.));self.assertEqual(reason,'OBSERVING_FRONTIER');self.assertFalse(self.navigator.active)
         self.adapter.stop.assert_awaited_once();self.exploration.exclude_goal.assert_called_once()
+        self.assertEqual(self.exploration.exclude_goal.call_args.kwargs['radius'],.12)
+    async def test_near_viewpoint_does_not_blacklist_small_initial_map(self):
+        from mediassist.frontier_mapping import plan
+        w=40;raw=bytearray([255]*(w*w))
+        for y in range(8,32):
+            for x in range(8,32):raw[y*w+x]=0
+        snapshot=dict(width=w,height=w,resolution=.025,origin=[-.5,-.5,0.],frame_id='map',data=bytes(raw))
+        cfg=dict(frontier_min_length_m=.15,footprint=dict(front=.12,rear=.12,left=.1,right=.1),
+                 stop_margin_m=.05,frontier_controller='nav2')
+        pose=dict(x_m=.1,y_m=.0125,yaw_rad=0.)
+        first=plan(snapshot,pose,cfg)
+        with patch.dict(sys.modules,self.modules):
+            velocity,reason=await self.navigator.tick(first,pose,10.)
+        self.assertEqual(velocity,(0.,0.,0.));self.assertEqual(reason,'OBSERVING_FRONTIER')
+        self.adapter.nav.send_goal_async.assert_not_called()
+        call=self.exploration.exclude_goal.call_args;goal=call.args[0]
+        pair=(goal['x_m'],goal['y_m'])
+        # The former 35 cm exclusion blocked all reachable viewpoints.
+        self.assertEqual(plan(snapshot,pose,{**cfg,'_excluded_goals':[pair]})['state'],'BLOCKED')
+        next_plan=plan(snapshot,pose,{**cfg,'_excluded_goals':[(*pair,call.kwargs['radius'])]})
+        self.assertEqual(next_plan['state'],'FRONTIERS_PRESENT')
+        with patch.dict(sys.modules,self.modules):
+            _,reason=await self.navigator.tick(next_plan,pose,11.)
+        self.assertEqual(reason,'FOLLOW_FRONTIER_NAV2')
+        self.adapter.nav.send_goal_async.assert_called_once()
     async def test_rejected_goal_is_not_replaced_by_reactive_driving(self):
         self.handle.accepted=False
         with patch.dict(sys.modules,self.modules):velocity,reason=await self.navigator.tick(self.plan,self.pose,10.)

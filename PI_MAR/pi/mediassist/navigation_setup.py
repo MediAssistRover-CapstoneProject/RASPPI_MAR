@@ -14,7 +14,7 @@ def footprint_rectangle(front, rear, left, right):
 
 def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=False, fast_mapping=False):
     limit = 1.00 if fast_mapping and mecanum else .25
-    yaw_limit = .8 if fast_mapping and mecanum else .6
+    yaw_limit = .8 if mecanum else .6
     if not 0 < speed <= limit or not 0 < angular <= yaw_limit:
         raise ValueError(f"Navigation limits: 0 < linear <= {limit} m/s; 0 < angular <= {yaw_limit} rad/s; hardware caps also apply")
     result = copy.deepcopy(base)
@@ -45,19 +45,25 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
         raise ValueError('Expected installed Hiwonder DWB profile; do not replace an unknown controller silently')
     lateral = speed if mecanum else 0.0
     follow.update(min_vel_x=0.0, min_vel_y=-lateral, max_vel_x=speed, max_vel_y=lateral,
-                  max_speed_xy=speed, max_vel_theta=angular, min_speed_theta=0.0,
+                  max_speed_xy=speed, max_vel_theta=angular,
+                  min_speed_xy=min(.025,speed), min_speed_theta=min(.10,angular),
                   trans_stopped_velocity=0.01, vy_samples=5 if mecanum else 1,xy_goal_tolerance=.05)
     if mecanum:
         # Keep the extra Y search bounded on Pi; do not multiply the vendor's
         # 20x20 sampling by seven while also publishing trajectory debug data.
-        follow.update(vx_samples=10,vtheta_samples=12,debug_trajectory_details=False)
+        follow.update(vx_samples=10,vtheta_samples=13,debug_trajectory_details=False)
+        # A holonomic chassis can translate along the path without pointing its
+        # nose at each segment. Keep PathDist/GoalDist and final RotateToGoal,
+        # but remove competing differential-drive forward-point heading costs.
+        follow.update({'PathAlign.scale':0.,'GoalAlign.scale':0.})
     # DWB's centre-point BaseObstacle critic alone does not check the cart polygon.
     follow['critics'] = ['ObstacleFootprint' if x == 'BaseObstacle' else x for x in follow['critics']]
     follow.pop('BaseObstacle.scale', None)
     follow['ObstacleFootprint.scale'] = 1.0
     ctl['progress_checker'].update(required_movement_radius=0.1, movement_time_allowance=20.0)
     ctl['general_goal_checker'].update(xy_goal_tolerance=.05,yaw_goal_tolerance=.10)
-    ctl.update(min_y_velocity_threshold=.001,speed_limit_topic='/mediassist/navigation_speed_limit')
+    ctl.update(min_x_velocity_threshold=.001,min_y_velocity_threshold=.001,
+               min_theta_velocity_threshold=.001,speed_limit_topic='/mediassist/navigation_speed_limit')
     follow.update(acc_lim_x=.40,decel_lim_x=-.6,acc_lim_y=.40 if mecanum else 0.,
                   decel_lim_y=-.6 if mecanum else 0.,acc_lim_theta=1.2,decel_lim_theta=-1.8)
     result['velocity_smoother']['ros__parameters'].update(
