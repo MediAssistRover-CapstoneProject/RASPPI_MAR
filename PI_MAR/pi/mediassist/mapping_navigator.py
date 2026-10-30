@@ -6,7 +6,7 @@ from .contracts import StepError
 class MappingNavigator:
     def __init__(self,adapter,exploration):
         self.adapter=adapter;self.exploration=exploration;self.target=None;self.result=None;self.started=0.
-        self.best_distance=math.inf;self.progress_at=0.;self.velocity_missing_at=None
+        self.best_distance=math.inf;self.progress_at=0.;self.velocity_missing_at=None;self.progress_pose=None
     @property
     def active(self):return self.target is not None
     async def stop(self):
@@ -22,7 +22,7 @@ class MappingNavigator:
             if not await self.adapter.stop():raise StepError('GOAL_STOP_UNCONFIRMED')
             self.target=None;self.result=None
             self.exploration.exclude_goal(target,now,ttl=5. if terminal.status==4 else 30.,
-                                          radius=.12 if terminal.status==4 else .35)
+                                          radius=.12 if terminal.status==4 else .15)
             return (0.,0.,0.),'OBSERVING_FRONTIER' if terminal.status==4 else 'REPLANNING_UNREACHABLE_FRONTIER'
         if self.target is None:
             goal=plan['goal']
@@ -39,19 +39,25 @@ class MappingNavigator:
             try:handle=await self.adapter.future(sent,timeout=2)
             except BaseException:sent.add_done_callback(self.adapter._late_cancel);raise
             if not handle.accepted:
-                self.exploration.exclude_goal(goal,now,ttl=30.);return (0.,0.,0.),'REPLANNING_REJECTED_FRONTIER'
+                self.exploration.exclude_goal(goal,now,ttl=30.,radius=.15);return (0.,0.,0.),'REPLANNING_REJECTED_FRONTIER'
             self.adapter.goal=handle;self.target=dict(goal);self.result=handle.get_result_async();self.started=now
             self.best_distance=math.hypot(goal['x_m']-pose['x_m'],goal['y_m']-pose['y_m']);self.progress_at=now;self.velocity_missing_at=None
+            self.progress_pose=dict(pose)
         distance=math.hypot(self.target['x_m']-pose['x_m'],self.target['y_m']-pose['y_m'])
-        if distance<self.best_distance-.04:self.best_distance=distance;self.progress_at=now
-        if now-self.progress_at>20. or now-self.started>60.:
-            target=dict(self.target);await self.stop();self.exploration.exclude_goal(target,now,ttl=30.)
+        # A path around a wall can initially lead away from the goal. Measure
+        # actual translation as well as goal distance; retain a total timeout
+        # so oscillation cannot keep an unreachable goal alive indefinitely.
+        moved=self.progress_pose is not None and math.hypot(pose['x_m']-self.progress_pose['x_m'],pose['y_m']-self.progress_pose['y_m'])>=.05
+        if distance<self.best_distance-.04 or moved:
+            self.best_distance=min(self.best_distance,distance);self.progress_at=now;self.progress_pose=dict(pose)
+        if now-self.progress_at>30. or now-self.started>90.:
+            target=dict(self.target);await self.stop();self.exploration.exclude_goal(target,now,ttl=30.,radius=.15)
             return (0.,0.,0.),'REPLANNING_STALLED_FRONTIER'
         velocity,fresh=self.adapter.navigation_velocity()
         if not fresh:
             if self.velocity_missing_at is None:self.velocity_missing_at=now
             if now-self.velocity_missing_at>3. and now-self.started>5.:
-                target=dict(self.target);await self.stop();self.exploration.exclude_goal(target,now,ttl=30.)
+                target=dict(self.target);await self.stop();self.exploration.exclude_goal(target,now,ttl=30.,radius=.15)
                 return (0.,0.,0.),'REPLANNING_STALE_NAV2'
             return (0.,0.,0.),'WAITING_FOR_NAV2_VELOCITY'
         self.velocity_missing_at=None

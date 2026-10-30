@@ -29,6 +29,8 @@ def validate_profile(message, robot_id, hardware, allow_empty=False):
     if profile.get('frame_id') != hardware['ros']['map_frame']:
         raise StepError('NAV_PROFILE_FRAME_MISMATCH')
     points=profile.get('endpoints')
+    from .navigation_zones import rules
+    rules(profile.get('zones',[]))
     if not isinstance(points,dict) or not (0 if allow_empty else 1) <= len(points) <= 10000:
         raise StepError('NAV_PROFILE_ENDPOINTS_REQUIRED')
     for endpoint_id,point in points.items():
@@ -46,6 +48,12 @@ async def apply_profile(message, cfg, hardware, adapter):
     profile=validate_profile(message,cfg['robot_id'],hardware,allow_empty=bool(cfg.get('navigation_session')))
     # Compare the actual map_server YAML + image fingerprint, not only config text.
     await adapter._check_map(profile['map_id'])
+    if getattr(adapter,'zones',None) is not None:
+        path=cfg.get('navigation_runtime',{}).get('map_yaml')
+        if not path:raise StepError('ZONE_MAP_YAML_REQUIRED')
+        import asyncio
+        await asyncio.to_thread(adapter.zones.apply,profile.get('zones',[]),path,
+            footprint_planner=cfg.get('navigation_runtime',{}).get('footprint_planner',False))
     destination=Path(cfg['state_path']).with_suffix('.navigation.json')
     snapshot={'profileVersion':message['profileVersion'],'profileHash':message['profileHash'],
               'robotId':cfg['robot_id'],'profile':profile}

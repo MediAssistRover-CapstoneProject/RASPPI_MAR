@@ -5,6 +5,7 @@ run: stack plus worker; stationary mapping is allowed while the motion gate rema
 inspect: read-only configuration/process report. stop: verified supervisor SIGTERM.
 """
 import argparse
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,16 @@ sys.path.insert(0, str(ROOT / 'pi'))
 
 def say(message):
     print(time.strftime('%H:%M:%S'), message, flush=True)
+
+
+def become_subreaper():
+    """Reap ROS launch grandchildren instead of leaving zombies under Docker PID 1."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong,
+                          ctypes.c_ulong, ctypes.c_ulong]
+    libc.prctl.restype = ctypes.c_int
+    if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+        raise OSError(ctypes.get_errno(), 'PR_SET_CHILD_SUBREAPER failed')
 
 
 def proc(pid, base=Path('/proc')):
@@ -262,6 +273,20 @@ class Supervisor:
                 child.wait(timeout=1)
             except Exception as exc:
                 say('STOP_ERROR ' + name + ': ' + str(exc))
+        # Popen has reaped every direct child. waitpid now covers only adopted
+        # launch grandchildren; never steal a live Popen child's exit status.
+        if all(child.poll() is not None for _, child, _ in self.children):
+            count = 0
+            while True:
+                try:
+                    pid, _ = os.waitpid(-1, os.WNOHANG)
+                except ChildProcessError:
+                    break
+                if pid == 0:
+                    break
+                count += 1
+            if count:
+                say('REAPED_ROS_CHILDREN ' + str(count))
 
 
 def main():
@@ -347,6 +372,10 @@ def main():
     if not vendor_file.is_file():
         raise RuntimeError('VENDOR_SLAM_MISSING: ' + str(vendor_file))
     with locked(state_dir, config):
+        try:
+            become_subreaper()
+        except OSError as exc:
+            say('ROS_CHILD_REAPER_UNAVAILABLE: ' + str(exc))
         supervisor = Supervisor(state_dir)
         bench = None
         hw = cfg['hardware_profile']
@@ -390,9 +419,16 @@ def main():
             from stack_probe import Probe
             probe = Probe(hardware, {**cfg['mapping'],'static_map':args.mode=='navigation'})
             deadline, report, stable = time.monotonic() + args.ready_timeout, 0., 0
+            next_ready_check = 0.
             while not supervisor.stopping:
                 supervisor.alive()
                 probe.spin()
+                # missing() queries the ROS graph several times. Repeating it on
+                # every spin floods DDS discovery while all vendor nodes start.
+                now = time.monotonic()
+                if now < next_ready_check:
+                    continue
+                next_ready_check = now + 1.0
                 missing = probe.missing()
                 if args.action == 'run':
                     missing = [x for x in missing if x not in ('left', 'right')]
@@ -443,7 +479,7 @@ def main():
                 say('BENCH_READY: wheels must stay lifted; no worker; run bench-test in another terminal')
             else:
                 say('PREPARE_READY: map/sensors/TF/topology checked; NO MQTT worker, NO movement command sent')
-            report, graph_bad = 0., 0
+            report, graph_bad, imu_bad_since = 0., 0, None
             while not supervisor.stopping:
                 supervisor.alive()
                 probe.spin()
@@ -451,7 +487,17 @@ def main():
                     continue
                 report = time.monotonic() + 1
                 problem=probe.imu_problem()
-                if problem:raise RuntimeError('IMU_RUNTIME_NOT_READY: '+problem)
+                if problem:
+                    if probe.imu_status and probe.imu_status[0].get('state')=='FAULT':
+                        raise RuntimeError('IMU_RUNTIME_NOT_READY: '+problem)
+                    if imu_bad_since is None:
+                        imu_bad_since=time.monotonic()
+                        say('IMU_TRANSIENT: '+problem+'; gate holds zero until fresh IMU')
+                    elif time.monotonic()-imu_bad_since>=3.0:
+                        raise RuntimeError('IMU_RUNTIME_NOT_READY: '+problem)
+                elif imu_bad_since is not None:
+                    say('IMU_RECOVERED')
+                    imu_bad_since=None
                 if any(vendor_bringup(p) for p in processes().values()):
                     raise RuntimeError('VENDOR_BRINGUP_RESPAWNED')
                 try:

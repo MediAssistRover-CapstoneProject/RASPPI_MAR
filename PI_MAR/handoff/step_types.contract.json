@@ -25,7 +25,7 @@
           "max_speed_mps": {
             "type": "number",
             "exclusiveMinimum": 0,
-            "maximum": 0.3
+            "maximum": 0.8
           }
         },
         "required": [

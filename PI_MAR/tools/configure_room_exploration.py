@@ -6,8 +6,8 @@ from configure_mapping import ROOT,load,stopped_configuration,write_configuratio
 from mediassist.autonomous_mapping import configuration
 
 def tune(cfg,hardware,speed=.25,reverse=.1,angular=.6):
-    if type(speed) not in (int,float) or not math.isfinite(speed) or not .05<=speed<=.25:raise ValueError('Room test speed: .05..0.25 m/s')
-    if type(reverse) not in (int,float) or not math.isfinite(reverse) or not .02<=reverse<=.3:raise ValueError('Reverse: .02..0.30 m/s')
+    if type(speed) not in (int,float) or not math.isfinite(speed) or not .05<=speed<=.8:raise ValueError('Room exploration speed: .05..0.80 m/s')
+    if type(reverse) not in (int,float) or not math.isfinite(reverse) or not .02<=reverse<=.8:raise ValueError('Reverse: .02..0.80 m/s')
     if type(angular) not in (int,float) or not math.isfinite(angular) or not .1<=angular<=.8:raise ValueError('Angular: .10..0.80 rad/s')
     motion=hardware['motion']
     if motion.get('chassis_model')!='MENTORPI_M1_MECANUM' or not motion.get('allow_strafe') or not motion.get('allow_reverse'):
@@ -21,7 +21,8 @@ def tune(cfg,hardware,speed=.25,reverse=.1,angular=.6):
     auto.update(exploration_mode='frontier',frontier_controller='nav2',visit_known_space=True,visit_radius_m=.4,
                 reverse_enabled=True,max_reverse_mps=min(reverse,speed,motion['max_reverse_speed_mps']),
                 control_pause_sec=2.,speed_mps=min(speed,hardware['max_speed_mps']),
-                angular_rps=min(angular,motion['max_angular_speed_rps']),slow_clearance_m=.65,
+                angular_rps=min(angular,motion['max_angular_speed_rps']),slow_clearance_m=max(.65,.8 if speed>.25 else .65,1.9*speed if speed>.5 else 0.),
+                scan_max_age_sec=min(.4,auto['scan_max_age_sec']),
                 max_duration_sec=600,frontier_no_progress_sec=30.)
     configuration(result['mapping']);return result
 

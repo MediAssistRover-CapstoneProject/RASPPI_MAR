@@ -5,6 +5,7 @@ import math
 import os
 from pathlib import Path
 import time
+from collections import deque
 from .localization import QualityGate,GridMatcher,angle,particle_support,bootstrap_verdict
 from .map_tools import map_fingerprint
 
@@ -34,6 +35,7 @@ class LocalizationNode:
         if map_fingerprint(self.map_yaml)!=self.cfg['map_asset_hash']:raise RuntimeError('LOCALIZATION_MAP_HASH_MISMATCH')
         self.tf=Buffer();self.listener=TransformListener(self.tf,self.node)
         self.grid=None;self.matcher=None;self.pose=None;self.scan=None;self.odom=None;self.particles=[]
+        self.scans=deque(maxlen=12)
         self.map_file_ok=False;self.file_verified_at=-1e9;self.active={};self.pending={}
         self.boot_at=None;self.boot_ros=math.inf;self.initialized=False;self.ever_ready=False
         self.last_poll=-1e9;self.last_nomotion=-1e9;self.error='WAITING_FOR_MAP';self.last_reason=None
@@ -49,7 +51,7 @@ class LocalizationNode:
         self.node.create_subscription(PoseWithCovarianceStamped,'/amcl_pose',self.on_pose,qos)
         self.node.create_subscription(ParticleCloud,'/particle_cloud',self.on_particles,qos_profile_sensor_data)
         self.node.create_subscription(PoseWithCovarianceStamped,'/initialpose',self.on_initial,10)
-        self.node.create_subscription(LaserScan,hardware['ros']['scan'],lambda m:setattr(self,'scan',m),qos_profile_sensor_data)
+        self.node.create_subscription(LaserScan,hardware['ros']['scan'],self.on_scan,qos_profile_sensor_data)
         self.node.create_subscription(Odometry,hardware['ros']['odom'],lambda m:setattr(self,'odom',m),qos_profile_sensor_data)
         self.states={name:self.node.create_client(GetState,'/'+name+'/get_state') for name in ('amcl','map_server')}
         self.parameters=self.node.create_client(GetParameters,'/map_server/get_parameters')
@@ -71,6 +73,9 @@ class LocalizationNode:
                                     (o.position.x,o.position.y,yaw(o.orientation)),msg.data,self.cfg['match_distance_m'])
         except ValueError:self.error='LOADED_MAP_INVALID';return
         self.grid=msg
+
+    def on_scan(self,msg):
+        self.scan=msg;self.scans.append(msg)
 
     def on_pose(self,msg):
         if msg.header.frame_id==self.hw['ros']['map_frame'] and self.seconds(msg.header.stamp)>=self.boot_ros:self.pose=msg
@@ -127,7 +132,7 @@ class LocalizationNode:
         from std_srvs.srv import Empty
         if not self.map_ready(now) or not self.lifecycle_ready(now):return
         if self.authorization_error:return
-        if self.cfg['mode']=='manual':self.error='WAITING_FOR_INITIAL_POSE';return
+        if self.cfg['mode']=='manual' and not self.initialized:self.error='WAITING_FOR_INITIAL_POSE';return
         if not self.initialized:
             if self.odom is None or abs(self.ros_now()-self.seconds(self.odom.header.stamp))>.6:return
             velocity=self.odom.twist.twist
@@ -150,9 +155,22 @@ class LocalizationNode:
                     # The first post-reset scan/cloud may arrive before the service response callback.
                     self.boot_ros=self.ros_now();self.pose=None;self.particles=[];self.gate.reset()
                     self.call('global',self.global_reset,Empty.Request(),initialized)
-        # AMCL otherwise only updates after movement. Keep a stationary bootstrap
-        # supplied with new filter updates, without inventing new pose timestamps.
-        if self.initialized and now-self.last_nomotion>=.25:
+        # Request updates only when AMCL has not already supplied a new pose.
+        # Normal motion updates remain AMCL's job. Repeated 4 Hz forced updates
+        # of the same stationary geometry can impoverish the particle cloud.
+        pose_age=self.ros_now()-self.seconds(self.pose.header.stamp) if self.pose is not None else math.inf
+        # A temporary quality loss must not leave bootstrap's .8 s freshness
+        # check waiting for a 1 s forced update forever. Request recovery updates
+        # promptly, without resetting AMCL or publishing another initial pose.
+        threshold=1.0 if self.gate.tracking else .35
+        # AMCL already updates from moving scans. Forcing a no-motion update
+        # during travel repeatedly resamples the same particle cloud.
+        velocity=self.odom.twist.twist if self.odom is not None else None
+        stationary=(velocity is not None and
+                    all(math.isfinite(v) for v in (velocity.linear.x,velocity.linear.y,velocity.angular.z)) and
+                    max(abs(velocity.linear.x),abs(velocity.linear.y),abs(velocity.angular.z))<=.01 and
+                    abs(self.ros_now()-self.seconds(self.odom.header.stamp))<=.6)
+        if self.initialized and stationary and pose_age>=threshold and now-self.last_nomotion>=.5:
             if self.call('nomotion',self.nomotion,Empty.Request(),lambda r:None):self.last_nomotion=now
 
     def evidence(self,now):
@@ -167,31 +185,51 @@ class LocalizationNode:
             p=self.pose.pose.pose;s.update(amcl_pose=dict(x_m=p.position.x,y_m=p.position.y,yaw_rad=yaw(p.orientation)),
                                          covariance=list(self.pose.pose.covariance),pose_age_sec=ros-self.seconds(self.pose.header.stamp))
         if self.scan is None:return s
-        scan=self.scan;s.update(scan_age_sec=ros-self.seconds(scan.header.stamp),scan_sequence=(scan.header.stamp.sec,scan.header.stamp.nanosec))
+        # Current TF transports the last AMCL correction with odometry.
         try:
             transform=self.tf.lookup_transform(self.hw['ros']['map_frame'],self.hw['ros']['base_frame'],Time())
             age=ros-self.seconds(transform.header.stamp);p=transform.transform.translation
-            s.update(tf_fresh=-.5<=age<=1.,pose=dict(x_m=p.x,y_m=p.y,yaw_rad=yaw(transform.transform.rotation)))
-            if self.pose is not None:
+            s.update(tf_fresh=-.5<=age<=1.,tf_pose_age_sec=max(0.,age),
+                     pose=dict(x_m=p.x,y_m=p.y,yaw_rad=yaw(transform.transform.rotation)))
+            if self.grid is not None:
+                from .footprint import body_clear
+                g=self.grid;o=g.info.origin
+                snapshot=dict(width=g.info.width,height=g.info.height,resolution=g.info.resolution,
+                    origin=[o.position.x,o.position.y,yaw(o.orientation)],data=g.data)
+                body=body_clear(snapshot,s['pose'],self.footprint)
+                s.update(body_clear=body['clear'],footprint_kind=body['kind'],footprint_cell=body['cell'])
+        except Exception as exc:
+            s['tf_error']=type(exc).__name__
+        if self.pose is not None:
+            try:
                 aligned=self.tf.lookup_transform(self.hw['ros']['map_frame'],self.hw['ros']['base_frame'],Time.from_msg(self.pose.header.stamp))
                 a=aligned.transform.translation
                 s['amcl_tf_pose']=dict(x_m=a.x,y_m=a.y,yaw_rad=yaw(aligned.transform.rotation))
-            if self.grid is not None:
-                from .footprint import body_clear
-                g=self.grid;origin=g.info.origin
-                snapshot=dict(width=g.info.width,height=g.info.height,resolution=g.info.resolution,
-                    origin=[origin.position.x,origin.position.y,yaw(origin.orientation)],data=g.data)
-                s['body_clear']=body_clear(snapshot,s['pose'],self.footprint)['clear']
-            s['particle_support']=particle_support(self.particles,s['pose'])
-            sensor=self.tf.lookup_transform(self.hw['ros']['map_frame'],scan.header.frame_id,Time.from_msg(scan.header.stamp))
+            except Exception:
+                # Never substitute current TF for a missing historical alignment.
+                s['tf_fresh']=False
+        s['particle_support']=particle_support(self.particles,s.get('amcl_pose',s.get('pose',{}))) if s.get('amcl_pose') else 0.
+        # Latest scan often arrives before its matching odom TF. Use the newest
+        # transformable scan in a bounded queue, never Time() for a past scan.
+        for scan in reversed(self.scans):
+            age=ros-self.seconds(scan.header.stamp)
+            if not 0<=age<=self.cfg['max_sensor_age_sec']:continue
+            try:
+                sensor=self.tf.lookup_transform(self.hw['ros']['map_frame'],scan.header.frame_id,Time.from_msg(scan.header.stamp))
+            except Exception as exc:
+                s['scan_tf_error']=type(exc).__name__;continue
             from .geometry_diagnostics import planar_transform,scan_points
-            transform=planar_transform(sensor.transform);points=[]
-            step=max(1,len(scan.ranges)//240)
-            for _,distance,x,y in scan_points(scan,transform,step):
-                if not math.isfinite(distance) or not max(.05,scan.range_min)<distance<min(scan.range_max*.99,12.):continue
-                points.append((x,y))
-            if self.matcher:s.update(self.matcher.score(points))
-        except Exception:pass
+            try:
+                transform=planar_transform(sensor.transform);points=[]
+                step=max(1,math.ceil(len(scan.ranges)/240))
+                for _,distance,x,y in scan_points(scan,transform,step):
+                    if not max(.05,scan.range_min)<distance<min(scan.range_max*.99,12.):continue
+                    points.append((x,y))
+                s.update(scan_age_sec=age,scan_sequence=(scan.header.stamp.sec,scan.header.stamp.nanosec))
+                if self.matcher:s.update(self.matcher.score(points))
+                s.pop('scan_tf_error',None);break
+            except ValueError as exc:
+                s['scan_tf_error']=str(exc);break
         return s
 
     def tick(self):
@@ -218,7 +256,8 @@ class LocalizationNode:
         pose=sample.get('pose')
         if pose and not all(math.isfinite(v) for v in pose.values()):pose=None
         status.update(map_id=self.cfg['map_id'],map_asset_hash=self.cfg['map_asset_hash'],frame_id=self.hw['ros']['map_frame'],
-                      observed_at_sec=self.ros_now(),pose=pose,pose_age_sec=sample.get('pose_age_sec'),mode=self.cfg['mode'])
+                      observed_at_sec=self.ros_now(),pose=pose,pose_age_sec=sample.get('tf_pose_age_sec'),
+                      amcl_pose_age_sec=sample.get('pose_age_sec'),mode=self.cfg['mode'])
         if self.session_context:status.update(session_id=self.session_context['session_id'],initialization_revision=self.initialization_revision)
         raw=json.dumps(status,allow_nan=False);self.output.publish(String(data=raw))
         if status['reason']!=self.last_reason:

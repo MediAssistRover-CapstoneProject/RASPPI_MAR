@@ -98,7 +98,7 @@ class RoomTests(unittest.TestCase):
         self.assertEqual(chassis_guard(reverse,motion,'REAR_OBSTACLE',.1)[1],'REAR_OBSTACLE')
         self.assertEqual(chassis_guard((-.0038,0.,-.05),motion,'REAR_OBSTACLE',.1),((0.,0.,-.05),None))
 
-    def test_rear_block_holds_for_replan_then_stops_if_persistent(self):
+    def test_rear_block_replans_without_finishing_the_whole_run(self):
         cfg=profile();mapper=AutoMapper(cfg);msg=dict(action='START',runId='test',maxDurationSec=100,stopOnReturn=False)
         pose=dict(x_m=0.,y_m=0.,yaw_rad=0.);mapper.accept(msg,10.,pose,.9)
         blocked=dict(reason='REAR_OBSTACLE')
@@ -110,7 +110,7 @@ class RoomTests(unittest.TestCase):
         mapper.current(10.7,auto.CLEAR,0.,pose,True,gate=blocked)
         for tick in range(11,20):mapper.accept({**msg,'action':'RENEW'},float(tick),pose,.9)
         mapper.current(19.1,auto.CLEAR,0.,pose,True,gate=blocked)
-        self.assertEqual(mapper.phase,'STOPPED');self.assertEqual(mapper.reason,'GATE_REAR_OBSTACLE')
+        self.assertEqual(mapper.phase,'RUNNING');self.assertEqual(mapper.reason,'REPLANNING_REAR_BLOCKED')
     def test_short_lease_gap_holds_zero_then_only_fresh_same_run_can_resume(self):
         cfg=profile();mapper=AutoMapper(cfg);msg=dict(action='START',runId='test',maxDurationSec=100,stopOnReturn=False)
         pose=dict(x_m=0.,y_m=0.,yaw_rad=0.);mapper.accept(msg,10.,pose,.9)
@@ -127,6 +127,9 @@ class RoomTests(unittest.TestCase):
         self.assertEqual(cfg,before);self.assertEqual(result['mqtt'],before['mqtt']);self.assertEqual(result['mapping']['camera'],before['mapping']['camera'])
         self.assertEqual(result['mapping']['autonomy']['footprint'],before['mapping']['autonomy']['footprint'])
         self.assertEqual(result['mapping']['autonomy']['exploration_mode'],'frontier')
+        fast=tune(cfg,hw,speed=.5,reverse=.2,angular=.8)['mapping']['autonomy']
+        self.assertEqual((fast['speed_mps'],fast['max_reverse_mps'],fast['angular_rps']),(.5,.2,.8))
+        self.assertGreaterEqual(fast['slow_clearance_m'],.8)
         with self.assertRaises(ValueError):tune(cfg,{**hw,'motion':{**hw['motion'],'allow_reverse':False}})
     def test_mapping_yaw_is_optional_and_reverse_does_not_change_endpoint_navigation(self):
         from mapping_nav2_parameters import mapping_motion_parameters
@@ -142,6 +145,29 @@ class RoomTests(unittest.TestCase):
         self.assertEqual(original['controller_server']['ros__parameters']['general_goal_checker']['yaw_goal_tolerance'],.1)
 
 class LoopTests(unittest.IsolatedAsyncioTestCase):
+    async def test_next_frontier_unavailable_does_not_cancel_existing_safe_route(self):
+        from types import SimpleNamespace as N
+        from unittest.mock import AsyncMock
+        for state,reason,clear in (('BLOCKED','FRONTIERS_UNREACHABLE',True),
+                                  ('NO_FRONTIERS','OBSERVED_AND_VISITED_REACHABLE_SPACE',True),
+                                  ('BLOCKED','ROBOT_FOOTPRINT_NOT_CLEAR_IN_MAP',False)):
+            item,_=auto.MappingIntegrationTests().manager()
+            item.auto.cfg=profile();item.auto_selected=True
+            item.auto.accept(dict(action='START',runId=auto.RUN,maxDurationSec=180,stopOnReturn=False),10.,auto.POSE,.9)
+            item.grid=({},10.);item.auto_scan=({**auto.CLEAR,'back_m':1.},10.)
+            item.exploration=Mock();item.exploration.no_progress.return_value=False
+            item.exploration.poll.return_value=({'state':state,'reason':reason,'seed_body_clear':clear,'goal':None},None)
+            item.navigator=N(active=True,tick=AsyncMock(return_value=((.1,0.,0.),'FOLLOW_FRONTIER_NAV2')),stop=AsyncMock())
+            def twist():return N(linear=N(x=0.,y=0.,z=0.),angular=N(x=0.,y=0.,z=0.))
+            with patch.dict(sys.modules,{'geometry_msgs.msg':N(Twist=twist)}),patch('mediassist.mapping.time.monotonic',return_value=10.1):
+                await item.tick(True,True)
+            if clear:
+                item.navigator.tick.assert_awaited_once();item.navigator.stop.assert_not_awaited()
+                self.assertGreater(item.velocity.publish.call_args.args[0].linear.x,0.)
+            else:
+                item.navigator.tick.assert_not_awaited();item.navigator.stop.assert_awaited_once()
+                self.assertEqual(item.velocity.publish.call_args.args[0].linear.x,0.)
+
     async def test_rear_gate_cancels_goal_and_holds_zero_for_new_plan(self):
         from types import SimpleNamespace as N
         from unittest.mock import AsyncMock

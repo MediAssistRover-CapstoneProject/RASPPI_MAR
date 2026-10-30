@@ -163,6 +163,21 @@ class MappingTests(unittest.IsolatedAsyncioTestCase):
     def test_delayed_packet_only_gets_remaining_lease(self):
         lease=MappingControlLease();lease.accept(message(),R,T,STATE,now=NOW+timedelta(milliseconds=700),mono=1)
         self.assertEqual(lease.current(1.06),(0,0))
+    def test_future_clock_tolerance_does_not_extend_motion_lease(self):
+        for offset in (.64,1.):
+            lease=MappingControlLease()
+            lease.accept(message(),R,T,STATE,now=NOW-timedelta(seconds=offset),mono=1.)
+            self.assertEqual(lease.current(1.2),(.05,0.))
+            self.assertEqual(lease.current(1.401),(0.,0.))
+        for offset in (1.001,2.):
+            with self.assertRaisesRegex(StepError,'MAPPING_CONTROL_EXPIRED_OR_CLOCK_SKEW'):
+                MappingControlLease().accept(message(),R,T,STATE,now=NOW-timedelta(seconds=offset),mono=1.)
+    def test_future_tolerance_does_not_accept_expired_or_long_ttl(self):
+        with self.assertRaisesRegex(StepError,'MAPPING_CONTROL_EXPIRED_OR_CLOCK_SKEW'):
+            MappingControlLease().accept(message(),R,T,STATE,now=NOW+timedelta(seconds=.75),mono=1.)
+        m={**message(),'expiresAt':(NOW+timedelta(seconds=2)).isoformat()}
+        with self.assertRaisesRegex(StepError,'MAPPING_CONTROL_EXPIRED_OR_CLOCK_SKEW'):
+            MappingControlLease().accept(m,R,T,STATE,now=NOW,mono=1.)
     def test_wrong_session_transport_expired_and_invalid_velocities(self):
         cases=[{'mappingSessionId':R},{'transportSessionId':R},{'durationMs':5000},{'linearX':-.31},{'linearX':float('nan')},{'linearX':.31},{'angularZ':1.01}]
         for changes in cases:

@@ -37,7 +37,7 @@ async def select_and_move(params, config, plan, move, report):
         except StepError as exc:
             attempts.append({"endpoint_id": endpoint_id, "phase": "PLAN", "outcome": exc.code})
             report(attempts[-1])
-            if exc.code != "PATH_UNAVAILABLE" or "endpoint_group_id" not in params:
+            if exc.code not in ("PATH_UNAVAILABLE", "ENDPOINT_FOOTPRINT_NOT_CLEAR") or "endpoint_group_id" not in params:
                 raise
             continue
         report({"endpoint_id": endpoint_id, "phase": "PLAN", "outcome": "PATH_AVAILABLE"})

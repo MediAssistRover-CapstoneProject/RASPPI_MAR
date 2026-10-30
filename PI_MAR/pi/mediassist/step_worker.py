@@ -19,6 +19,7 @@ class StepWorker:
         self.send_lock = asyncio.Lock()
         self.stop_reason = "CANCELLED"
         self.session_fault = False
+        self.shutting_down = False
 
     def status(self):
         if self.store.blocked() or getattr(self.adapter,"motion_uncertain",False):
@@ -50,6 +51,9 @@ class StepWorker:
         if self.store.cached_command(command):
             return
         validate_command(command,self.cfg["robot_id"])
+        if self.shutting_down and command['commandType']=='EXECUTE_STEP':
+            self.receipt(command,False,errorCode='PROCESS_SHUTDOWN')
+            return
         if command["commandType"] == "CANCEL_STEP":
             step=self.active
             if not step or step["jobStepId"]!=command["jobStepId"] or step["jobId"]!=command["jobId"]:
@@ -132,7 +136,8 @@ class StepWorker:
             validate_result(step,data)
             status="SUCCEEDED"
         except asyncio.CancelledError:
-            status="CANCELLED" if self.stop_reason=="CANCELLED" else "RECOVERY_REQUIRED"
+            status=("CANCELLED" if self.stop_reason=="CANCELLED" else
+                    "FAILED" if self.stop_reason=="PROCESS_SHUTDOWN" else "RECOVERY_REQUIRED")
             error=self.stop_reason
         except asyncio.TimeoutError:
             status,error="TIMED_OUT","STEP_TIMEOUT"
@@ -182,12 +187,29 @@ class StepWorker:
             stopped=(await self.adapter.stop()) is True
         except Exception:
             stopped=False
-        status="CANCELLED" if reason=="CANCELLED" and stopped else "RECOVERY_REQUIRED"
+        status=("CANCELLED" if reason=="CANCELLED" and stopped else
+                "FAILED" if reason=="PROCESS_SHUTDOWN" and stopped else "RECOVERY_REQUIRED")
         result={"status":status,"errorCode":reason,"physicalStopConfirmed":stopped}
         self.last_result=result
         self.store.finish(step,status,result)
         self.active=None
         self.store.emit("STEP_ERROR",{**result,"retryable":False,"details":{"code":reason}},step)
+
+    async def shutdown(self):
+        """Stop once, persist the result, and drain it while MQTT is still alive."""
+        self.shutting_down=True
+        self.stop_reason='PROCESS_SHUTDOWN'
+        if self.task and not self.task.done():
+            self.task.cancel()
+            await asyncio.gather(self.task,return_exceptions=True)
+        await self.abandoned('PROCESS_SHUTDOWN')
+        if self.adapter.mapping:
+            self.adapter.mapping.manual_inhibited=True
+            if self.adapter.mapping.active:
+                await self.adapter.mapping.abort('ABORTED')
+        deadline=time.monotonic()+4.
+        while self.connection_ready and self.store.pending() and time.monotonic()<deadline:
+            await asyncio.sleep(.05)
 
     async def disconnect(self, reason):
         self.connection_ready=False

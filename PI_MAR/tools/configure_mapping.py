@@ -28,6 +28,7 @@ def write_configuration(config,cfg,hardware,stop_distance=None,motion_options=No
             if motion_options:
                 tuned['motion'].update(motion_options['motion'])
                 tuned['max_speed_mps']=motion_options['max_speed_mps']
+                if 'navigation' in motion_options:tuned['navigation']=copy.deepcopy(motion_options['navigation'])
             if stop_distance is not None:
                 tuned['motion']['stop_distance_m']=stop_distance
             validate_config(tuned)

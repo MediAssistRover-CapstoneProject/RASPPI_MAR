@@ -17,6 +17,22 @@ def settings():
 
 
 class AutonomyTests(unittest.TestCase):
+    def test_turn_veto_does_not_finish_nav2_mapping_with_clear_front(self):
+        self.start()
+        self.current(.1,view={**CLEAR,'rotation_clear':False},gate={'reason':'TURN_ENVELOPE_BLOCKED'},hold=True)
+        self.assertEqual(self.auto.phase,'RUNNING')
+        from mediassist.autonomous_mapping import nav2_assist
+        command=nav2_assist((.1,0.,.3),{**CLEAR,'rotation_clear':False},self.auto.cfg,.01)
+        self.assertGreater(command[0],0.);self.assertEqual(command[2],0.)
+
+    def test_near_rear_still_allows_forward_at_the_independent_gate(self):
+        from mediassist.motion_braking import limit_velocity
+        cfg=settings();cfg['include_points']=True
+        view=dict(valid=True,nearest_lidar_m=.27,rotation_clear=False,obstacle_points=[(-.27,0.),(1.,0.)])
+        forward,_=limit_velocity((.1,0.,.3),view,.01,cfg)
+        reverse,_=limit_velocity((-.1,0.,0.),view,.01,cfg)
+        self.assertGreater(forward[0],0.);self.assertEqual(forward[2],0.)
+        self.assertEqual(reverse[0],0.)
     def setUp(self):
         self.auto=AutoMapper(settings())
         self.message=dict(action='START',runId=RUN,maxDurationSec=180,stopOnReturn=False)

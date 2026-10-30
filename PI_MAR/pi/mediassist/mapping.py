@@ -341,8 +341,13 @@ class MappingManager:
                 from .frontier_mapping import guidance
                 plan_result,plan_error=self.exploration.poll(grid[0],pose,map_revision,now,auto.run_id,now-auto.start_at,auto.travel)
                 heading=guidance(plan_result,pose) if not navigator else None
-            # A failed global plan is a HOLD, never a fallback reactive drive.
-            hold=auto.cfg['exploration_mode']=='frontier' and (plan_result is None or plan_result['state'] in ('NO_FRONTIERS','BLOCKED'))
+            # Frontier availability chooses the NEXT goal. It must not cancel
+            # an accepted Nav2 route merely because the scan now observes its
+            # destination. Nav2 still checks the live route and footprint.
+            continue_goal=bool(navigator and navigator.active and not plan_error and plan_result
+                and plan_result.get('seed_body_clear') is True
+                and plan_result['reason'] in ('FRONTIERS_UNREACHABLE','OBSERVED_AND_VISITED_REACHABLE_SPACE','NO_SIGNIFICANT_REACHABLE_FRONTIER'))
+            hold=auto.cfg['exploration_mode']=='frontier' and not continue_goal and (plan_result is None or plan_result['state'] in ('NO_FRONTIERS','BLOCKED'))
             reactive=auto.cfg['exploration_mode']=='reactive' and auto.cfg['vehicle']=='rigid'
             x,z=auto.current(now,view,now-at,pose,moving,'SENSORS_OR_SESSION_NOT_READY',gate,heading,hold or bool(navigator) or reactive)
             rear_blocked=auto.reason=='REPLANNING_REAR_BLOCKED' and auto.phase=='RUNNING'
@@ -368,13 +373,13 @@ class MappingManager:
                 if rear_blocked:x,y,z=0.,0.,0.
                 elif plan_error:x,z=auto.stop(plan_error)
                 elif plan_result is None:x,z=0.,0.;auto.reason='PLANNING_FRONTIERS'
-                elif plan_result['state']=='BLOCKED':
+                elif plan_result['state']=='BLOCKED' and not continue_goal:
                     if plan_result['reason']=='FRONTIERS_UNREACHABLE' and not self.exploration.no_progress(now,True):
                         x,z=0.,0.;auto.reason='REOBSERVING_FRONTIERS'
                     elif plan_result.get('seed_block_kind') in ('unknown','boundary') and now-auto.start_at<8.:
                         x,z=0.,0.;auto.reason='WAITING_FOR_MAP_AROUND_BODY'
                     else:x,z=auto.stop(plan_result['reason'])
-                elif plan_result['state']=='NO_FRONTIERS':
+                elif plan_result['state']=='NO_FRONTIERS' and not continue_goal:
                     x,z=0.,0.;auto.reason='CONFIRMING_COVERAGE'
                     if self.exploration.tracker.complete:
                         from .frontier_mapping import source_signature

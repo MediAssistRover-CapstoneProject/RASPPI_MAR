@@ -72,7 +72,7 @@ class NavigatorTests(unittest.IsolatedAsyncioTestCase):
     async def test_goal_without_progress_is_stopped_and_excluded_instead_of_spinning_forever(self):
         with patch.dict(sys.modules,self.modules):
             await self.navigator.tick(self.plan,self.pose,10.)
-            velocity,reason=await self.navigator.tick(self.plan,self.pose,31.)
+            velocity,reason=await self.navigator.tick(self.plan,self.pose,41.)
         self.assertEqual(velocity,(0.,0.,0.));self.assertEqual(reason,'REPLANNING_STALLED_FRONTIER')
         self.adapter.stop.assert_awaited_once();self.assertFalse(self.navigator.active)
     async def test_missing_server_stays_stopped(self):
@@ -80,5 +80,14 @@ class NavigatorTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(sys.modules,self.modules),self.assertRaisesRegex(StepError,'NAV2_MAPPING_NOT_READY'):
             await self.navigator.tick(self.plan,self.pose,10.)
         self.adapter.nav.send_goal_async.assert_not_called();self.adapter.navigation_velocity.assert_not_called()
+
+    async def test_detour_away_from_goal_counts_as_progress_but_total_time_is_bounded(self):
+        with patch.dict(sys.modules,self.modules):
+            await self.navigator.tick(self.plan,self.pose,10.)
+            for now,y in ((25.,.1),(40.,.2),(55.,.3),(70.,.4),(85.,.5)):
+                _,reason=await self.navigator.tick(self.plan,{**self.pose,'y_m':y},now)
+                self.assertEqual(reason,'FOLLOW_FRONTIER_NAV2')
+            velocity,reason=await self.navigator.tick(self.plan,{**self.pose,'y_m':.6},101.)
+        self.assertEqual(reason,'REPLANNING_STALLED_FRONTIER');self.assertEqual(velocity,(0.,0.,0.))
 
 if __name__=='__main__':unittest.main()

@@ -13,6 +13,18 @@ from mediassist.step_worker import StepWorker
 
 
 class WorkerErrorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shutdown_failure_requires_confirmed_stop(self):
+        import asyncio
+        for stopped in (True,False):
+            store=Mock();store.pending.return_value=[]
+            adapter=SimpleNamespace(mapping=None,motion_uncertain=False,stop=AsyncMock(return_value=stopped))
+            worker=StepWorker({}, {},store,adapter)
+            worker.active={'stepType':'MOVE','jobStepId':'step'}
+            await worker.shutdown()
+            self.assertEqual(worker.last_result['status'],'FAILED' if stopped else 'RECOVERY_REQUIRED')
+            self.assertEqual(worker.last_result['physicalStopConfirmed'],stopped)
+            store.finish.assert_called_once()
+
     async def execute_failure(self, error, step_type='INTERACT', stop_confirmed=True):
         store = Mock()
         store.emit.return_value = {'messageId': 'started'}

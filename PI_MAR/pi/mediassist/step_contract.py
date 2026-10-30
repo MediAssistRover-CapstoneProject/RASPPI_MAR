@@ -24,7 +24,7 @@ PARAMS = {
                      "volume": {"type": "integer", "minimum": 0, "maximum": 100}}, ["text"])}),
     "MOVE": obj({"map_id": UUID_SCHEMA, "endpoint_id": UUID_SCHEMA,
                  "mode": text(["NORMAL", "ESCORT", "PATROL"]),
-                 "max_speed_mps": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.3}}),
+                 "max_speed_mps": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.8}}),
     "CONTROL_HARDWARE": obj({"compartment_id": text(),
         "action": text(["LOCK_COMPARTMENT", "UNLOCK_COMPARTMENT"]),
         "authorization": obj({"mode": text(["STAFF_VERIFIED"]),

@@ -10,6 +10,9 @@ if (( EUID == 0 )); then
 fi
 source /home/ubuntu/.zshrc
 set -e
+# All project ROS nodes run in this container. Keep DDS discovery off shared
+# campus Wi-Fi; MQTT and the camera HTTP server still use the normal network.
+export ROS_LOCALHOST_ONLY=1
 if ! command -v ros2 >/dev/null 2>&1; then
     print -u2 'ROS_ENV_NOT_READY: ros2 is missing; no robot process started'
     exit 1

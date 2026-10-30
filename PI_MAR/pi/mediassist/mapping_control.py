@@ -10,6 +10,9 @@ from .contracts import StepError, parse_timestamp
 MAX_LINEAR = .30
 MAX_ANGULAR = 1.0
 MAX_PACKET_AGE = 1.501
+# Allow modest BE/Pi clock offset without increasing durationMs or replaying
+# expired commands. This is a future timestamp tolerance, not a motion lease.
+MAX_FUTURE_CLOCK_SKEW_SEC = 1.0
 
 SCHEMA = json.loads((Path(__file__).resolve().parents[2]/'handoff/mapping-live.schema.json').read_text())
 VALIDATOR = Draft202012Validator(SCHEMA['oneOf'][0], format_checker=FormatChecker())
@@ -42,7 +45,7 @@ class MappingControlLease:
             expires = parse_timestamp(message['expiresAt'])
         except ValueError:
             raise StepError('INVALID_MAPPING_CONTROL_TIMESTAMP') from None
-        if not 0 < (expires-issued).total_seconds() <= MAX_PACKET_AGE or (issued-now).total_seconds() > .1 or expires <= now:
+        if not 0 < (expires-issued).total_seconds() <= MAX_PACKET_AGE or (issued-now).total_seconds() > MAX_FUTURE_CLOCK_SKEW_SEC or expires <= now:
             raise StepError('MAPPING_CONTROL_EXPIRED_OR_CLOCK_SKEW')
         key = (transport_id,state['session_id'])
         if message['sequenceNo'] <= self.sequence.get(key,0):

@@ -6,10 +6,16 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from mediassist.safety_node import spin_and_stop
+from mediassist.safety_node import spin_and_stop, imu_motion_ready
 
 
 class ShutdownTests(unittest.TestCase):
+    def test_imu_motion_requires_fresh_ready_status(self):
+        self.assertFalse(imu_motion_ready(False,10,10.1))
+        self.assertTrue(imu_motion_ready(True,10,11.4))
+        self.assertFalse(imu_motion_ready(True,10,11.6))
+        self.assertFalse(imu_motion_ready(True,10,9.9))
+
     def exercise(self, action, cleanup_error=False):
         events, handlers = [], {}
         ros, node = Mock(), Mock()

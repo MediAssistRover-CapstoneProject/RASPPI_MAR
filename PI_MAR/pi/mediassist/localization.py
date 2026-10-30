@@ -7,7 +7,8 @@ DEFAULTS = dict(enabled=False, mode='global', max_sensor_age_sec=.6, max_pose_ag
                 min_known_fraction=.50, min_valid_beams=40, match_distance_m=.12,min_particle_support=.85,
                 stable_sec=3., stable_scans=8, bootstrap_timeout_sec=60.,
                 max_tf_amcl_distance_m=.35, max_tf_amcl_yaw_rad=.4,
-                tracking_quality_grace_sec=1.0)
+                tracking_quality_grace_sec=1.0, tracking_max_pose_age_sec=2.0, tracking_min_scan_match=.55,
+                tracking_recovery_sec=10.)
 
 def configuration(raw):
     cfg={**DEFAULTS, **raw}
@@ -20,6 +21,9 @@ def configuration(raw):
             'max_tf_amcl_distance_m':(.05,.6), 'max_tf_amcl_yaw_rad':(.05,.7)}
     bounds['min_particle_support']=(.7,1)
     bounds['tracking_quality_grace_sec']=(0.,2.)
+    bounds['tracking_max_pose_age_sec']=(.8,3.)
+    bounds['tracking_min_scan_match']=(.5,1.)
+    bounds['tracking_recovery_sec']=(2.,30.)
     for key,(lo,hi) in bounds.items():
         value=cfg[key]
         if type(value) not in (int,float) or not math.isfinite(value) or not lo<=value<=hi:
@@ -52,10 +56,18 @@ class QualityGate:
         self.had_lock=False;self.last_good_at=None;self.recovering=False;self.tracking=False
     def update(self,now,sample):
         c=self.cfg;reasons=[];metrics={}
+        # Remember the established hypothesis while stopped for a short dropout.
+        # This permits fast re-verification, never motion on stale evidence.
+        if (self.had_lock and not self.tracking and self.last_good_at is not None
+                and now-self.last_good_at>c['tracking_recovery_sec']):
+            self.had_lock=False;self.recovering=False
+            self.since=None;self.count=0;self.last_scan=None
+        established=self.tracking or self.had_lock
         for key,code in (('map_verified','MAP_NOT_VERIFIED'),('amcl_active','AMCL_NOT_ACTIVE'),('tf_fresh','TF_NOT_READY')):
             if sample.get(key) is not True:reasons.append(code)
         if sample.get('body_clear') is not True:reasons.append('LOCALIZATION_FOOTPRINT_NOT_CLEAR')
-        for key,limit in (('scan_age_sec',c['max_sensor_age_sec']),('odom_age_sec',c['max_sensor_age_sec']),('pose_age_sec',c['max_pose_age_sec'])):
+        pose_limit=max(c['max_pose_age_sec'],c['tracking_max_pose_age_sec']) if established else c['max_pose_age_sec']
+        for key,limit in (('scan_age_sec',c['max_sensor_age_sec']),('odom_age_sec',c['max_sensor_age_sec']),('pose_age_sec',pose_limit)):
             age=sample.get(key)
             if type(age) not in (int,float) or not math.isfinite(age) or not 0<=age<=limit:reasons.append(key.upper()+'_STALE')
         try:
@@ -75,7 +87,8 @@ class QualityGate:
                 if math.hypot(p['x_m']-old['x_m'],p['y_m']-old['y_m'])>.3+.35*dt or abs(angle(p['yaw_rad']-old['yaw_rad']))>.4+.6*dt:reasons.append('POSE_JUMP')
             self.previous_pose=(dict(p),now)
         except (KeyError,TypeError,ValueError):reasons.append('POSE_INVALID')
-        for key,minimum in (('scan_match',c['min_scan_match']),('known_fraction',c['min_known_fraction']),('valid_beams',c['min_valid_beams'])):
+        scan_min=min(c['min_scan_match'],c['tracking_min_scan_match']) if established else c['min_scan_match']
+        for key,minimum in (('scan_match',scan_min),('known_fraction',c['min_known_fraction']),('valid_beams',c['min_valid_beams'])):
             value=sample.get(key)
             if type(value) not in (int,float) or not math.isfinite(value) or value<minimum:reasons.append(key.upper()+'_LOW')
             if type(value) in (int,float) and math.isfinite(value):metrics[key]=value
@@ -83,8 +96,13 @@ class QualityGate:
             support=sample.get('particle_support',0.)
             if not math.isfinite(support) or support<c['min_particle_support']:reasons.append('PARTICLES_NOT_CONVERGED')
             metrics['particle_support']=support if math.isfinite(support) else None
+        for key in ('pose_age_sec','scan_age_sec','scan_tf_error','footprint_kind','footprint_cell'):
+            if key in sample:metrics[key]=sample[key]
+        if sample.get('scan_tf_error') and 'scan_match' not in sample:
+            reasons=[r for r in reasons if r not in ('SCAN_MATCH_LOW','KNOWN_FRACTION_LOW','VALID_BEAMS_LOW')]
+            reasons.append('SCAN_TF_UNAVAILABLE')
         warnings=[]
-        if self.tracking and 'KNOWN_FRACTION_LOW' in reasons:
+        if established and 'KNOWN_FRACTION_LOW' in reasons:
             # Unknown endpoints are common at doors and beyond a saved map.
             # They cannot invalidate an established hypothesis if enough laser
             # endpoints still match actual walls. Bootstrap remains strict.
@@ -102,7 +120,7 @@ class QualityGate:
         if reasons:
             transient={'SCAN_AGE_SEC_STALE','ODOM_AGE_SEC_STALE','POSE_AGE_SEC_STALE',
                        'SCAN_MATCH_LOW','KNOWN_FRACTION_LOW','VALID_BEAMS_LOW'}
-            self.recovering=bool(self.had_lock and self.last_good_at is not None and now-self.last_good_at<=2.
+            self.recovering=bool(self.had_lock and self.last_good_at is not None and 0<=now-self.last_good_at<=c['tracking_recovery_sec']
                                  and set(reasons)<=transient)
             if not self.recovering:self.had_lock=False
             self.tracking=False
@@ -111,8 +129,6 @@ class QualityGate:
         if sample.get('scan_sequence')!=self.last_scan:
             self.last_scan=sample.get('scan_sequence');self.count+=1
             if self.since is None:self.since=now
-        if self.recovering and now-self.last_good_at>2.:
-            self.recovering=False;self.had_lock=False
         needed_scans,needed_sec=(2,.5) if self.recovering else (c['stable_scans'],c['stable_sec'])
         ready=self.tracking or (self.count>=needed_scans and self.since is not None and now-self.since>=needed_sec)
         if ready:self.had_lock=True;self.last_good_at=now;self.recovering=False;self.tracking=True
@@ -172,3 +188,31 @@ def guarded_pose(status,received_age,ros_now,map_id,asset_hash,frame_id='map'):
         if not 0<=age<=1.:return empty
         return dict(value=dict(map_id=map_id,**{k:p[k] for k in ('x_m','y_m','yaw_rad')}),age_sec=age,fresh=True)
     except (KeyError,TypeError,ValueError):return empty
+
+
+def tracking_pose(status, received_age, ros_now, map_id, asset_hash, frame_id, live_tf):
+    """Use current map->base TF after AMCL lock; require recent quality evidence.
+
+    AMCL does not need to publish a new pose at every MOVE control tick. The
+    localization node still evaluates scans, odometry, covariance and map
+    identity, while current TF carries odometry between AMCL corrections.
+    """
+    empty={'value':None,'age_sec':None,'fresh':False}
+    try:
+        if status.get('ready') is not True or not 0<=received_age<=1.25:
+            return empty
+        if (status['map_id']!=map_id or status['map_asset_hash']!=asset_hash
+                or status['frame_id']!=frame_id):
+            return empty
+        if not -.5<=ros_now-status['observed_at_sec']<=1.5:
+            return empty
+        if live_tf.get('fresh') is not True or not 0<=live_tf['age_sec']<=1.:
+            return empty
+        pose=live_tf['value']
+        if pose['map_id']!=map_id or any(
+                type(pose[key]) not in (int,float) or not math.isfinite(pose[key])
+                for key in ('x_m','y_m','yaw_rad')):
+            return empty
+        return {'value':dict(pose),'age_sec':live_tf['age_sec'],'fresh':True}
+    except (KeyError,TypeError,ValueError):
+        return empty

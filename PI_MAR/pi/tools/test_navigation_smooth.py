@@ -9,10 +9,30 @@ from mediassist.ros_adapter import RosAdapter
 from mediassist.navigation_session import command_context
 from mediassist.navigation_setup import nav2_params
 from mediassist.contracts import StepError
+from mediassist.safety import angular_deadband
 import test_localization as loc
 import test_navigation_session as session
 
 class TrackingTests(unittest.TestCase):
+    def test_recorded_nav2_reverse_and_small_turn_reach_motor_gate(self):
+        a=object.__new__(RosAdapter);a.lock=threading.Lock()
+        a.nav_velocity_sample=((-0.061111111111,0.,-.075),10.)
+        a.cfg={'max_speed_mps':.8,'motion':{'allow_reverse':True,'max_reverse_speed_mps':.8,
+               'allow_strafe':True,'max_angular_speed_rps':.8}}
+        a.navigation_velocity_output=Mock()
+        def twist():return N(linear=N(x=0.,y=0.),angular=N(z=0.))
+        with patch.dict(sys.modules,{'geometry_msgs.msg':N(Twist=twist)}),patch('mediassist.ros_adapter.time.monotonic',return_value=10.1):
+            self.assertTrue(a.publish_navigation_velocity(.8))
+        msg=a.navigation_velocity_output.publish.call_args.args[0]
+        self.assertLess(msg.linear.x,-.06)
+        self.assertLessEqual(msg.angular.z,-.1)
+        self.assertLessEqual(angular_deadband(msg.angular.z),-.1)
+        a.cfg['motion']['allow_reverse']=False
+        with patch.dict(sys.modules,{'geometry_msgs.msg':N(Twist=twist)}),patch('mediassist.ros_adapter.time.monotonic',return_value=10.1):
+            a.publish_navigation_velocity(.8)
+        self.assertEqual(a.navigation_velocity_output.publish.call_args.args[0].linear.x,0.)
+        self.assertNotEqual(angular_deadband(.09999999999999996),0.)
+
     def test_only_known_plan_commit_races_are_retryable(self):
         import io,json,urllib.error
         from mediassist.navigation_session import SessionClient
@@ -138,8 +158,8 @@ class TrackingTests(unittest.TestCase):
             self.assertGreater(scan['raytrace_max_range'],scan['obstacle_max_range']);self.assertIn('footprint',cm)
         self.assertIn('vendor_plugin',out['bt_navigator']['ros__parameters']['plugin_lib_names'])
         follow=out['controller_server']['ros__parameters']['FollowPath']
-        self.assertEqual(follow['PathAlign.scale'],0.)
-        self.assertEqual(follow['GoalAlign.scale'],0.)
+        self.assertEqual(follow['PathAlign.scale'],24.)
+        self.assertEqual(follow['GoalAlign.scale'],16.)
         self.assertEqual(follow['min_speed_theta'],.1)
         self.assertEqual(follow['vtheta_samples'],13)
         self.assertGreater(follow['min_speed_xy'],0.)

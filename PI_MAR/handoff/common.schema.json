@@ -382,7 +382,7 @@
                 "forward_mps": {
                   "type": "number",
                   "minimum": 0.02,
-                  "maximum": 0.3
+                  "maximum": 0.8
                 },
                 "angular_rps": {
                   "type": "number",

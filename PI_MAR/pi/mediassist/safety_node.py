@@ -13,6 +13,10 @@ def bench_pause_allowed(cfg, motor_watchdog):
             and cfg['navigation'].get('operator_test_notes', '').startswith('TEMPORARY WHEELS-OFF-GROUND'))
 
 
+def imu_motion_ready(ready, observed_at, now):
+    return ready is True and 0 <= now-observed_at <= 1.5
+
+
 def spin_and_stop(ros, node, cleanup):
     """Keep the ROS context alive until the final zero command is published."""
     stopping = [False]
@@ -99,7 +103,8 @@ def main():
     else:
         state = {"cmd": (0.0, 0.0, 0.0), "command_at": 0.0, "lease_at": 0.0, "scan_at": 0.0,
                  "left": (None, 0.0), "right": (None, 0.0), "odom_at": 0.0, "max_speed": cfg["max_speed_mps"],
-                 "rear_reason":"REAR_LIDAR_NOT_READY","rear_at":0.}
+                 "rear_reason":"REAR_LIDAR_NOT_READY","rear_at":0.,'braking_view':None,'braking_at':0.,
+                 "imu_ready":False,"imu_at":0.}
         from .rear_scan import chassis_guard,rear_clearance
         from tf2_ros import Buffer,TransformListener
         from rclpy.time import Time
@@ -126,7 +131,9 @@ def main():
         def scan_seen(msg):
             if not msg.ranges:return
             state['scan_at']=time.monotonic()
-            if not cfg['motion'].get('allow_reverse',False):return
+            braking=cfg['motion'].get('lidar_braking')
+            if not cfg['motion'].get('allow_reverse',False) and not braking:return
+            state['braking_view']=None
             try:
                 stamp=Time.from_msg(msg.header.stamp)
                 age=(node.get_clock().now().nanoseconds-stamp.nanoseconds)/1e9
@@ -139,13 +146,27 @@ def main():
                     tf=rear_tf.lookup_transform(cfg['ros']['base_frame'],msg.header.frame_id,Time()).transform
                     q=tf.rotation
                     yaw=math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))
+                    normal=1-2*(q.x*q.x+q.y*q.y)
+                    if abs(normal)<.98:raise ValueError('Non-planar lidar transform')
                     transform=(tf.translation.x,tf.translation.y,yaw)
+                if braking:
+                    from .autonomous_mapping import scan_view
+                    direction=1 if msg.header.frame_id==cfg['ros']['base_frame'] or normal>0 else -1
+                    state['braking_view']=scan_view(msg,(*transform,direction),braking)
+                    state['braking_at']=time.monotonic()-age
                 state['rear_reason']=rear_clearance(msg,transform,cfg['motion'].get('rear_stop_distance_m',.3))
                 state['rear_at']=time.monotonic()
             except Exception:
                 state['rear_reason']='REAR_LIDAR_TF_NOT_READY'
         node.create_subscription(LaserScan, cfg["ros"]["scan"], scan_seen, qos_profile_sensor_data)
         node.create_subscription(Odometry, cfg["ros"]["odom"], lambda m: state.__setitem__("odom_at", time.monotonic()), qos_profile_sensor_data)
+        def imu_status_seen(msg):
+            try:
+                state['imu_ready']=json.loads(msg.data).get('state')=='READY'
+            except (ValueError,TypeError,AttributeError):
+                state['imu_ready']=False
+            state['imu_at']=time.monotonic()
+        node.create_subscription(String,'/mediassist/imu_status',imu_status_seen,10)
         last_report=[None,0.]
         def tick():
             if time.monotonic() < pause_until[0]:
@@ -154,8 +175,14 @@ def main():
                                        state["command_at"], state["lease_at"], state["scan_at"], cfg["motion"], state["max_speed"])
             if time.monotonic() - state["odom_at"] > cfg["motion"]["sensor_max_age_sec"]:
                 cmd, reason = (0.0, 0.0, 0.0), "STALE_ODOM"
+            if not imu_motion_ready(state['imu_ready'],state['imu_at'],time.monotonic()):
+                cmd,reason=(0.0,0.0,0.0),'IMU_NOT_READY'
             cmd,chassis_reason=chassis_guard(cmd,cfg['motion'],state['rear_reason'],time.monotonic()-state['rear_at'])
             if chassis_reason:reason=chassis_reason
+            if cfg['motion'].get('lidar_braking') and any(cmd):
+                from .motion_braking import limit_velocity
+                cmd,braking_reason=limit_velocity(cmd,state['braking_view'],time.monotonic()-state['braking_at'],cfg['motion']['lidar_braking'])
+                if braking_reason:reason=braking_reason
             msg = Twist()
             msg.linear.x, msg.linear.y, msg.angular.z = cmd
             pub.publish(msg)

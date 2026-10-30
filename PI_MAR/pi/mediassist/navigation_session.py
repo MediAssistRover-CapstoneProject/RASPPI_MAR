@@ -102,7 +102,7 @@ def command_context(command,cfg,hardware,adapter,require_localization=True):
         if received.get(key)!=context[key]:raise StepError('NAVIGATION_SESSION_MISMATCH')
     local=adapter.telemetry().get('localization',{})
     age=local.get('age_sec')
-    ready=(local.get('ready') is True and type(age) in (int,float) and math.isfinite(age) and 0<=age<=.75)
+    ready=(local.get('ready') is True and type(age) in (int,float) and math.isfinite(age) and 0<=age<=1.25)
     if require_localization and not ready:raise StepError('LOCALIZATION_NOT_READY')
     if local.get('initialization_revision')!=received.get('initialization_revision'):raise StepError('LOCALIZATION_REVISION_CHANGED')
     deployed=getattr(adapter,'navigation_profile_hash',None)

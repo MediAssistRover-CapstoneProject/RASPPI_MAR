@@ -60,8 +60,18 @@ def main():
                     worker=StepWorker(cfg,hardware,store,adapter)
                     loop=asyncio.get_running_loop()
                     task=asyncio.current_task()
+                    shutdown_task=None
+                    async def stop_gracefully():
+                        try:
+                            await asyncio.wait_for(worker.shutdown(),8.)
+                        finally:
+                            task.cancel()
+                    def request_stop():
+                        nonlocal shutdown_task
+                        if shutdown_task is None:
+                            shutdown_task=asyncio.create_task(stop_gracefully())
                     for sig in (signal.SIGINT,signal.SIGTERM):
-                        loop.add_signal_handler(sig,task.cancel)
+                        loop.add_signal_handler(sig,request_stop)
                     try:
                         await worker.run()
                     finally:

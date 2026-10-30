@@ -8,7 +8,15 @@ def finite(value):
 
 def angular_deadband(yaw):
     """Suppress sub-0.1 rad/s commands; never amplify a collision-limited turn."""
-    return yaw if finite(yaw) and abs(yaw)>=.1 else 0.0
+    if not finite(yaw):return 0.0
+    # ROS velocity smoothing can represent 0.1 as 0.09999999999999996.
+    return yaw if abs(yaw)>=.1-1e-9 else 0.0
+
+
+def navigation_yaw(yaw, minimum=.1):
+    """Make a deliberate Nav2 turn usable by the motor gate's minimum turn speed."""
+    if not finite(yaw) or abs(yaw)<.02:return 0.0
+    return math.copysign(max(abs(yaw),minimum),yaw)
 
 
 def gate_velocity(cmd, ranges, now, last_command, last_lease, last_scan, config, max_speed):

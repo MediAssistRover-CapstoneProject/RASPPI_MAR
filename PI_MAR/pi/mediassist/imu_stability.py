@@ -94,18 +94,27 @@ def main():
     from .scan_normalizer import normalize
     rclpy.init(); node=rclpy.create_node('mediassist_imu_stability')
     check=StationaryGyro(); received=[-math.inf]; output=[-math.inf]; last_reason=[None]
+    diagnostics={'raw_samples':0,'rejected_stamp_age':0,'rejected_sequence':0,'corrected_samples':0}
+    last_source_age=[None]
     publisher=node.create_publisher(Imu,'/imu_corrected',10)
     status=node.create_publisher(String,'/mediassist/imu_status',10)
     def imu(msg):
         now=time.monotonic(); stamp=msg.header.stamp.sec+msg.header.stamp.nanosec/1e9
         age=node.get_clock().now().nanoseconds/1e9-stamp
-        if not 0 <= age <= .4: return
+        diagnostics['raw_samples']+=1
+        last_source_age[0]=age
+        if not 0 <= age <= .4:
+            diagnostics['rejected_stamp_age']+=1
+            return
         received[0]=now
         g,a=msg.angular_velocity,msg.linear_acceleration
         corrected=check.feed((g.x,g.y,g.z),(a.x,a.y,a.z),now,stamp)
         if corrected is not None:
             msg.angular_velocity.x,msg.angular_velocity.y,msg.angular_velocity.z=corrected
             publisher.publish(msg); output[0]=now
+            diagnostics['corrected_samples']+=1
+        elif check.reason=='IMU_TIMESTAMP_NOT_INCREASING':
+            diagnostics['rejected_sequence']+=1
     def scan(msg):
         age=node.get_clock().now().nanoseconds/1e9-msg.header.stamp.sec-msg.header.stamp.nanosec/1e9
         if not 0 <= age <= .4: return
@@ -117,8 +126,13 @@ def main():
         check.command((m.linear.x,m.linear.y,m.angular.z),time.monotonic()),10)
     def report():
         result=check.status()
-        if check.phase=='READY' and time.monotonic()-output[0]>.5:
+        now=time.monotonic()
+        if check.phase=='READY' and now-output[0]>1.0:
             result.update(state='WAITING',reason='IMU_SOURCE_STALE')
+        result['output_age_sec']=round(now-output[0],3) if math.isfinite(output[0]) else None
+        result['raw_age_sec']=round(now-received[0],3) if math.isfinite(received[0]) else None
+        result['source_stamp_age_sec']=round(last_source_age[0],3) if last_source_age[0] is not None else None
+        result.update(diagnostics)
         status.publish(String(data=json.dumps(result)))
         key=(result['state'],result['reason'])
         if key != last_reason[0]:

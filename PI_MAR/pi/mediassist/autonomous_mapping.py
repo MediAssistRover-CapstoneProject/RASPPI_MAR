@@ -24,7 +24,7 @@ def configuration(mapping):
     if cfg['reverse_enabled'] and (cfg['vehicle']!='rigid' or cfg['frontier_controller']!='nav2' or cfg['exploration_mode']!='frontier'):
         raise StepError('AUTONOMOUS_REVERSE_REQUIRES_RIGID_NAV2')
     for key, low, high in (('speed_mps', .02, 1.00), ('angular_rps', .10, .80),
-                          ('stop_margin_m', .05, .4), ('turn_clearance_m', .2, 1.),
+                          ('stop_margin_m', .03, .4), ('turn_clearance_m', .2, 1.),
                           ('slow_clearance_m', .3, 2.), ('max_duration_sec', 10, 600),
                           ('return_radius_m', .15, .5), ('min_return_sec', 10, 300),
                           ('min_return_travel_m', 1, 50), ('scan_max_age_sec', .1, .6),
@@ -32,16 +32,17 @@ def configuration(mapping):
                           ('frontier_min_length_m',.10,.5),('coverage_stable_sec',10,60),
                           ('coverage_min_duration_sec',20,120),('coverage_min_travel_m',0.,5.),
                           ('coverage_min_area_m2',.3,10.),('frontier_no_progress_sec',10,60),('lidar_stop_distance_m',.05,.50),
-                          ('visit_radius_m',.3,1.5),('max_reverse_mps',.02,.3),('control_pause_sec',0.,2.)):
+                          ('visit_radius_m',.3,1.5),('max_reverse_mps',.02,.8),('control_pause_sec',0.,2.)):
         value = cfg[key]
         if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
             raise StepError('INVALID_AUTONOMY_CONFIG', key)
     if not cfg['stop_margin_m'] < cfg['turn_clearance_m'] < cfg['slow_clearance_m']:
         raise StepError('INVALID_AUTONOMY_CLEARANCES')
-    if cfg['speed_mps'] > .25:
+    if max(cfg['speed_mps'],cfg['max_reverse_mps']) > .25:
         if cfg['vehicle'] != 'rigid' or (cfg['exploration_mode']=='frontier' and cfg['frontier_controller'] != 'nav2'):
             raise StepError('FAST_MAPPING_REQUIRES_RIGID_NAV2')
-        if cfg['slow_clearance_m'] < (.80 if cfg['speed_mps'] <= .5 else 1.9*cfg['speed_mps']) or cfg['scan_max_age_sec'] > .4:
+        fast=max(cfg['speed_mps'],cfg['max_reverse_mps'])
+        if cfg['slow_clearance_m'] < (.80 if fast <= .5 else 1.9*fast) or cfg['scan_max_age_sec'] > .4:
             raise StepError('FAST_MAPPING_REQUIRES_EARLY_SLOWDOWN_AND_FRESH_SCAN')
     if cfg['enabled']:
         footprint = cfg.get('footprint', {})
@@ -106,12 +107,21 @@ def scan_view(scan, transform, cfg):
             for sign,label in ((1.,'arc_left_clear'),(-1.,'arc_right_clear')):
                 centers=[(r*math.sin(v/r*t),sign*r*(1-math.cos(v/r*t))) for t in (.0,.5,1.,1.5,2.)]
                 arcs[label]=all(math.hypot(x-cx,y-cy)>radius for x,y in points for cx,cy in centers)
-        return dict(**arcs,valid=True, reason='CLEAR', front_m=front, left_m=left, right_m=right,
+        return dict(**arcs,**({'obstacle_points':points} if cfg.get('include_points') else {}),valid=True, reason='CLEAR', front_m=front, left_m=left, right_m=right,
                     lateral_left_m=lateral_left,lateral_right_m=lateral_right,back_m=back,
                     nearest_lidar_m=nearest_lidar,lidar_stop_distance_m=cfg['lidar_stop_distance_m'],
                     rotation_clear=rotation_clear)
     except (ValueError,TypeError,AttributeError,KeyError):
         return {'valid': False, 'reason': 'LIDAR_INVALID'}
+
+
+def braking_speed_cap(clearance_m, scan_age_sec, stop_margin_m):
+    """Cap speed so a 0.6 m/s² stop leaves the requested body clearance."""
+    if not all(math.isfinite(v) for v in (clearance_m, scan_age_sec, stop_margin_m)) or scan_age_sec < 0:
+        return 0.
+    remaining=max(0.,clearance_m-stop_margin_m)
+    reaction=scan_age_sec+.35
+    return max(0.,math.sqrt((.6*reaction)**2+1.2*remaining)-.6*reaction)
 
 
 class AutoMapper:
@@ -189,12 +199,13 @@ class AutoMapper:
             return self.stop('LIDAR_OBSTACLE_WITHIN_10CM' if self.cfg['lidar_stop_distance_m']==.10 else 'LIDAR_OBSTACLE_WITHIN_STOP_DISTANCE')
         if not pose or not all(math.isfinite(pose.get(k,math.nan)) for k in ('x_m','y_m','yaw_rad')):
             return self.stop('MAPPING_POSE_NOT_READY')
-        if gate is not None and (not isinstance(gate,dict) or gate.get('reason') not in ('CLEAR','NO_LEASE','STALE_COMMAND')):
+        if gate is not None and (not isinstance(gate,dict) or gate.get('reason') not in ('CLEAR','NO_LEASE','STALE_COMMAND','TURN_ENVELOPE_BLOCKED')):
             if not isinstance(gate,dict):return self.stop('GATE_INVALID_STATUS')
             if gate.get('reason')=='REAR_OBSTACLE':
                 if self.gate_blocked_at is None:self.gate_blocked_at=now
-                if now-self.gate_blocked_at<self.cfg['blocked_timeout_sec']:
-                    self.reason='REPLANNING_REAR_BLOCKED';return (0.,0.)
+                # A vetoed reverse candidate is a reason to choose another goal,
+                # not permission to finish the whole exploration run.
+                self.reason='REPLANNING_REAR_BLOCKED';return (0.,0.)
             return self.stop('GATE_' + str(gate.get('reason','UNKNOWN')))
         self.gate_blocked_at=None
         previous, at = self.last_pose; dt = max(0.,now-at)
@@ -238,7 +249,7 @@ class AutoMapper:
                 return (0.,self.turn*self.cfg['angular_rps'])
             self.turn_at = None
         self.reason = 'FORWARD'
-        factor = min(1.,max(0.,(front-self.cfg['turn_clearance_m'])/(self.cfg['slow_clearance_m']-self.cfg['turn_clearance_m'])))
+        safe_speed=min(self.cfg['speed_mps'],braking_speed_cap(front,age,self.cfg['stop_margin_m']))
         if guidance:
             error=math.atan2(math.sin(guidance['yaw']-pose['yaw_rad']),math.cos(guidance['yaw']-pose['yaw_rad']))
             if guidance['hold'] and abs(error)<.15:
@@ -248,14 +259,14 @@ class AutoMapper:
                 if abs(angular)>.01:
                     key='arc_left_clear' if angular>0 else 'arc_right_clear'
                     if not view.get(key,False):return self.stop('TRAILER_FORWARD_ARC_BLOCKED')
-                speed=min(self.cfg['speed_mps']*factor,.06 if abs(error)>.15 else self.cfg['speed_mps'])
+                speed=min(safe_speed,.06 if abs(error)>.15 else self.cfg['speed_mps'])
                 angular=max(-speed/self.cfg['min_turn_radius_m'],min(angular,speed/self.cfg['min_turn_radius_m']))
             else:
                 if abs(angular)>.01 and not view['rotation_clear']:return self.stop('ROTATION_ENVELOPE_BLOCKED')
-                speed=0. if abs(error)>.35 or guidance['hold'] else self.cfg['speed_mps']*factor*max(0.,math.cos(error))
+                speed=0. if abs(error)>.35 or guidance['hold'] else safe_speed*max(0.,math.cos(error))
             self.reason='FOLLOW_FRONTIER_PATH'
             return (speed,angular)
-        return (self.cfg['speed_mps']*factor,0.)
+        return (safe_speed,0.)
 
     def status(self, now):
         return dict(vehicle=self.cfg['vehicle'],available=self.cfg['enabled'],run_id=self.run_id,state=self.phase,reason=self.reason,
@@ -273,8 +284,7 @@ def manual_assist(velocity,view,age,cfg):
     if not view or not view.get('valid') or not 0<=age<=cfg['scan_max_age_sec']:
         return (0.,0.),'MANUAL_LIDAR_NOT_READY'
     if x>0:
-        factor=min(1.,max(0.,(view['front_m']-cfg['stop_margin_m'])/(cfg['slow_clearance_m']-cfg['stop_margin_m'])))
-        x*=factor
+        x=min(x,braking_speed_cap(view['front_m'],age,cfg['stop_margin_m']))
     if z and not view['rotation_clear']:return (0.,0.),'MANUAL_TURN_BLOCKED'
     if cfg['vehicle']=='articulated' and z:
         if x<=0:return (0.,0.),'TRAILER_FORWARD_ARC_REQUIRED'
@@ -299,23 +309,18 @@ def nav2_assist(velocity,view,cfg,scan_age=0.):
     # command.  Treat that as zero before the independent rear guard sees it;
     # meaningful reverse motion is still checked against the rear sector.
     if abs(x)<.005:x=0.
-    def factor(gap):
-        return min(1.,max(0.,(gap-cfg['stop_margin_m'])/(cfg['slow_clearance_m']-cfg['stop_margin_m'])))
+    # A rear/side point inside the full turning circle does not veto a clear
+    # translation corridor. Keep the Nav2 translation and remove only yaw.
+    if not view.get('rotation_clear',True):z=0.
     # A configured maximum is never permission to outrun sensor latency and
     # the .6 m/s^2 Nav2 deceleration profile. Bound each translation corridor.
     def braking_cap(gap):
-        if not math.isfinite(scan_age) or scan_age < 0:return 0.
-        available=max(0.,gap-cfg['stop_margin_m'])
-        reaction=scan_age+.35
-        return max(0.,math.sqrt((.6*reaction)**2+1.2*available)-.6*reaction)
+        return braking_speed_cap(gap,scan_age,cfg['stop_margin_m'])
     longitudinal_gap=view.get('back_m',0.) if x<0 else view['front_m']
-    x*=factor(longitudinal_gap)
-    if y:y*=factor(view.get('lateral_left_m' if y>0 else 'lateral_right_m',0.))
-    if cfg['speed_mps'] > .25 or x < 0:
-        x=math.copysign(min(abs(x),braking_cap(longitudinal_gap)),x)
-        if y:
-            cap=braking_cap(view.get('lateral_left_m' if y>0 else 'lateral_right_m',0.))
-            y=math.copysign(min(abs(y),cap),y)
+    x=math.copysign(min(abs(x),braking_cap(longitudinal_gap)),x)
+    if y:
+        cap=braking_cap(view.get('lateral_left_m' if y>0 else 'lateral_right_m',0.))
+        y=math.copysign(min(abs(y),cap),y)
     scale=min(1.,cfg['speed_mps']/max(math.hypot(x,y),1e-9))
     result=(x*scale,y*scale,max(-cfg['angular_rps'],min(z,cfg['angular_rps'])))
     return (result[0],result[2]) if legacy else result
