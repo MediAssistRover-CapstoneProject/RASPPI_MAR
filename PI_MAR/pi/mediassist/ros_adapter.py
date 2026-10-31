@@ -103,7 +103,8 @@ class RosAdapter:
                     'zone_count':len(self.zones.zones),'profile_hash':getattr(self,'navigation_profile_hash',None)}
             # The norm, not each component, is capped for diagonal Mecanum travel.
             if x<0.:
-                x=max(x,-self.cfg['motion'].get('max_reverse_speed_mps',0.)) if self.cfg['motion'].get('allow_reverse') is True else 0.
+                forward_only=getattr(self,'worker',{}).get('navigation_runtime',{}).get('forward_only',False)
+                x=max(x,-self.cfg['motion'].get('max_reverse_speed_mps',0.)) if not forward_only and self.cfg['motion'].get('allow_reverse') is True else 0.
             if self.cfg['motion'].get('allow_strafe') is not True:y=0.
             scale=min(1.,min(speed,self.cfg['max_speed_mps'])/max(math.hypot(x,y),1e-9))
             msg.linear.x=x*scale;msg.linear.y=y*scale
@@ -121,7 +122,8 @@ class RosAdapter:
         if rotation_only:msg.linear.x=0.
         # A resume ramp may retain a previous higher output while decelerating.
         # A zone cap must also bound the final command after that ramp.
-        msg.linear.x=max(-speed,min(msg.linear.x,speed))
+        lower=0. if getattr(self,'worker',{}).get('navigation_runtime',{}).get('forward_only',False) else -speed
+        msg.linear.x=max(lower,min(msg.linear.x,speed))
         self.navigation_velocity_output.publish(msg)
         self.last_navigation_output=(msg.linear.x,msg.linear.y,msg.angular.z)
         return fresh
@@ -454,6 +456,25 @@ class RosAdapter:
             await asyncio.sleep(.05)
         raise StepError('ROBOT_NOT_CONFIRMED_STATIONARY')
 
+    async def _wait_arrival_pose(self,endpoint_id):
+        """Observe a stable live pose while stopped, without resetting AMCL."""
+        target=self.cfg['endpoints'][endpoint_id];deadline=time.monotonic()+3.
+        anchor=None;since=None
+        while time.monotonic()<deadline:
+            self.lease_message(False)
+            ready=self._navigation_context(allow_localization_pause=True)
+            sample=self.telemetry().get('map_pose',{})
+            if ready and sample.get('fresh'):
+                p=sample['value']
+                if math.hypot(p['x_m']-target['x_m'],p['y_m']-target['y_m'])>.10:
+                    raise StepError('ENDPOINT_POSITION_NOT_CONFIRMED')
+                if anchor is None or math.hypot(p['x_m']-anchor['x_m'],p['y_m']-anchor['y_m'])>.03 or abs(math.atan2(math.sin(p['yaw_rad']-anchor['yaw_rad']),math.cos(p['yaw_rad']-anchor['yaw_rad'])))>.08:
+                    anchor=dict(p);since=time.monotonic()
+                elif time.monotonic()-since>=.3:return
+            else:anchor=None;since=None
+            await asyncio.sleep(.05)
+        raise StepError('ARRIVAL_POSE_NOT_STABLE')
+
     async def _finish_heading(self,p,endpoint_id):
         """At most one Spin goal per MOVE; never restart the arrival phase."""
         from nav2_msgs.action import Spin
@@ -563,6 +584,7 @@ class RosAdapter:
             if separated:
                 if not await self.stop():raise StepError('GOAL_STOP_UNCONFIRMED')
                 await self._wait_stationary()
+                await self._wait_arrival_pose(endpoint_id)
                 await self._finish_heading(p,endpoint_id)
                 await self._wait_stationary()
             # Verify the endpoint's position AND final body heading using guarded localization.
@@ -586,6 +608,9 @@ class RosAdapter:
 
     async def _move(self, p, meta):
         from .navigation import select_and_move
+        # A workflow's requested ceiling must not raise the local MOVE limit.
+        # Mapping and manual control use their independent speed profiles.
+        p={**p,'max_speed_mps':min(p['max_speed_mps'],self.cfg['navigation'].get('max_speed_mps',p['max_speed_mps']))}
         def report(data):
             if self.event_sink:
                 self.event_sink(meta["job_id"], "ENDPOINT_ATTEMPT", {**meta, **data})

@@ -7,7 +7,7 @@ DEFAULTS = dict(enabled=False, mode='global', max_sensor_age_sec=.6, max_pose_ag
                 min_known_fraction=.50, min_valid_beams=40, match_distance_m=.12,min_particle_support=.85,
                 stable_sec=3., stable_scans=8, bootstrap_timeout_sec=60.,
                 max_tf_amcl_distance_m=.35, max_tf_amcl_yaw_rad=.4,
-                tracking_quality_grace_sec=1.0, tracking_max_pose_age_sec=2.0, tracking_min_scan_match=.55,
+                tracking_quality_grace_sec=1.0, tracking_max_pose_age_sec=8.0, tracking_min_scan_match=.55,
                 tracking_recovery_sec=10.)
 
 def configuration(raw):
@@ -21,7 +21,7 @@ def configuration(raw):
             'max_tf_amcl_distance_m':(.05,.6), 'max_tf_amcl_yaw_rad':(.05,.7)}
     bounds['min_particle_support']=(.7,1)
     bounds['tracking_quality_grace_sec']=(0.,2.)
-    bounds['tracking_max_pose_age_sec']=(.8,3.)
+    bounds['tracking_max_pose_age_sec']=(.8,10.)
     bounds['tracking_min_scan_match']=(.5,1.)
     bounds['tracking_recovery_sec']=(2.,30.)
     for key,(lo,hi) in bounds.items():
@@ -87,7 +87,11 @@ class QualityGate:
                 if math.hypot(p['x_m']-old['x_m'],p['y_m']-old['y_m'])>.3+.35*dt or abs(angle(p['yaw_rad']-old['yaw_rad']))>.4+.6*dt:reasons.append('POSE_JUMP')
             self.previous_pose=(dict(p),now)
         except (KeyError,TypeError,ValueError):reasons.append('POSE_INVALID')
-        scan_min=min(c['min_scan_match'],c['tracking_min_scan_match']) if established else c['min_scan_match']
+        # AMCL publishes after motion thresholds, not at every controller tick.
+        # Bridge an older correction with LIVE map TF, odom and stronger laser
+        # agreement; never reuse a fixed robot pose or accept stale sensors.
+        correction_held=established and sample.get('pose_age_sec',math.inf)>2.
+        scan_min=min(c['min_scan_match'],c['tracking_min_scan_match']) if established and not correction_held else c['min_scan_match']
         for key,minimum in (('scan_match',scan_min),('known_fraction',c['min_known_fraction']),('valid_beams',c['min_valid_beams'])):
             value=sample.get(key)
             if type(value) not in (int,float) or not math.isfinite(value) or value<minimum:reasons.append(key.upper()+'_LOW')
@@ -101,7 +105,7 @@ class QualityGate:
         if sample.get('scan_tf_error') and 'scan_match' not in sample:
             reasons=[r for r in reasons if r not in ('SCAN_MATCH_LOW','KNOWN_FRACTION_LOW','VALID_BEAMS_LOW')]
             reasons.append('SCAN_TF_UNAVAILABLE')
-        warnings=[]
+        warnings=['AMCL_CORRECTION_HELD_WITH_LIVE_SCAN'] if correction_held and not reasons else []
         if established and 'KNOWN_FRACTION_LOW' in reasons:
             # Unknown endpoints are common at doors and beyond a saved map.
             # They cannot invalidate an established hypothesis if enough laser
@@ -109,7 +113,7 @@ class QualityGate:
             if (sample.get('scan_match',0)>=c['min_scan_match']
                     and sample.get('valid_beams',0)*sample.get('scan_match',0)>=c['min_valid_beams']):
                 reasons.remove('KNOWN_FRACTION_LOW');warnings.append('KNOWN_FRACTION_LOW')
-        if (reasons and self.tracking and self.last_good_at is not None
+        if (reasons and not correction_held and self.tracking and self.last_good_at is not None
                 and 0<=now-self.last_good_at<=c['tracking_quality_grace_sec']
                 and set(reasons)<={'SCAN_MATCH_LOW','KNOWN_FRACTION_LOW'}
                 and sample.get('scan_match',0)>=.45):

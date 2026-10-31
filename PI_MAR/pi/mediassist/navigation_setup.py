@@ -12,7 +12,8 @@ def footprint_rectangle(front, rear, left, right):
     return [[front, left], [-rear, left], [-rear, -right], [front, -right]]
 
 
-def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=False, fast_mapping=False, fast_navigation=False, position_then_spin=False, footprint_planner=False):
+def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=False, fast_mapping=False, fast_navigation=False, position_then_spin=False, footprint_planner=False, forward_only=False):
+    if forward_only and fast_mapping:raise ValueError('Forward only is for saved-map MOVE, not exploration')
     limit = 1.00 if (fast_mapping or fast_navigation) and mecanum else .25
     yaw_limit = .8 if mecanum else .6
     if not 0 < speed <= limit or not 0 < angular <= yaw_limit:
@@ -45,7 +46,7 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
         raise ValueError('Expected installed Hiwonder DWB profile; do not replace an unknown controller silently')
     # Saved-map escort/delivery follows its heading. Exploration may strafe.
     lateral = speed if mecanum and fast_mapping else 0.0
-    follow.update(min_vel_x=-speed if mecanum else 0.0, min_vel_y=-lateral, max_vel_x=speed, max_vel_y=lateral,
+    follow.update(min_vel_x=-speed if mecanum and not forward_only else 0.0, min_vel_y=-lateral, max_vel_x=speed, max_vel_y=lateral,
                   max_speed_xy=speed, max_vel_theta=angular,
                   min_speed_xy=min(.025,speed), min_speed_theta=min(.10,angular),
                   trans_stopped_velocity=0.01, vy_samples=5 if lateral else 1,xy_goal_tolerance=.05)
@@ -89,12 +90,21 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
         follow['GoalAlign.scale']=0.
         behavior=result.setdefault('behavior_server',{}).setdefault('ros__parameters',{})
         behavior.update(min_rotational_vel=.1,max_rotational_vel=angular,rotational_acc_lim=1.2)
+    if forward_only:
+        # The installed Nav2 shim aligns the chassis with the path before DWB
+        # takes over. It does not own final heading: that remains one Spin.
+        follow.update(plugin='nav2_rotation_shim_controller::RotationShimController',
+            primary_controller='dwb_core::DWBLocalPlanner',angular_dist_threshold=.55,
+            forward_sampling_distance=.25,rotate_to_heading_angular_vel=min(.4,angular),
+            max_angular_accel=1.2,simulate_ahead_time=.5,rotate_to_goal_heading=False,
+            vx_samples=13,sim_time=1.2)
+        follow.update({'PathAlign.forward_point_distance':.25,'PathDist.scale':24.,'GoalDist.scale':32.})
     ctl.update(min_x_velocity_threshold=.001,min_y_velocity_threshold=.001,
                min_theta_velocity_threshold=.001,speed_limit_topic='/mediassist/navigation_speed_limit')
     follow.update(acc_lim_x=.40,decel_lim_x=-.6,acc_lim_y=.40 if mecanum else 0.,
                   decel_lim_y=-.6 if mecanum else 0.,acc_lim_theta=1.2,decel_lim_theta=-1.8)
     result['velocity_smoother']['ros__parameters'].update(
-        max_velocity=[speed, lateral, angular], min_velocity=[-speed if mecanum else 0.0, -lateral, -angular],
+        max_velocity=[speed, lateral, angular], min_velocity=[-speed if mecanum and not forward_only else 0.0, -lateral, -angular],
         scale_velocities=True, smoothing_frequency=20.,
         max_accel=[.40,.40 if mecanum else 0.,1.2],max_decel=[-.6,-.6 if mecanum else 0.,-1.8],velocity_timeout=.25)
     result['planner_server']['ros__parameters']['GridBased']['allow_unknown'] = False
@@ -111,7 +121,7 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
             result['planner_server']['ros__parameters']['GridBased']={
                 'plugin':'nav2_smac_planner/SmacPlannerHybrid','tolerance':.05,'allow_unknown':False,
                 'downsample_costmap':False,'angle_quantization_bins':72,
-                'motion_model_for_search':'REEDS_SHEPP','minimum_turning_radius':.20,
+                'motion_model_for_search':'DUBIN' if forward_only else 'REEDS_SHEPP','minimum_turning_radius':.20,
                 'reverse_penalty':2.,'change_penalty':0.,'non_straight_penalty':1.2,
                 'cost_penalty':2.,'max_iterations':1000000,'max_on_approach_iterations':1000,
                 'max_planning_time':5.,'cache_obstacle_heuristic':False,'smooth_path':True,

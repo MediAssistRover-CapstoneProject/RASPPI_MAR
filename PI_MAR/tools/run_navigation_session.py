@@ -35,17 +35,18 @@ def prepare(config,session_id=None):
     controller=yaml.safe_load(Path('/home/ubuntu/ros2_ws/src/navigation/config/nav2_controller_dwb.yaml').read_text())
     mecanum=hw['motion'].get('chassis_model')=='MENTORPI_M1_MECANUM' and hw['motion'].get('allow_strafe') is True
     if not Path('/opt/ros/humble/lib/libnav2_smac_planner.so').is_file():raise RuntimeError('SMAC_PLANNER_NOT_INSTALLED')
+    if not Path('/opt/ros/humble/lib/libnav2_rotation_shim_controller.so').is_file():raise RuntimeError('ROTATION_SHIM_NOT_INSTALLED')
     params=nav_parameters(nav2_params(base,controller,polygon,
         speed=min(hw['navigation'].get('max_speed_mps',.25),hw['max_speed_mps']),
         angular=min(.8 if mecanum else .6,cfg['mapping']['autonomy']['angular_rps'],hw['motion']['max_angular_speed_rps']),
         mecanum=mecanum,fast_navigation=mecanum and hw['motion'].get('lidar_braking') is not None,
-        position_then_spin=True,footprint_planner=True),hardware)
+        position_then_spin=True,footprint_planner=True,forward_only=True),hardware)
     (root/'nav2.yaml').write_text(yaml.safe_dump(params,sort_keys=False),encoding='utf-8')
     write_private(root/'hardware.json',json.dumps(hardware,indent=2))
     runtime=copy.deepcopy(cfg);runtime['hardware_profile']=str(root/'hardware.json');runtime['navigation_session']=context
     runtime['stack_state_dir']=str(ROOT/'pi/state/stack')
     runtime['navigation_runtime']=dict(map_yaml=str(root/'map.yaml'),nav2_params=str(root/'nav2.yaml'),localization_only=False,
-        arrival_mode='POSITION_THEN_SPIN',footprint_planner=True)
+        arrival_mode='POSITION_THEN_SPIN',footprint_planner=True,forward_only=True)
     runtime['localization']=dict(enabled=True,mode='manual',map_id=map_id,map_asset_hash=meta['asset_hash'],status_file=str(root/'localization.json'))
     runtime['mapping']['enabled']=False
     runtime['enabled_step_types']=list(dict.fromkeys([*runtime['enabled_step_types'],'MOVE']))
