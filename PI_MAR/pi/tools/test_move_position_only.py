@@ -18,7 +18,7 @@ def params(**kw):
     controller={'controller_server':{'ros__parameters':{'FollowPath':{
         'plugin':'dwb_core::DWBLocalPlanner','critics':['BaseObstacle','RotateToGoal']},
         'progress_checker':{},'general_goal_checker':{}}}}
-    return nav2_params(base,controller,[],.6,.8,mecanum=True,**kw)
+    return nav2_params(base,controller,[],.6,kw.pop('angular',.8),mecanum=True,**kw)
 
 
 class ProfileTests(unittest.TestCase):
@@ -30,7 +30,8 @@ class ProfileTests(unittest.TestCase):
         self.assertNotIn('critics',f);self.assertNotIn('primary_controller',f)
         self.assertFalse(f['allow_reversing']);self.assertTrue(f['use_collision_detection'])
         self.assertTrue(f['use_rotate_to_heading'])
-        self.assertEqual(f['rotate_to_heading_angular_vel'],.5)
+        self.assertEqual(f['rotate_to_heading_angular_vel'],.8)
+        self.assertEqual(f['max_angular_accel'],3.2)
         self.assertEqual(c['general_goal_checker']['xy_goal_tolerance'],.06)
         self.assertEqual(c['general_goal_checker']['yaw_goal_tolerance'],math.pi)
         planner=p['planner_server']['ros__parameters']['GridBased']
@@ -44,6 +45,13 @@ class ProfileTests(unittest.TestCase):
         f=p['controller_server']['ros__parameters']['FollowPath']
         self.assertEqual(f['plugin'],'dwb_core::DWBLocalPlanner')
         self.assertGreater(f['max_vel_y'],0);self.assertLess(f['min_vel_x'],0)
+
+    def test_saved_map_yaw_is_independent_from_mapping_yaw(self):
+        p=params(angular=1.2,fast_navigation=True,forward_only=True,position_only=True,path_tracking=True)
+        self.assertEqual(p['controller_server']['ros__parameters']['FollowPath']['rotate_to_heading_angular_vel'],1.2)
+        self.assertEqual(p['velocity_smoother']['ros__parameters']['max_velocity'],[.6,0.,1.2])
+        self.assertEqual(p['velocity_smoother']['ros__parameters']['max_accel'][2],3.2)
+        with self.assertRaises(ValueError):params(angular=1.2,fast_mapping=True)
 
 
 class ArrivalTests(unittest.IsolatedAsyncioTestCase):
@@ -85,7 +93,7 @@ class ArrivalTests(unittest.IsolatedAsyncioTestCase):
         a=self.adapter();a.navigation_velocity_output=Mock()
         with patch.dict(sys.modules,{'geometry_msgs.msg':N(Twist=lambda:N(linear=N(x=0.,y=0.),angular=N(z=0.)))}):
             a.navigation_velocity=lambda:((.2,0.,.05),True);a.publish_navigation_velocity(.6)
-            self.assertEqual(a.navigation_velocity_output.publish.call_args.args[0].angular.z,0.)
+            self.assertEqual(a.navigation_velocity_output.publish.call_args.args[0].angular.z,.05)
             a.navigation_velocity=lambda:((0.,0.,.06),True);a.publish_navigation_velocity(.6)
             self.assertEqual(a.navigation_velocity_output.publish.call_args.args[0].angular.z,.1)
 

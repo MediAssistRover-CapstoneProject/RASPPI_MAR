@@ -71,15 +71,17 @@ class TrackingTests(unittest.TestCase):
         sample['pose']['yaw_rad']=2.
         self.assertIn('POSE_JUMP',gate.update(4.1,sample)['reasons'])
 
-    def test_gate_never_emits_sub_minimum_yaw_or_amplifies_a_command(self):
+    def test_gate_preserves_moving_curvature_and_deadbands_stationary_turns(self):
         from mediassist.safety import gate_velocity
         config=dict(commissioned=True,cart_footprint_validated=True,watchdog_validated=True,
                     lease_timeout_sec=1.,command_timeout_sec=1.,sensor_max_age_sec=1.,
                     us100_required=False,max_angular_speed_rps=.8)
         for z in (-.8,-.1,-.099,-.033,0.,.033,.099,.1,.8):
             cmd,reason=gate_velocity((.05,0.,z),[],10.,10.,10.,10.,config,.25)
-            self.assertEqual(reason,'CLEAR');self.assertTrue(cmd[2]==0 or abs(cmd[2])>=.1)
+            self.assertEqual(reason,'CLEAR');self.assertEqual(cmd[2],z)
             self.assertLessEqual(abs(cmd[2]),abs(z))
+            stationary,_=gate_velocity((0.,0.,z),[],10.,10.,10.,10.,config,.25)
+            self.assertTrue(stationary[2]==0 or abs(stationary[2])>=.1)
         self.assertEqual(gate_velocity((0.,0.,.8),[],10.,0.,0.,0.,config,.25)[0],(0.,0.,0.))
     def locked(self):
         gate=QualityGate(loc.cfg())
@@ -97,7 +99,7 @@ class TrackingTests(unittest.TestCase):
             if hard:bad['covariance'][0]=1.
             else:bad['scan_age_sec']=1.
             self.assertFalse(gate.update(3.6,bad)['ready'])
-            start=3.7 if hard else 6.
+            start=3.7 if hard else 3.5+gate.cfg['tracking_recovery_sec']+.1
             self.assertFalse(gate.update(start,loc.evidence(9))['ready'])
             self.assertFalse(gate.update(start+.6,loc.evidence(10))['ready'])
     def test_pause_does_not_authorize_new_command_or_changed_identity(self):
@@ -181,6 +183,7 @@ class MoveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.call_count,2)
         self.assertEqual(request.call_args_list[0],request.call_args_list[1])
         request=Mock(side_effect=StepError('NAVIGATION_SESSION_HTTP_422'))
+        a.navigation_plan_client=N(request=request)
         with patch('mediassist.navigation_session.SessionClient',return_value=N(request=request)):
             with self.assertRaises(StepError):await a._publish_plan(body)
         self.assertEqual(request.call_count,1)

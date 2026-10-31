@@ -45,7 +45,7 @@ def prepare(config,session_id=None,arrival_mode='POSITION_ONLY'):
     if not Path('/opt/ros/humble/lib',required).is_file():raise RuntimeError('NAVIGATION_CONTROLLER_NOT_INSTALLED: '+required)
     params=nav_parameters(nav2_params(base,controller,polygon,
         speed=min(hw['navigation'].get('max_speed_mps',.25),hw['max_speed_mps']),
-        angular=min(.8 if mecanum else .6,cfg['mapping']['autonomy']['angular_rps'],hw['motion']['max_angular_speed_rps']),
+        angular=min(2. if mecanum else .6,hw['navigation'].get('max_angular_speed_rps',.8 if mecanum else .6),hw['motion']['max_angular_speed_rps']),
         mecanum=mecanum,fast_navigation=mecanum and hw['motion'].get('lidar_braking') is not None,
         position_then_spin=not position_only,footprint_planner=True,forward_only=True,
         position_only=position_only,path_tracking=position_only),hardware)

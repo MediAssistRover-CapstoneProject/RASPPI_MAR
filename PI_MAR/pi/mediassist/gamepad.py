@@ -33,7 +33,7 @@ def configuration(mapping):
         raise StepError('INVALID_GAMEPAD_CONFIG', 'dedicated input topic required')
     extended=value['layout']=='vendor_mecanum'
     for key, low, high in (('deadzone', .05, .30), ('forward_mps', .02, .30 if extended else .15),
-                           ('reverse_mps', .02, .30 if extended else .10), ('angular_rps', .10, 1.0 if extended else .50),
+                           ('reverse_mps', .02, .30 if extended else .10), ('angular_rps', .10, 2.0 if extended else .50),
                            ('lateral_mps', .02, .30),('linear_accel',.25,1.),('angular_accel',.8,3.),
                            ('timeout_sec', .10, .25), ('neutral_hold_sec', .20, 1.), ('max_run_sec', 0., 5.)):
         number = value[key]

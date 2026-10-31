@@ -36,4 +36,6 @@ def gate_velocity(cmd, ranges, now, last_command, last_lease, last_scan, config,
     speed = math.hypot(x, y)
     if speed > max_speed: x, y = x * max_speed / speed, y * max_speed / speed
     yaw = min(config["max_angular_speed_rps"], max(-config["max_angular_speed_rps"], yaw))
-    return (x, y, angular_deadband(yaw)), "CLEAR"
+    # A small steering rate during translation is a wheel-speed difference,
+    # not a sub-deadband stationary motor command. Dropping it distorts a path.
+    return (x, y, yaw if math.hypot(x,y)>.01 else angular_deadband(yaw)), "CLEAR"

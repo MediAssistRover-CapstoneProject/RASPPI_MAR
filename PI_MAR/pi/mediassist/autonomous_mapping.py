@@ -23,7 +23,10 @@ def configuration(mapping):
     if any(type(cfg[k]) is not bool for k in ('visit_known_space','reverse_enabled')):raise StepError('INVALID_AUTONOMY_CONFIG')
     if cfg['reverse_enabled'] and (cfg['vehicle']!='rigid' or cfg['frontier_controller']!='nav2' or cfg['exploration_mode']!='frontier'):
         raise StepError('AUTONOMOUS_REVERSE_REQUIRES_RIGID_NAV2')
-    for key, low, high in (('speed_mps', .02, 1.00), ('angular_rps', .10, .80),
+    # The final manual/MOVE braking profile also covers the vendor's 2 rad/s
+    # joystick ceiling. Exploration retains its independent 0.8 rad/s limit.
+    braking_yaw=2. if cfg.get('include_points') is True and cfg['vehicle']=='rigid' else .8
+    for key, low, high in (('speed_mps', .02, 1.00), ('angular_rps', .10, braking_yaw),
                           ('stop_margin_m', .03, .4), ('turn_clearance_m', .2, 1.),
                           ('slow_clearance_m', .3, 2.), ('max_duration_sec', 10, 600),
                           ('return_radius_m', .15, .5), ('min_return_sec', 10, 300),

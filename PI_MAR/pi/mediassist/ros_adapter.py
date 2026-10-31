@@ -19,7 +19,7 @@ class RosAdapter:
         from rclpy.action import ActionClient
         from rclpy.qos import qos_profile_sensor_data
         from nav2_msgs.action import NavigateToPose, ComputePathToPose, Spin
-        from nav_msgs.msg import Odometry
+        from nav_msgs.msg import Odometry, Path
         from sensor_msgs.msg import Range, LaserScan
         from geometry_msgs.msg import Twist
         from std_msgs.msg import UInt16, String
@@ -46,17 +46,20 @@ class RosAdapter:
         self.lock = threading.Lock()
         self.samples, self.goal, self.lease_speed, self.goal_feedback = {}, None, None, None
         self.nav_velocity_sample=None
+        self.nav_plan_sample=None
+        self.odom_twist_sample=None
         self.navigation_velocity_output=self.node.create_publisher(Twist,config['ros']['raw_cmd_vel'],1)
         from nav2_msgs.msg import SpeedLimit
         self.navigation_speed_output=self.node.create_publisher(SpeedLimit,'/mediassist/navigation_speed_limit',10)
         def nav_velocity(msg):
             with self.lock:self.nav_velocity_sample=((float(msg.linear.x),float(msg.linear.y),float(msg.angular.z)),time.monotonic())
         self.node.create_subscription(Twist,'/mediassist/nav2_cmd_vel',nav_velocity,1)
+        self.node.create_subscription(Path,'/plan',self._navigation_plan_sample,1)
         for side in ("left", "right"):
             self.node.create_subscription(Range, config["ros"][side + "_range"], lambda m, s=side: self._sample(s, float(m.range)), qos_profile_sensor_data)
         self.node.create_subscription(UInt16, config["ros"]["battery"], lambda m: self._sample("battery", int(m.data)), qos_profile_sensor_data)
         self.node.create_subscription(LaserScan, config["ros"]["scan"], lambda m: self._sample("scan", bool(m.ranges)), qos_profile_sensor_data)
-        self.node.create_subscription(Odometry, config["ros"]["odom"], lambda m: self._sample("odom_speed", max(abs(m.twist.twist.linear.x), abs(m.twist.twist.linear.y), abs(m.twist.twist.angular.z))), qos_profile_sensor_data)
+        self.node.create_subscription(Odometry, config["ros"]["odom"], self._odometry_sample, qos_profile_sensor_data)
         self.node.create_subscription(String, "/mediassist/safety_state", lambda m: self._sample("gate", m.data), 10)
         if getattr(self,'localization_required',False):
             self.node.create_subscription(String,"/mediassist/localization/status",self._localization_status,10)
@@ -76,6 +79,17 @@ class RosAdapter:
 
     def _sample(self, key, value):
         with self.lock: self.samples[key] = (value, time.monotonic())
+
+    def _odometry_sample(self,msg):
+        t=msg.twist.twist;now=time.monotonic()
+        with self.lock:
+            self.samples['odom_speed']=(max(abs(t.linear.x),abs(t.linear.y),abs(t.angular.z)),now)
+            # Local diagnostics only: do not change the MQTT telemetry contract.
+            self.odom_twist_sample=((float(t.linear.x),float(t.linear.y),float(t.angular.z)),now)
+
+    def _navigation_plan_sample(self,msg):
+        # One latest-slot sample, no backlog and no new ROS publishers/processes.
+        with self.lock:self.nav_plan_sample=(msg,time.monotonic())
 
     def clear_navigation_velocity(self):
         with self.lock:self.nav_velocity_sample=None
@@ -115,15 +129,15 @@ class RosAdapter:
             if ramp is not None:
                 msg.linear.x,msg.linear.y,msg.angular.z=ramp.update((msg.linear.x,msg.linear.y,msg.angular.z),time.monotonic())
         elif getattr(self,'navigation_resume_ramp',None) is not None:self.navigation_resume_ramp.reset()
-        from .safety import navigation_yaw,angular_deadband
+        from .safety import navigation_yaw
         # DWB/smoother can ask for a turn below the motor gate's 0.1 rad/s
         # deadband. Keep its direction and let the downstream gate veto an
         # obstructed turn; otherwise Nav2 can wait forever at a valid path.
         pursuit=getattr(self,'worker',{}).get('navigation_runtime',{}).get('controller')=='REGULATED_PURSUIT'
-        # Suppress tiny steering while translating instead of amplifying it.
-        # A deliberate in-place rotation must still cross the motor deadband,
-        # including during the smoother's initial acceleration ramp.
-        msg.angular.z=angular_deadband(msg.angular.z) if pursuit and abs(msg.linear.x)>.01 else navigation_yaw(msg.angular.z)
+        # Preserve RPP's curvature during translation. Wheels already turn;
+        # small yaw is a steering correction, not a tiny stationary motor drive.
+        # Only a deliberate in-place turn needs the minimum turn command.
+        if not (pursuit and abs(msg.linear.x)>.01 and not rotation_only):msg.angular.z=navigation_yaw(msg.angular.z)
         msg.linear.y=0.
         if rotation_only:msg.linear.x=0.
         # A resume ramp may retain a previous higher output while decelerating.
@@ -306,7 +320,8 @@ class RosAdapter:
             nav_fresh=fresh,output=getattr(self,'last_navigation_output',None),
             gate_reason=gate.get('reason'),applied_velocity=gate.get('applied_velocity'),
             odom=state.get('odom_speed'),localization=state.get('localization'),
-            map_pose=state.get('map_pose'),zone_policy=getattr(self,'last_zone_policy',None)),separators=(',',':')))
+            map_pose=state.get('map_pose'),zone_policy=getattr(self,'last_zone_policy',None),
+            odom_twist=getattr(self,'odom_twist_sample',None)),separators=(',',':')))
 
     def _navigation_context(self,allow_localization_pause=False):
         if getattr(self,'worker',{}).get('navigation_session'):
@@ -336,7 +351,8 @@ class RosAdapter:
 
     async def _publish_plan(self,body):
         from .navigation_session import SessionClient
-        client=SessionClient(self.worker)
+        client=getattr(self,'navigation_plan_client',None)
+        if client is None:client=self.navigation_plan_client=SessionClient(self.worker)
         for attempt in range(4):
             # Keep the frozen map/session/revision, and wait for BE's MQTT view
             # to catch up. This never sends a NavigateToPose goal.
@@ -348,6 +364,48 @@ class RosAdapter:
             except StepError as exc:
                 if not exc.retryable or attempt==3:raise
                 await asyncio.sleep(.5)
+
+    def _plan_body(self,path,endpoint_id,receipt):
+        if path.header.frame_id!=self.cfg['ros']['map_frame'] or len(path.poses)<2:
+            raise StepError('NAVIGATION_PLAN_FRAME_MISMATCH')
+        points=[]
+        for v in path.poses:
+            q=v.pose.orientation
+            yaw=math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))
+            p=(float(v.pose.position.x),float(v.pose.position.y),yaw)
+            if not all(math.isfinite(x) for x in p):raise StepError('PATH_UNAVAILABLE')
+            points.append(p)
+        target=self.cfg['endpoints'][endpoint_id]
+        if math.hypot(points[-1][0]-target['x_m'],points[-1][1]-target['y_m'])>.10:
+            raise StepError('NAVIGATION_PLAN_ENDPOINT_MISMATCH')
+        from .navigation_zones import compact_path
+        preview=self.zones.preview_path(points) if getattr(self,'zones',None) is not None else compact_path(points)
+        rounded=[(round(x,4),round(y,4),yaw) for x,y,yaw in preview]
+        if getattr(self,'zones',None) is not None:self.zones.validate_path(rounded)
+        return {**receipt,'points':[{'xM':x,'yM':y} for x,y,_ in rounded]}
+
+    async def _relay_navigation_plans(self,endpoint_id,accepted_at):
+        """Display successful replans without putting HTTPS on the velocity loop."""
+        receipt=getattr(self,'navigation_plan_receipt',None)
+        if not receipt or receipt['endpointId']!=endpoint_id:return
+        previous=None;last_warning=-math.inf
+        while True:
+            await asyncio.sleep(1.)
+            with self.lock:sample=self.nav_plan_sample
+            if not sample or sample[1]<accepted_at or time.monotonic()-sample[1]>3.:continue
+            try:
+                body=self._plan_body(sample[0],endpoint_id,receipt)
+                signature=json.dumps(body['points'],separators=(',',':'))
+                if signature==previous:continue
+                await self._publish_plan(body);previous=signature
+            except asyncio.CancelledError:raise
+            except Exception as exc:
+                # Initial plan ACK remains mandatory; a display refresh failure
+                # must not block local collision checks or the 20 Hz lease loop.
+                if time.monotonic()-last_warning>10.:
+                    import logging
+                    logging.warning('NAV_PLAN_DISPLAY_UPDATE_FAILED %s',getattr(exc,'code',type(exc).__name__))
+                    last_warning=time.monotonic()
 
     def _check_endpoint_footprint(self,endpoint_id,yaw=None):
         worker=getattr(self,'worker',{})
@@ -373,6 +431,7 @@ class RosAdapter:
 
     async def _plan(self, p, endpoint_id, meta=None):
         from nav2_msgs.action import ComputePathToPose
+        self.navigation_plan_receipt=None
         await self._prerequisites(p)
         position_only=getattr(self,'worker',{}).get('navigation_runtime',{}).get('arrival_mode')=='POSITION_ONLY'
         # Position-only validates the terminal footprint against the actual
@@ -453,6 +512,7 @@ class RosAdapter:
                       'endpointId':endpoint_id,'points':points}
                 try:
                     await self._publish_plan(body)
+                    self.navigation_plan_receipt={k:v for k,v in body.items() if k!='points'}
                 except StepError:raise
                 except Exception as exc:raise StepError('NAVIGATION_PLAN_BE_UNREACHABLE') from exc
         finally:
@@ -570,12 +630,15 @@ class RosAdapter:
         self.navigation_speed_limit(p['max_speed_mps'])
         sent = self.nav.send_goal_async(goal, feedback_callback=lambda m: setattr(self, "goal_feedback", m.feedback))
         received = False
+        plan_relay=None
         try:
             self.goal = await self.future(sent)
             received = True
             if not self.goal.accepted: raise StepError("NAV_GOAL_REJECTED")
             result_future = self.goal.get_result_async()
             accepted_at=time.monotonic()
+            if getattr(self,'worker',{}).get('navigation_session'):
+                plan_relay=asyncio.create_task(self._relay_navigation_plans(endpoint_id,accepted_at))
             localization_pause=None;velocity_pause=None
             while not result_future.done():
                 self._check_graph()
@@ -628,6 +691,10 @@ class RosAdapter:
             if yaw_error is not None:output['yaw_error_rad']=yaw_error
             return output
         finally:
+            if plan_relay is not None:
+                plan_relay.cancel()
+                try:await plan_relay
+                except asyncio.CancelledError:pass
             self.lease_message(False)
             if not received: sent.add_done_callback(self._late_cancel)
             if not await self.stop(): raise StepError("GOAL_STOP_UNCONFIRMED")

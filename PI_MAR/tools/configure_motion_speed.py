@@ -30,6 +30,7 @@ def tune(raw,hardware,speed,reverse,angular,stop_margin=.05):
     # behind the bare chassis. Keep roughly 6 cm beyond its measured rear edge.
     motion['rear_stop_distance_m']=max(.15,auto['footprint']['rear']+stop_margin+.01)
     motion['lidar_braking']={**copy.deepcopy(auto),'include_points':True}
+    motion['lidar_braking']['angular_rps']=motion['max_angular_speed_rps']
     hw['navigation']['max_speed_mps']=speed
     validate_config(hw)
     return candidate,hw

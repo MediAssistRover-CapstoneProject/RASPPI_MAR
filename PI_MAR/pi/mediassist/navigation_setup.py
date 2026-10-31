@@ -17,7 +17,7 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
     if position_only and (position_then_spin or fast_mapping):raise ValueError('Position-only MOVE cannot also align final heading or explore')
     if path_tracking and not (forward_only and position_only):raise ValueError('Regulated path tracking requires forward position-only MOVE')
     limit = 1.00 if (fast_mapping or fast_navigation) and mecanum else .25
-    yaw_limit = .8 if mecanum else .6
+    yaw_limit = 2. if mecanum and fast_navigation else (.8 if mecanum else .6)
     if not 0 < speed <= limit or not 0 < angular <= yaw_limit:
         raise ValueError(f"Navigation limits: 0 < linear <= {limit} m/s; 0 < angular <= {yaw_limit} rad/s; hardware caps also apply")
     result = copy.deepcopy(base)
@@ -161,7 +161,7 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
             'use_velocity_scaled_lookahead_dist':True,'use_interpolation':True,
             'transform_tolerance':.2,'allow_reversing':False,
             'use_rotate_to_heading':True,'rotate_to_heading_min_angle':.45,
-            'rotate_to_heading_angular_vel':min(.5,angular),'max_angular_accel':1.2,
+            'rotate_to_heading_angular_vel':angular,'max_angular_accel':3.2,
             'min_approach_linear_velocity':min(.12,speed),
             'approach_velocity_scaling_dist':.45,
             'use_regulated_linear_velocity_scaling':True,
@@ -172,6 +172,11 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
             'inflation_cost_scaling_factor':3.,'use_collision_detection':True,
             'max_allowed_time_to_collision_up_to_carrot':1.,
             'max_robot_pose_search_dist':2.}
+        # Align decisively before forward travel; preserve smooth curvature
+        # corrections while moving. Do not increase exploration spin speed.
+        smoother=result['velocity_smoother']['ros__parameters']
+        smoother['max_accel'][2]=3.2
+        smoother['max_decel'][2]=-3.2
     navigator=result.get('bt_navigator',{}).get('ros__parameters',{})
     if 'plugin_lib_names' in navigator:
         for plugin in ('nav2_recovery_node_bt_node','nav2_clear_costmap_service_bt_node','nav2_wait_action_bt_node'):

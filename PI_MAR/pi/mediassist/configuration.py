@@ -27,7 +27,7 @@ def validate_config(cfg):
         if type(m.get("us100_required", True)) is not bool:
             raise StepError("INVALID_CONFIG", "motion.us100_required")
         number(m["stop_distance_m"], 0.025, 2, "stop_distance_m")
-        number(m["max_angular_speed_rps"], 0.01, 1.0, "max_angular_speed_rps")
+        number(m["max_angular_speed_rps"], 0.01, 2.0 if mecanum else 1.0, "max_angular_speed_rps")
         if 'allow_strafe' in m and (type(m['allow_strafe']) is not bool or m['allow_strafe'] and m.get('chassis_model')!='MENTORPI_M1_MECANUM'):
             raise StepError('INVALID_CONFIG','allow_strafe requires Mecanum')
         if m.get('allow_reverse',False):
@@ -63,6 +63,8 @@ def validate_config(cfg):
         if cfg["ros"]["raw_cmd_vel"] == cfg["ros"]["safe_cmd_vel"]:
             raise StepError("VELOCITY_TOPIC_LOOP")
         n = cfg["navigation"]
+        if 'max_angular_speed_rps' in n:
+            number(n['max_angular_speed_rps'], .1, m['max_angular_speed_rps'], 'navigation.max_angular_speed_rps')
         number(n["planning_timeout_sec"], 1, 60, "planning_timeout_sec")
         if type(n["max_candidates"]) is not int or not 1 <= n["max_candidates"] <= 8 or n["group_fallback"] != "PLAN_ONLY":
             raise StepError("INVALID_CONFIG", "navigation")

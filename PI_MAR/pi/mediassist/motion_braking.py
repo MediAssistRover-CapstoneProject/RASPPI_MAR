@@ -27,4 +27,7 @@ def limit_velocity(velocity,view,age,profile):
     reaction=age+.35
     cap=max(0.,math.sqrt((.6*reaction)**2+1.2*gap)-.6*reaction)
     scale=min(1.,cap/speed,profile['speed_mps']/speed)
+    if speed*scale<=.01:
+        from .safety import angular_deadband
+        z=angular_deadband(z)
     return (x*scale,y*scale,z),'TURN_ENVELOPE_BLOCKED' if z!=velocity[2] else None

@@ -18,7 +18,8 @@ Parameters in `pi/mediassist/navigation_setup.py`:
 - Forward only, no lateral movement. Mapping retains its separate holonomic
   DWB configuration, including reverse/lateral translation.
 - Rotate to path before translation when heading error exceeds 0.45 rad;
-  desired rotation 0.50 rad/s, bounded by the hardware yaw cap (0.80 rad/s).
+  desired rotation uses `navigation.max_angular_speed_rps` (1.20 rad/s after
+  `configure_vendor_yaw.py`), bounded by the hardware yaw cap (2.00 rad/s).
   There is no absolute turn-angle limit; a rigid Mecanum can rotate in place.
 - Nav2 position tolerance 0.06 m; stop and verify fresh stable position within
   0.08 m. No final Spin and no endpoint-yaw requirement in POSITION_ONLY.
@@ -47,6 +48,44 @@ immediately; polygon/speed edits still require Save.
 Files changed in a stopped stack require a new navigation launch; editing
 generated files under `pi/state/navigation-sessions` does not update existing
 Nav2 nodes. Do not run mapping and saved-map navigation stacks simultaneously.
+
+## Vendor yaw and current path updates (2026-11-01)
+
+The installed Hiwonder `peripherals/launch/joystick_control.launch.py` defaults
+to `max_angular=2.0` rad/s. This is a command ceiling, not a measured physical
+maximum. Configure the stopped, bare robot with:
+
+```sh
+cd /home/ubuntu/mediassist-mqtt-2026-10-08
+pi/.venv/bin/python tools/configure_vendor_yaw.py --trailer-removed --manual 2.0 --move 1.2 --apply
+```
+
+The helper changes joystick yaw, its acceleration (3 rad/s²), the hardware
+yaw ceiling and final LiDAR braking profile together. MOVE yaw is separate
+from exploration yaw; autonomous mapping retains 0.8 rad/s to limit scan
+motion distortion. Linear speeds, geometry, credentials, TLS and maps remain
+unchanged. No second vendor joystick/controller process is started.
+
+MOVE RPP and its velocity smoother use 3.2 rad/s² angular acceleration.
+When translating, small yaw corrections are preserved through the adapter
+and safety gate; removing them distorted the requested path. For stationary
+turns the 0.1 rad/s deadband remains. Braking cannot leave a tiny stationary
+turn after translation has stopped. Full collision/turn-envelope checks remain.
+
+Successful `/plan` replans are relayed through the existing authenticated
+`/api/v1/pi/navigation-session/plan` endpoint at at most 1 Hz. They are bound
+to the same map hash, initialization revision, Job, step and endpoint. Wrong
+frames/targets, empty paths and invalid zone crossings are discarded. Initial
+plan acknowledgement is still mandatory before movement. Later display
+updates run in a separate asyncio task with HTTPS in a worker thread, so a
+slow display upload does not block the 20 Hz command/lease loop. This adds
+one depth-1 subscriber, no new node, process or ROS publisher. The UI shows
+the latest accepted global plan; it remains a plan, not an actual driven track.
+
+`NAV_MOTION.odom_twist` logs forward/lateral m/s and yaw rad/s separately;
+the older `odom_speed` aggregate is a stop diagnostic and mixes units. Zone
+command caps do not alone establish measured ground speed or tracking error.
+Supervised physical testing is still needed after installing this change.
 
 Targeted regressions are in `pi/tools/test_move_position_only.py` and
 `pi/native/navigation_bt/test_commit_navigation_path.cpp`. These do not replace
