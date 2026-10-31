@@ -24,8 +24,8 @@ def configuration(mapping):
     if cfg['reverse_enabled'] and (cfg['vehicle']!='rigid' or cfg['frontier_controller']!='nav2' or cfg['exploration_mode']!='frontier'):
         raise StepError('AUTONOMOUS_REVERSE_REQUIRES_RIGID_NAV2')
     # The final manual/MOVE braking profile also covers the vendor's 2 rad/s
-    # joystick ceiling. Exploration retains its independent 0.8 rad/s limit.
-    braking_yaw=2. if cfg.get('include_points') is True and cfg['vehicle']=='rigid' else .8
+    # joystick ceiling. Rigid exploration has an independent 1.2 rad/s limit.
+    braking_yaw=(2. if cfg.get('include_points') is True else 1.2) if cfg['vehicle']=='rigid' else .8
     for key, low, high in (('speed_mps', .02, 1.00), ('angular_rps', .10, braking_yaw),
                           ('stop_margin_m', .03, .4), ('turn_clearance_m', .2, 1.),
                           ('slow_clearance_m', .3, 2.), ('max_duration_sec', 10, 600),

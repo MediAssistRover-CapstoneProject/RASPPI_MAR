@@ -3,6 +3,7 @@ import copy
 import json
 import math
 from .configuration import validate_config
+from .footprint import NAVIGATION_PADDING_M
 
 
 def footprint_rectangle(front, rear, left, right):
@@ -17,7 +18,7 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
     if position_only and (position_then_spin or fast_mapping):raise ValueError('Position-only MOVE cannot also align final heading or explore')
     if path_tracking and not (forward_only and position_only):raise ValueError('Regulated path tracking requires forward position-only MOVE')
     limit = 1.00 if (fast_mapping or fast_navigation) and mecanum else .25
-    yaw_limit = 2. if mecanum and fast_navigation else (.8 if mecanum else .6)
+    yaw_limit = 2. if mecanum and fast_navigation else (1.2 if mecanum and fast_mapping else (.8 if mecanum else .6))
     if not 0 < speed <= limit or not 0 < angular <= yaw_limit:
         raise ValueError(f"Navigation limits: 0 < linear <= {limit} m/s; 0 < angular <= {yaw_limit} rad/s; hardware caps also apply")
     result = copy.deepcopy(base)
@@ -28,7 +29,7 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
         costmap = result[name][name]['ros__parameters']
         costmap.pop('robot_radius', None)
         costmap['footprint'] = json.dumps(footprint)
-        costmap['footprint_padding'] = 0.03
+        costmap['footprint_padding'] = NAVIGATION_PADDING_M
         costmap['inflation_layer']['inflation_radius'] = max(0.3, costmap['inflation_layer'].get('inflation_radius', 0.3))
         if not fast_mapping:
             # A broad cost gradient prefers corridor clearance over wall-hugging shortcuts.
@@ -114,6 +115,10 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
         max_velocity=[speed, lateral, angular], min_velocity=[-speed if mecanum and not forward_only else 0.0, -lateral, -angular],
         scale_velocities=True, smoothing_frequency=20.,
         max_accel=[.40,.40 if mecanum else 0.,1.2],max_decel=[-.6,-.6 if mecanum else 0.,-1.8],velocity_timeout=.25)
+    if fast_mapping and mecanum:
+        follow.update(acc_lim_theta=2.4,decel_lim_theta=-3.2)
+        result['velocity_smoother']['ros__parameters']['max_accel'][2]=2.4
+        result['velocity_smoother']['ros__parameters']['max_decel'][2]=-3.2
     result['planner_server']['ros__parameters']['GridBased']['allow_unknown'] = False
     result['planner_server']['ros__parameters']['GridBased']['tolerance'] = .05
     planner=result['planner_server']['ros__parameters']['GridBased']

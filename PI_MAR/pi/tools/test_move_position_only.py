@@ -51,7 +51,11 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(p['controller_server']['ros__parameters']['FollowPath']['rotate_to_heading_angular_vel'],1.2)
         self.assertEqual(p['velocity_smoother']['ros__parameters']['max_velocity'],[.6,0.,1.2])
         self.assertEqual(p['velocity_smoother']['ros__parameters']['max_accel'][2],3.2)
-        with self.assertRaises(ValueError):params(angular=1.2,fast_mapping=True)
+        mapping=params(angular=1.2,fast_mapping=True)
+        self.assertEqual(mapping['controller_server']['ros__parameters']['FollowPath']['max_vel_theta'],1.2)
+        self.assertEqual(mapping['velocity_smoother']['ros__parameters']['max_accel'][2],2.4)
+        self.assertEqual(mapping['local_costmap']['local_costmap']['ros__parameters']['footprint_padding'],.03)
+        with self.assertRaises(ValueError):params(angular=1.21,fast_mapping=True)
 
 
 class ArrivalTests(unittest.IsolatedAsyncioTestCase):
@@ -118,6 +122,21 @@ class ZoneDirectionTests(unittest.TestCase):
     def test_speed_zone_cap_still_applies(self):
         z=self.zone('SPEED')
         self.assertEqual(z.directional_cap(self.pose(x=.35),.6,(.6,0.,0.)),.15)
+
+    def test_speed_zone_anticipates_entry_but_releases_when_moving_away(self):
+        z=self.zone('SPEED')
+        self.assertEqual(z.speed_cap(self.pose(x=0.),.6,(.6,0.,0.)),.15)
+        self.assertEqual(z.speed_cap(self.pose(x=0.),.6,(.15,0.,0.)),.15)
+        self.assertEqual(z.speed_cap(self.pose(x=0.),.6,(-.6,0.,0.)),.6)
+        self.assertEqual(z.speed_cap(self.pose(x=.55),.6,(.6,0.,0.)),.15)  # Rear still inside.
+        self.assertEqual(z.speed_cap(self.pose(x=.72),.6,(.15,0.,0.)),.6)  # Whole padded body out.
+        self.assertEqual(z.speed_cap(self.pose(math.pi/2,x=0.),.6,(.6,0.,0.)),.6)
+
+    def test_restricted_path_checks_three_centimetres_beyond_body_edge(self):
+        z=self.zone();x=.3-z.footprint['front']-.03-.006
+        z.validate_path([(x,0.,0.)])
+        with self.assertRaisesRegex(StepError,'NAVIGATION_PATH_INTERSECTS_KEEPOUT'):
+            z.validate_path([(x+.01,0.,0.)])
 
 
 if __name__=='__main__':unittest.main()

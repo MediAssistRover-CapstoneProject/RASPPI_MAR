@@ -110,7 +110,7 @@ class RosAdapter:
                 requested_speed=speed
                 zone_pose=self.telemetry().get('map_pose')
                 if hasattr(self,'navigation_speed_output') and hasattr(self.zones,'speed_cap'):
-                    controller_limit=self.zones.speed_cap(zone_pose,speed)
+                    controller_limit=self.zones.speed_cap(zone_pose,speed,(x,y,z))
                     if controller_limit>0:self.navigation_speed_limit(controller_limit)
                 speed=(self.zones.directional_cap(zone_pose,speed,(x,y,z))
                     if hasattr(self.zones,'directional_cap') else self.zones.cap(zone_pose,speed))
@@ -413,7 +413,7 @@ class RosAdapter:
         extent=worker.get('mapping',{}).get('autonomy',{}).get('footprint')
         if not path or not extent:return  # Legacy adapters still rely on Nav2.
         from .map_tools import load_trinary_grid
-        from .footprint import body_clear
+        from .footprint import body_clear,NAVIGATION_PADDING_M
         from pathlib import Path
         key=(path,self.cfg.get('map_asset_sha256'),Path(path).stat().st_mtime_ns)
         cache=getattr(self,'endpoint_grid',None)
@@ -423,7 +423,7 @@ class RosAdapter:
         if yaw is not None:target['yaw_rad']=yaw
         # Same padding as generated Nav2 costmaps. A white centre alone does not
         # prove that an oriented chassis fits in a doorway or at its destination.
-        body=body_clear(cache[1],target,{k:v+.03 for k,v in extent.items()})
+        body=body_clear(cache[1],target,{k:v+NAVIGATION_PADDING_M for k,v in extent.items()})
         if not body['clear']:
             message=json.dumps(dict(endpoint_id=endpoint_id,pose=target,**body))
             self.node.get_logger().warning('ENDPOINT_FOOTPRINT_NOT_CLEAR '+message)

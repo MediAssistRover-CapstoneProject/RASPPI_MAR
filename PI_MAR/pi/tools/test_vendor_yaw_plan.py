@@ -1,5 +1,5 @@
 """Factory yaw/config and live plan isolation; no ROS, network or motor output."""
-import asyncio,math,sys,threading,time,unittest
+import asyncio,json,math,sys,threading,time,unittest
 from pathlib import Path
 from types import SimpleNamespace as N
 from unittest.mock import AsyncMock
@@ -12,6 +12,13 @@ from mediassist.gamepad import configuration
 
 
 class YawTests(unittest.TestCase):
+    def test_factory_manual_yaw_status_matches_the_wire_contract(self):
+        from jsonschema import Draft202012Validator
+        schema=json.loads((ROOT/'handoff/common.schema.json').read_text())['$defs']['mappingSession']['properties']['autonomy']['properties']['manual_control']
+        check=Draft202012Validator(schema)
+        status=dict(source='gamepad',layout='vendor_mecanum',session_required=False,forward_mps=.25,angular_rps=2.,continuous=True)
+        self.assertFalse(list(check.iter_errors(status)))
+        self.assertTrue(list(check.iter_errors({**status,'angular_rps':2.01})))
     def test_factory_yaw_preserves_translation_tls_and_exploration(self):
         raw,hw=MotionSpeedTests().profile()
         hw['motion']['lidar_braking']={**raw['mapping']['autonomy'],'include_points':True}
@@ -26,6 +33,9 @@ class YawTests(unittest.TestCase):
         self.assertEqual(cfg['mapping']['upload_base_url'],raw['mapping']['upload_base_url'])
         self.assertEqual(hw['motion']['max_angular_speed_rps'],.8)
         with self.assertRaises(ValueError):tune(raw,hw,2.1,1.2)
+        cfg,_=tune(raw,hw,mapping=1.2)
+        self.assertEqual(cfg['mapping']['autonomy']['angular_rps'],1.2)
+        with self.assertRaises(ValueError):tune(raw,hw,mapping=1.21)
 
 
 class PlanTests(unittest.IsolatedAsyncioTestCase):

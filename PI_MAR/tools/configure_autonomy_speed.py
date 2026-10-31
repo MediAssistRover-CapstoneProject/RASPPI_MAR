@@ -12,8 +12,8 @@ from mediassist.configuration import validate_config
 
 def tune(cfg, hardware, speed, angular=.6, mode='frontier'):
     if (type(speed) not in (int, float) or not math.isfinite(speed) or not .02 <= speed <= 1.
-            or type(angular) not in (int, float) or not math.isfinite(angular) or not .1 <= angular <= .8):
-        raise ValueError('Use speed .02..1.00 m/s and angular .10..0.80 rad/s')
+            or type(angular) not in (int, float) or not math.isfinite(angular) or not .1 <= angular <= 1.2):
+        raise ValueError('Use speed .02..1.00 m/s and angular .10..1.20 rad/s')
     motion = hardware['motion']
     if mode not in ('frontier','reactive'):
         raise ValueError('Mode must be frontier or reactive')

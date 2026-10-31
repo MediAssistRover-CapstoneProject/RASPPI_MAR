@@ -57,14 +57,32 @@ maximum. Configure the stopped, bare robot with:
 
 ```sh
 cd /home/ubuntu/mediassist-mqtt-2026-10-08
-pi/.venv/bin/python tools/configure_vendor_yaw.py --trailer-removed --manual 2.0 --move 1.2 --apply
+pi/.venv/bin/python tools/configure_vendor_yaw.py --trailer-removed --manual 2.0 --move 1.2 --mapping 1.2 --apply
 ```
 
 The helper changes joystick yaw, its acceleration (3 rad/s²), the hardware
 yaw ceiling and final LiDAR braking profile together. MOVE yaw is separate
-from exploration yaw; autonomous mapping retains 0.8 rad/s to limit scan
-motion distortion. Linear speeds, geometry, credentials, TLS and maps remain
+from exploration yaw; rigid autonomous mapping now uses 1.2 rad/s, with
+2.4 rad/s² acceleration and 3.2 rad/s² deceleration. Existing scan, TF and
+map-jump checks remain active. Linear speeds, geometry, credentials, TLS and maps remain
 unchanged. No second vendor joystick/controller process is started.
+
+Clearance remains 0.03 m beyond each body edge, shared through
+`footprint.NAVIGATION_PADDING_M` by costmaps, endpoint validation and
+KEEP_OUT swept-body validation. This is a nominal extra clearance, not a
+guarantee of physical tracking accuracy; map cells/sampling may add space.
+The 0.45 m inflation gradient is a soft path cost, not a 45 cm hard exclusion.
+Paths still require a traversable corridor and may be rejected if none is found.
+
+SPEED zones anticipate entry along the commanded direction. After the full
+padded body clears a zone and is moving away, that zone releases its cap;
+RPP receives the original per-step ceiling and accelerates through its smoother.
+An overlapping/next zone, obstacle or goal approach may still keep speed low.
+Zone limits are linear m/s; they do not redefine the yaw ceiling. Rules are
+scoped to the saved map/hash/session; zones from an old map are not applied to
+new SLAM exploration coordinates. Pi's `handoff/common.schema.json` and BE's
+runtime/documented common schema must both accept manual yaw up to 2 rad/s,
+otherwise mapping status/heartbeat messages are rejected.
 
 MOVE RPP and its velocity smoother use 3.2 rad/s² angular acceleration.
 When translating, small yaw corrections are preserved through the adapter

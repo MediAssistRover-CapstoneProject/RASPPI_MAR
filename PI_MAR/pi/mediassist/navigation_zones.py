@@ -1,6 +1,7 @@
 """Metric zone rules and latched Nav2 keepout masks for a saved map."""
 import math
 from .contracts import StepError
+from .footprint import NAVIGATION_PADDING_M
 
 
 def rules(raw):
@@ -110,7 +111,8 @@ class NavigationZones:
         from rclpy.qos import QoSProfile,DurabilityPolicy,ReliabilityPolicy
         qos=QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL,reliability=ReliabilityPolicy.RELIABLE)
         self.node,self.frame=node,frame;self.zones=[];self.footprint=dict(footprint);self.se2=False
-        self.radius=math.hypot(max(footprint['front'],footprint['rear']),max(footprint['left'],footprint['right']))+.03
+        self.radius=math.hypot(max(footprint['front'],footprint['rear'])+NAVIGATION_PADDING_M,
+                               max(footprint['left'],footprint['right'])+NAVIGATION_PADDING_M)
         self.mask=node.create_publisher(OccupancyGrid,'/mediassist/keepout_mask',qos)
         self.info=node.create_publisher(CostmapFilterInfo,'/mediassist/keepout_info',qos)
         # Navfn plans a centre point; DWB checks the actual polygon. Sharing
@@ -150,7 +152,7 @@ class NavigationZones:
         keepouts=[z for z in self.zones if z['kind']=='KEEP_OUT']
         if not keepouts:return
         if getattr(self,'se2',False):
-            extent={k:v+.03 for k,v in self.footprint.items()};previous=None
+            extent={k:v+NAVIGATION_PADDING_M for k,v in self.footprint.items()};previous=None
             for point in points:
                 if len(point)!=3 or not all(math.isfinite(v) for v in point):raise StepError('NAVIGATION_PLAN_INVALID')
                 a=previous or point;dx,dy=point[0]-a[0],point[1]-a[1]
@@ -178,18 +180,39 @@ class NavigationZones:
     def preview_path(self,points):
         return compact_path(points,clear=self.validate_path)
 
-    def speed_cap(self,pose,speed):
+    def speed_cap(self,pose,speed,velocity=None):
         if not self.zones:return speed
         if not pose or not pose.get('fresh'):return 0.
-        p=pose['value'];point=(p['x_m'],p['y_m'])
+        p=pose['value'];point=(p['x_m'],p['y_m']);limit=speed
         for zone in self.zones:
             if zone['kind']!='SPEED':continue
             gap=distance(point,zone['points'])-self.radius
             if getattr(self,'se2',False):
-                gap=body_gap(p,self.footprint,zone['points'])-.03
-            if gap<=speed*.45+max(0.,speed*speed-zone['speed']**2)/1.2:
-                speed=min(speed,zone['speed'])
-        return speed
+                gap=body_gap(p,self.footprint,zone['points'])-NAVIGATION_PADDING_M
+            if gap<=0:limit=min(limit,zone['speed']);continue
+            if gap>speed*.45+max(0.,speed*speed-zone['speed']**2)/1.2:continue
+            approaching=velocity is None or not getattr(self,'se2',False)
+            if not approaching:
+                if len(velocity)!=3 or not all(math.isfinite(v) for v in velocity):return 0.
+                vx,vy,w=velocity;linear=math.hypot(vx,vy)
+                if linear>.001:
+                    # Project the requested ceiling along the command direction,
+                    # even if RPP is already slowed. Otherwise the anticipatory
+                    # limit can oscillate between slow and fast before entry.
+                    vx*=speed/linear;vy*=speed/linear
+                    horizon=.45+max(0.,speed*speed-zone['speed']**2)/max(1.2*speed,1e-9)
+                    steps=max(1,min(40,math.ceil(horizon/.05)));dt=horizon/steps
+                    bound=(speed+self.radius*abs(w))*dt/2
+                    c,s=math.cos(p['yaw_rad']),math.sin(p['yaw_rad'])
+                    for i in range(steps+1):
+                        t=i*dt;a=w*t
+                        if abs(w)<1e-8:dx,dy=vx*t,vy*t
+                        else:dx,dy=(vx*math.sin(a)+vy*(math.cos(a)-1))/w,(vx*(1-math.cos(a))+vy*math.sin(a))/w
+                        q=dict(x_m=p['x_m']+c*dx-s*dy,y_m=p['y_m']+s*dx+c*dy,yaw_rad=p['yaw_rad']+a)
+                        if body_gap(q,self.footprint,zone['points'])<=NAVIGATION_PADDING_M+bound:
+                            approaching=True;break
+            if approaching:limit=min(limit,zone['speed'])
+        return limit
 
     def directional_cap(self,pose,speed,velocity):
         """Brake for the commanded swept body, not a forbidden zone behind it.
@@ -197,7 +220,7 @@ class NavigationZones:
         Local collision detection and the keepout mask remain independent.
         Sampling includes a motion bound, so thin polygons cannot be skipped.
         """
-        speed=self.speed_cap(pose,speed)
+        speed=self.speed_cap(pose,speed,velocity)
         if not self.zones or speed<=0:return speed
         keepouts=[z for z in self.zones if z['kind']=='KEEP_OUT']
         if not keepouts:return speed
@@ -206,7 +229,7 @@ class NavigationZones:
         scale=min(1.,speed/max(linear,1e-9));vx*=scale;vy*=scale;linear*=scale
         horizon=.45+speed/.6;steps=max(1,min(40,math.ceil(horizon/.04)))
         dt=horizon/steps;bound=(linear+self.radius*abs(w))*dt/2
-        extent={k:v+.03 for k,v in self.footprint.items()};c=math.cos(p['yaw_rad']);s=math.sin(p['yaw_rad'])
+        extent={k:v+NAVIGATION_PADDING_M for k,v in self.footprint.items()};c=math.cos(p['yaw_rad']);s=math.sin(p['yaw_rad'])
         cap=speed
         for zone in keepouts:
             for i in range(steps+1):
@@ -227,7 +250,7 @@ class NavigationZones:
         for zone in self.zones:
             if zone['kind']!='KEEP_OUT':continue
             gap=distance(point,zone['points'])-self.radius
-            if getattr(self,'se2',False):gap=body_gap(p,self.footprint,zone['points'])-.03
+            if getattr(self,'se2',False):gap=body_gap(p,self.footprint,zone['points'])-NAVIGATION_PADDING_M
             from .autonomous_mapping import braking_speed_cap
             speed=min(speed,braking_speed_cap(max(0.,gap),.1,0.))
         return speed

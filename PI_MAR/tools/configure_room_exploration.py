@@ -8,7 +8,7 @@ from mediassist.autonomous_mapping import configuration
 def tune(cfg,hardware,speed=.25,reverse=.1,angular=.6):
     if type(speed) not in (int,float) or not math.isfinite(speed) or not .05<=speed<=.8:raise ValueError('Room exploration speed: .05..0.80 m/s')
     if type(reverse) not in (int,float) or not math.isfinite(reverse) or not .02<=reverse<=.8:raise ValueError('Reverse: .02..0.80 m/s')
-    if type(angular) not in (int,float) or not math.isfinite(angular) or not .1<=angular<=.8:raise ValueError('Angular: .10..0.80 rad/s')
+    if type(angular) not in (int,float) or not math.isfinite(angular) or not .1<=angular<=1.2:raise ValueError('Angular: .10..1.20 rad/s')
     motion=hardware['motion']
     if motion.get('chassis_model')!='MENTORPI_M1_MECANUM' or not motion.get('allow_strafe') or not motion.get('allow_reverse'):
         raise ValueError('COMMISSIONED_BARE_MECANUM_WITH_REVERSE_REQUIRED')
