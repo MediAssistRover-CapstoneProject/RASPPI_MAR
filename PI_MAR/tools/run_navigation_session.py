@@ -12,7 +12,13 @@ from mediassist.worker_config import load
 from configure_mapping import stopped_configuration
 from configure_localization import nav_parameters
 
-def prepare(config,session_id=None):
+def prepare(config,session_id=None,arrival_mode='POSITION_ONLY'):
+    if arrival_mode not in ('POSITION_ONLY','POSITION_THEN_SPIN'):raise ValueError('Unsupported arrival mode')
+    position_only=arrival_mode=='POSITION_ONLY'
+    native=ROOT/'pi/native/navigation_bt/build'
+    if not (native/'libmar_commit_navigation_path_bt_node.so').is_file():
+        raise RuntimeError('BUILD_NAVIGATION_BT_FIRST: bash tools/build_navigation_bt.sh')
+    os.environ['LD_LIBRARY_PATH']=str(native)+os.pathsep+os.environ.get('LD_LIBRARY_PATH','')
     cfg,hw=load(config);client=SessionClient(cfg);descriptor=client.get(session_id)
     session_id=descriptor['sessionId'];map_id=descriptor['mapId']
     import uuid
@@ -35,18 +41,21 @@ def prepare(config,session_id=None):
     controller=yaml.safe_load(Path('/home/ubuntu/ros2_ws/src/navigation/config/nav2_controller_dwb.yaml').read_text())
     mecanum=hw['motion'].get('chassis_model')=='MENTORPI_M1_MECANUM' and hw['motion'].get('allow_strafe') is True
     if not Path('/opt/ros/humble/lib/libnav2_smac_planner.so').is_file():raise RuntimeError('SMAC_PLANNER_NOT_INSTALLED')
-    if not Path('/opt/ros/humble/lib/libnav2_rotation_shim_controller.so').is_file():raise RuntimeError('ROTATION_SHIM_NOT_INSTALLED')
+    required='libnav2_regulated_pure_pursuit_controller.so' if position_only else 'libnav2_rotation_shim_controller.so'
+    if not Path('/opt/ros/humble/lib',required).is_file():raise RuntimeError('NAVIGATION_CONTROLLER_NOT_INSTALLED: '+required)
     params=nav_parameters(nav2_params(base,controller,polygon,
         speed=min(hw['navigation'].get('max_speed_mps',.25),hw['max_speed_mps']),
         angular=min(.8 if mecanum else .6,cfg['mapping']['autonomy']['angular_rps'],hw['motion']['max_angular_speed_rps']),
         mecanum=mecanum,fast_navigation=mecanum and hw['motion'].get('lidar_braking') is not None,
-        position_then_spin=True,footprint_planner=True,forward_only=True),hardware)
+        position_then_spin=not position_only,footprint_planner=True,forward_only=True,
+        position_only=position_only,path_tracking=position_only),hardware)
     (root/'nav2.yaml').write_text(yaml.safe_dump(params,sort_keys=False),encoding='utf-8')
     write_private(root/'hardware.json',json.dumps(hardware,indent=2))
     runtime=copy.deepcopy(cfg);runtime['hardware_profile']=str(root/'hardware.json');runtime['navigation_session']=context
     runtime['stack_state_dir']=str(ROOT/'pi/state/stack')
     runtime['navigation_runtime']=dict(map_yaml=str(root/'map.yaml'),nav2_params=str(root/'nav2.yaml'),localization_only=False,
-        arrival_mode='POSITION_THEN_SPIN',footprint_planner=True,forward_only=True)
+        arrival_mode=arrival_mode,controller='REGULATED_PURSUIT' if position_only else 'DWB_SHIM',
+        footprint_planner=True,forward_only=True,preserve_path_on_replan=True)
     runtime['localization']=dict(enabled=True,mode='manual',map_id=map_id,map_asset_hash=meta['asset_hash'],status_file=str(root/'localization.json'))
     runtime['mapping']['enabled']=False
     runtime['enabled_step_types']=list(dict.fromkeys([*runtime['enabled_step_types'],'MOVE']))
@@ -57,10 +66,12 @@ def prepare(config,session_id=None):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--config',type=Path,default=ROOT/'pi/config/mqtt.worker.json');p.add_argument('--session-id')
+    p.add_argument('--arrival-mode',choices=['POSITION_ONLY','POSITION_THEN_SPIN'],default='POSITION_ONLY')
     a=p.parse_args()
-    with stopped_configuration(a.config):root,client,descriptor=prepare(a.config,a.session_id)
+    with stopped_configuration(a.config):root,client,descriptor=prepare(a.config,a.session_id,a.arrival_mode)
     print('NAVIGATION_SESSION:',descriptor['sessionId'],'MAP:',descriptor['mapId'])
     print('Base configuration preserved. Waiting for initial pose/global localization from the map UI; no goal sent.')
+    print('ARRIVAL_MODE:',a.arrival_mode,'; position-only uses RPP tracking, no final Spin or forced endpoint yaw.')
     process=None
     try:
         process=subprocess.Popen(['zsh',str(ROOT/'tools/robot.zsh'),'run','--config',str(root/'worker.json'),'--mode','navigation','--nav2-params',str(root/'nav2.yaml')],cwd=ROOT)

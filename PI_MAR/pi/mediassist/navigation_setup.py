@@ -12,8 +12,10 @@ def footprint_rectangle(front, rear, left, right):
     return [[front, left], [-rear, left], [-rear, -right], [front, -right]]
 
 
-def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=False, fast_mapping=False, fast_navigation=False, position_then_spin=False, footprint_planner=False, forward_only=False):
+def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=False, fast_mapping=False, fast_navigation=False, position_then_spin=False, footprint_planner=False, forward_only=False, position_only=False, path_tracking=False):
     if forward_only and fast_mapping:raise ValueError('Forward only is for saved-map MOVE, not exploration')
+    if position_only and (position_then_spin or fast_mapping):raise ValueError('Position-only MOVE cannot also align final heading or explore')
+    if path_tracking and not (forward_only and position_only):raise ValueError('Regulated path tracking requires forward position-only MOVE')
     limit = 1.00 if (fast_mapping or fast_navigation) and mecanum else .25
     yaw_limit = .8 if mecanum else .6
     if not 0 < speed <= limit or not 0 < angular <= yaw_limit:
@@ -62,6 +64,7 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
         else:
             follow.update({'PathAlign.scale':24.,'GoalAlign.scale':16.})
     if not fast_mapping:
+        result['planner_server']['ros__parameters']['expected_planner_frequency']=1.0
         for name in ('local_costmap','global_costmap'):
             costmap=result[name][name]['ros__parameters']
             costmap['filters']=list(dict.fromkeys([*costmap.get('filters',[]),'mar_keepout']))
@@ -90,7 +93,11 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
         follow['GoalAlign.scale']=0.
         behavior=result.setdefault('behavior_server',{}).setdefault('ros__parameters',{})
         behavior.update(min_rotational_vel=.1,max_rotational_vel=angular,rotational_acc_lim=1.2)
-    if forward_only:
+    if position_only:
+        # Finish inside the bare body's inscribed radius, independently of yaw.
+        ctl['general_goal_checker'].update(xy_goal_tolerance=.06,yaw_goal_tolerance=math.pi,stateful=True)
+        ctl['progress_checker'].update(required_movement_radius=.04,movement_time_allowance=20.)
+    if forward_only and not path_tracking:
         # The installed Nav2 shim aligns the chassis with the path before DWB
         # takes over. It does not own final heading: that remains one Spin.
         follow.update(plugin='nav2_rotation_shim_controller::RotationShimController',
@@ -126,16 +133,51 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
                 'cost_penalty':2.,'max_iterations':1000000,'max_on_approach_iterations':1000,
                 'max_planning_time':5.,'cache_obstacle_heuristic':False,'smooth_path':True,
                 'analytic_expansion_ratio':3.5,'lookup_table_size':5.}
+            if position_only:
+                # A position target must not require a Dubins terminal heading
+                # or a last-metre loop. Smac 2D smooths a cost-aware grid path;
+                # the local controller still checks the oriented real footprint.
+                result['planner_server']['ros__parameters']['GridBased']={
+                    'plugin':'nav2_smac_planner/SmacPlanner2D','tolerance':.025,
+                    'allow_unknown':False,'downsample_costmap':False,
+                    'max_iterations':200000,'max_on_approach_iterations':500,
+                    'max_planning_time':2.,'cost_travel_multiplier':2.,
+                    'use_final_approach_orientation':True}
             result['global_costmap']['global_costmap']['ros__parameters'].update(rolling_window=False,track_unknown_space=True)
             for name in ('global_costmap','local_costmap'):
                 costmap=result[name][name]['ros__parameters']
                 costmap['filters']=list(dict.fromkeys([*costmap.get('filters',[]),'mar_keepout_inflation']))
                 costmap['mar_keepout_inflation']={'plugin':'nav2_costmap_2d::InflationLayer',
                     'enabled':True,'inflation_radius':.45,'cost_scaling_factor':3.0}
+    if path_tracking:
+        # Replace the sampled DWB + per-replan rotation shim as one unit.
+        # RPP follows a forward carrot and regulates speed/footprint collision
+        # continuously; it does not receive one new motor goal per path point.
+        ctl['controller_frequency']=20.0
+        ctl['FollowPath']={
+            'plugin':'nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController',
+            'desired_linear_vel':speed,'lookahead_dist':.30,
+            'min_lookahead_dist':.18,'max_lookahead_dist':.45,'lookahead_time':.65,
+            'use_velocity_scaled_lookahead_dist':True,'use_interpolation':True,
+            'transform_tolerance':.2,'allow_reversing':False,
+            'use_rotate_to_heading':True,'rotate_to_heading_min_angle':.45,
+            'rotate_to_heading_angular_vel':min(.5,angular),'max_angular_accel':1.2,
+            'min_approach_linear_velocity':min(.12,speed),
+            'approach_velocity_scaling_dist':.45,
+            'use_regulated_linear_velocity_scaling':True,
+            'regulated_linear_scaling_min_radius':.4,
+            'regulated_linear_scaling_min_speed':min(.12,speed),
+            'use_cost_regulated_linear_velocity_scaling':True,
+            'cost_scaling_dist':.22,'cost_scaling_gain':.8,
+            'inflation_cost_scaling_factor':3.,'use_collision_detection':True,
+            'max_allowed_time_to_collision_up_to_carrot':1.,
+            'max_robot_pose_search_dist':2.}
     navigator=result.get('bt_navigator',{}).get('ros__parameters',{})
     if 'plugin_lib_names' in navigator:
         for plugin in ('nav2_recovery_node_bt_node','nav2_clear_costmap_service_bt_node','nav2_wait_action_bt_node'):
             if plugin not in navigator['plugin_lib_names']:navigator['plugin_lib_names'].append(plugin)
+        if forward_only and 'mar_commit_navigation_path_bt_node' not in navigator['plugin_lib_names']:
+            navigator['plugin_lib_names'].append('mar_commit_navigation_path_bt_node')
     return result
 
 

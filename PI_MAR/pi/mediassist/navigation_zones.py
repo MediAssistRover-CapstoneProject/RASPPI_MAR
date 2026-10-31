@@ -191,6 +191,35 @@ class NavigationZones:
                 speed=min(speed,zone['speed'])
         return speed
 
+    def directional_cap(self,pose,speed,velocity):
+        """Brake for the commanded swept body, not a forbidden zone behind it.
+
+        Local collision detection and the keepout mask remain independent.
+        Sampling includes a motion bound, so thin polygons cannot be skipped.
+        """
+        speed=self.speed_cap(pose,speed)
+        if not self.zones or speed<=0:return speed
+        keepouts=[z for z in self.zones if z['kind']=='KEEP_OUT']
+        if not keepouts:return speed
+        if len(velocity)!=3 or not all(math.isfinite(v) for v in velocity):return 0.
+        p=pose['value'];vx,vy,w=velocity;linear=math.hypot(vx,vy)
+        scale=min(1.,speed/max(linear,1e-9));vx*=scale;vy*=scale;linear*=scale
+        horizon=.45+speed/.6;steps=max(1,min(40,math.ceil(horizon/.04)))
+        dt=horizon/steps;bound=(linear+self.radius*abs(w))*dt/2
+        extent={k:v+.03 for k,v in self.footprint.items()};c=math.cos(p['yaw_rad']);s=math.sin(p['yaw_rad'])
+        cap=speed
+        for zone in keepouts:
+            for i in range(steps+1):
+                t=i*dt;a=w*t
+                if abs(w)<1e-8:dx,dy=vx*t,vy*t
+                else:dx,dy=(vx*math.sin(a)+vy*(math.cos(a)-1))/w,(vx*(1-math.cos(a))+vy*math.sin(a))/w
+                q=dict(x_m=p['x_m']+c*dx-s*dy,y_m=p['y_m']+s*dx+c*dy,yaw_rad=p['yaw_rad']+a)
+                if body_gap(q,extent,zone['points'])<=bound:
+                    from .autonomous_mapping import braking_speed_cap
+                    cap=min(cap,braking_speed_cap(max(0.,linear*t-bound),.1,0.))
+                    break
+        return cap
+
     def cap(self,pose,speed):
         speed=self.speed_cap(pose,speed)
         if not self.zones or speed<=0:return speed

@@ -1,0 +1,19 @@
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <PipelineSequence name="PlanAndFollow">
+      <RateController hz="1.0">
+        <RecoveryNode number_of_retries="2" name="BoundedPlanningRetry">
+          <Sequence name="CommitOnlyValidPlan">
+            <ComputePathToPose goal="{goal}" path="{candidate_path}" planner_id="GridBased"/>
+            <CommitNavigationPath candidate="{candidate_path}" path="{path}"/>
+          </Sequence>
+          <Wait wait_duration="1"/>
+        </RecoveryNode>
+      </RateController>
+      <RecoveryNode number_of_retries="1" name="BoundedControllerRetry">
+        <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"/>
+        <Wait wait_duration="1"/>
+      </RecoveryNode>
+    </PipelineSequence>
+  </BehaviorTree>
+</root>
