@@ -4,10 +4,14 @@ from pathlib import Path
 from unittest.mock import Mock
 from types import SimpleNamespace as N
 ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT/'pi'))
-from mediassist.nav2_startup import configure
+from mediassist.nav2_startup import configure,group_configuration
 from mediassist.ros_adapter import RosAdapter
 
 class StartupTests(unittest.TestCase):
+    def test_localization_has_its_own_bounded_startup_and_manager(self):
+        nodes,manager,label=group_configuration('localization')
+        self.assertEqual(nodes,('map_server','amcl'));self.assertEqual(manager,'lifecycle_manager_localization')
+        self.assertEqual(label,'LOCALIZATION');self.assertNotIn('map_server',group_configuration('navigation')[0])
     def clock(self):
         self.now=0.
         return lambda:self.now,lambda dt:setattr(self,'now',self.now+dt)

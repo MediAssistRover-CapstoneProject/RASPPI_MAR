@@ -2,7 +2,9 @@
 from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, TimerAction, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, TimerAction, OpaqueFunction,ExecuteProcess,RegisterEventHandler,EmitEvent
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 import sys
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -17,6 +19,9 @@ def generate_launch_description():
     nav2 = Path(get_package_share_directory('nav2_bringup')) / 'launch/bringup_launch.py'
     localization = nav2.parent/'localization_launch.py'
     navigation=Path(__file__).with_name('mediassist_nav2_nodes.launch.py')
+    startup=ExecuteProcess(cmd=[sys.executable,str(root/'pi/mediassist/nav2_startup.py'),'--group','localization'],output='screen')
+    def finished(event,context):
+        return [] if event.returncode==0 else [EmitEvent(event=Shutdown(reason='LOCALIZATION_LIFECYCLE_STARTUP_FAILED'))]
     return LaunchDescription([
         DeclareLaunchArgument('map', description='Absolute saved map YAML path'),
         DeclareLaunchArgument('params_file', description='Absolute generated nav2.demo.yaml path'),
@@ -29,10 +34,15 @@ def generate_launch_description():
             OpaqueFunction(function=lambda context:include(context,root)),
         ]),
         TimerAction(period=10.0, actions=[
-            IncludeLaunchDescription(PythonLaunchDescriptionSource(str(navigation)),condition=UnlessCondition(LaunchConfiguration('localization_only')),launch_arguments={
-                'params_file':LaunchConfiguration('params_file')}.items()),
             IncludeLaunchDescription(PythonLaunchDescriptionSource(str(localization)),launch_arguments={
                 'map':LaunchConfiguration('map'),'params_file':LaunchConfiguration('params_file'),
-                'namespace':'','use_sim_time':'false','autostart':'true','use_composition':'False'}.items())
+                'namespace':'','use_sim_time':'false','autostart':'false','use_composition':'False'}.items()),
+            RegisterEventHandler(OnProcessExit(target_action=startup,on_exit=finished)),startup
+        ]),
+        # Stagger service discovery: load/publish the saved map before starting
+        # six navigation lifecycle nodes on the Pi's shared DDS participant graph.
+        TimerAction(period=13.0, actions=[
+            IncludeLaunchDescription(PythonLaunchDescriptionSource(str(navigation)),condition=UnlessCondition(LaunchConfiguration('localization_only')),launch_arguments={
+                'params_file':LaunchConfiguration('params_file')}.items())
         ]),
     ])
