@@ -614,15 +614,27 @@ class RosAdapter:
             await asyncio.sleep(.05)
         raise StepError('ARRIVAL_POSE_NOT_STABLE')
 
-    def _verify_endpoint_arrival(self,endpoint_id):
+    def _verify_endpoint_arrival(self,endpoint_id,heading_completed=False):
         current=self.telemetry().get('map_pose',{})
         if not current.get('fresh'):raise StepError('LOCALIZATION_LOST_AT_GOAL')
         actual=current['value'];target=self.cfg['endpoints'][endpoint_id]
         error=math.hypot(actual['x_m']-target['x_m'],actual['y_m']-target['y_m'])
         mode=getattr(self,'worker',{}).get('navigation_runtime',{}).get('arrival_mode')
         yaw=abs(math.atan2(math.sin(actual['yaw_rad']-target['yaw_rad']),math.cos(actual['yaw_rad']-target['yaw_rad'])))
-        if error>.08 or (mode!='POSITION_ONLY' and yaw>.10):raise StepError('ENDPOINT_FINAL_POSE_NOT_CONFIRMED')
-        return actual,error,None if mode=='POSITION_ONLY' else yaw
+        # A successful final Spin already completed the requested turn. AMCL can
+        # revise map yaw after the wheels stop; do not fail a whole route or send
+        # another turn just because this second measurement differs by > .10 rad.
+        if heading_completed:
+            self.node.get_logger().info('FINAL_ARRIVAL '+json.dumps({
+                'endpoint_id':endpoint_id,'position_error_m':error,
+                'measured_yaw_error_rad':yaw,'heading_completion':'ALIGNED_OR_SPIN_SUCCEEDED',
+                'actual_pose':actual},separators=(',',':')))
+        if error>.08 or (mode!='POSITION_ONLY' and not heading_completed and yaw>.10):
+            raise StepError('ENDPOINT_FINAL_POSE_NOT_CONFIRMED')
+        # The existing wire contract bounds this optional field to .15 rad.
+        # Always preserve the real measured yaw in verified_pose, even when the
+        # diagnostic error is outside that bounded field.
+        return actual,error,None if mode=='POSITION_ONLY' or (heading_completed and yaw>.15) else yaw
 
     async def _finish_heading(self,p,endpoint_id):
         """At most one Spin goal per MOVE; never restart the arrival phase."""
@@ -736,15 +748,16 @@ class RosAdapter:
             if status != 4: raise StepError("NAV_CANCELLED" if status == 5 else "NAV_ABORTED")
             mode=getattr(self,'worker',{}).get('navigation_runtime',{}).get('arrival_mode')
             separated=mode in ('POSITION_THEN_SPIN','POSITION_ONLY')
+            heading_completed=False
             if separated:
                 if not await self.stop():raise StepError('GOAL_STOP_UNCONFIRMED')
                 await self._wait_stationary()
                 await self._wait_arrival_pose(endpoint_id)
                 if mode=='POSITION_THEN_SPIN':
                     await self._finish_heading(p,endpoint_id)
+                    heading_completed=True
                     await self._wait_stationary()
-                    await self._wait_arrival_pose(endpoint_id)
-            actual,position_error,yaw_error=self._verify_endpoint_arrival(endpoint_id)
+            actual,position_error,yaw_error=self._verify_endpoint_arrival(endpoint_id,heading_completed=heading_completed)
             feedback, pose = self.goal_feedback, None
             if feedback is not None:
                 pos, q = feedback.current_pose.pose.position, feedback.current_pose.pose.orientation
@@ -752,7 +765,7 @@ class RosAdapter:
             output={"reached": True, "endpoint_id": endpoint_id, "action_status": status, "last_feedback_pose": pose,
                     "distance_remaining_m": float(feedback.distance_remaining) if feedback else None,
                     "verified_pose":actual,"position_error_m":position_error}
-            # yaw_error_rad is optional in MAR-STEP.2 and means heading verified.
+            # yaw_error_rad is an optional bounded measurement in MAR-STEP.2.
             # Keep actual yaw in verified_pose; never fake alignment with a target.
             if yaw_error is not None:output['yaw_error_rad']=yaw_error
             return output

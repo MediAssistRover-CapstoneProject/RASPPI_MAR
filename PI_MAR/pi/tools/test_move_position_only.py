@@ -86,6 +86,7 @@ class ArrivalTests(unittest.IsolatedAsyncioTestCase):
         a._wait_stationary=AsyncMock();a._wait_arrival_pose=AsyncMock();a._finish_heading=AsyncMock()
         a.clear_navigation_velocity=Mock();a.navigation_speed_limit=Mock();a.lease_message=Mock()
         a.stop=AsyncMock(return_value=True);a.nav=Mock()
+        a.node=Mock()
         a.future=AsyncMock(return_value=N(accepted=True,get_result_async=lambda:N(done=lambda:True,result=lambda:N(status=4))))
         return a
 
@@ -108,7 +109,7 @@ class ArrivalTests(unittest.IsolatedAsyncioTestCase):
             result=await a._move_one({'max_speed_mps':.6},'A')
         self.assertEqual(a.nav.send_goal_async.call_count,1)
         a._finish_heading.assert_awaited_once_with({'max_speed_mps':.6},'A')
-        self.assertEqual(a._wait_arrival_pose.await_count,2)
+        a._wait_arrival_pose.assert_awaited_once_with('A')
         self.assertEqual(result['yaw_error_rad'],0.)
         self.assertEqual(result['verified_pose']['yaw_rad'],0.)
 
@@ -140,6 +141,34 @@ class ArrivalTests(unittest.IsolatedAsyncioTestCase):
     def test_strict_heading_mode_still_requires_the_requested_heading(self):
         a=self.adapter();a.worker['navigation_runtime']['arrival_mode']='POSITION_THEN_SPIN'
         with self.assertRaisesRegex(StepError,'ENDPOINT_FINAL_POSE_NOT_CONFIRMED'):a._verify_endpoint_arrival('A')
+
+    async def test_successful_spin_finishes_move_despite_post_turn_map_yaw_correction(self):
+        a=self.adapter();a.worker['navigation_runtime']['arrival_mode']='POSITION_THEN_SPIN'
+        self.pose['yaw_rad']=.24
+        with patch.dict(sys.modules,{'nav2_msgs.action':N(NavigateToPose=N(Goal=lambda:N()))}):
+            result=await a._move_one({'max_speed_mps':.6},'A')
+        self.assertTrue(result['reached'])
+        self.assertEqual(result['verified_pose']['yaw_rad'],.24)
+        self.assertNotIn('yaw_error_rad',result)
+        a._finish_heading.assert_awaited_once()
+        a._wait_arrival_pose.assert_awaited_once()
+
+    async def test_blocked_final_spin_does_not_finish_move_or_dispatch_another_turn(self):
+        a=self.adapter();a.worker['navigation_runtime']['arrival_mode']='POSITION_THEN_SPIN'
+        a._finish_heading.side_effect=StepError('FINAL_ALIGNMENT_BLOCKED')
+        with patch.dict(sys.modules,{'nav2_msgs.action':N(NavigateToPose=N(Goal=lambda:N()))}):
+            with self.assertRaisesRegex(StepError,'FINAL_ALIGNMENT_BLOCKED'):
+                await a._move_one({'max_speed_mps':.6},'A')
+        a._finish_heading.assert_awaited_once()
+
+    def test_successful_turn_does_not_hide_position_drift_or_stale_localization(self):
+        a=self.adapter();a.worker['navigation_runtime']['arrival_mode']='POSITION_THEN_SPIN'
+        self.pose['x_m']=.7
+        with self.assertRaisesRegex(StepError,'ENDPOINT_FINAL_POSE_NOT_CONFIRMED'):
+            a._verify_endpoint_arrival('A',heading_completed=True)
+        a.telemetry=lambda:{'map_pose':{'fresh':False}}
+        with self.assertRaisesRegex(StepError,'LOCALIZATION_LOST_AT_GOAL'):
+            a._verify_endpoint_arrival('A',heading_completed=True)
 
     def test_small_steering_is_not_amplified_but_rotation_can_start(self):
         a=self.adapter();a.navigation_velocity_output=Mock()
