@@ -59,6 +59,28 @@ class LocalizationTests(unittest.TestCase):
         s=evidence();s['covariance'][0]=.25
         self.assertIn('AMCL_UNCERTAIN',QualityGate(cfg()).update(0,s)['reasons'])
         with self.assertRaises(ValueError):covariance_std([0.]*36)
+    def test_small_turn_uncertainty_holds_then_rechecks_without_cold_bootstrap(self):
+        gate=QualityGate(cfg())
+        for i in range(8):status=gate.update(i*.5,evidence(i))
+        self.assertTrue(status['ready'])
+        bad=evidence(8);bad['covariance'][0]=bad['covariance'][7]=.155**2
+        status=gate.update(4.,bad)
+        self.assertFalse(status['ready']);self.assertIn('AMCL_UNCERTAIN',status['reasons'])
+        self.assertTrue(gate.had_lock)
+        # Fresh TF/scan/odom bridge the AMCL correction between its publications.
+        good=evidence(9);good['pose_age_sec']=1.1
+        self.assertFalse(gate.update(4.1,good)['ready'])
+        good['scan_sequence']=10
+        self.assertTrue(gate.update(4.7,good)['ready'])
+    def test_large_uncertainty_and_expired_hypothesis_require_full_bootstrap(self):
+        for deviation,at in ((.30,4.),(.155,15.)):
+            gate=QualityGate(cfg())
+            for i in range(8):gate.update(i*.5,evidence(i))
+            bad=evidence(8);bad['covariance'][0]=bad['covariance'][7]=deviation**2
+            self.assertFalse(gate.update(at,bad)['ready']);self.assertFalse(gate.had_lock)
+            good=evidence(9);good['pose_age_sec']=1.1
+            status=gate.update(at+.5,good)
+            self.assertFalse(status['ready']);self.assertIn('POSE_AGE_SEC_STALE',status['reasons'])
     def test_nan_future_stamp_and_disagreeing_pose_block(self):
         for change in ({'scan_age_sec':math.nan},{'scan_age_sec':-.1},{'pose':dict(x_m=1.,y_m=0.,yaw_rad=0.)}):
             s=evidence();s.update(change);self.assertFalse(QualityGate(cfg()).update(0,s)['ready'])

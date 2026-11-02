@@ -50,3 +50,12 @@ Remote SSH vào Pi → Attach to Running Container MentorPi → Open Folder `/ho
 - Trần Nav2 của map đã lưu: Pi `tools/run_navigation_session.py`; tham số planner/controller/smoother: `pi/mediassist/navigation_setup.py`. Giữ giới hạn phần cứng và test khoảng dừng trước khi nâng.
 - Định vị: `pi/mediassist/localization.py`, `localization_node.py`. Không đổi TTL thành tuổi pose được phép chạy.
 - Camera vẫn dùng web_video_server của hãng, duy nhất luồng xem trực tiếp cổng 8080; không có server video mới trong bản sửa này.
+
+
+## 2026-11-02: MOVE held after a turn
+
+Observed job 325b54f6-80d4-4ad1-8a60-5e491c8b88e2 failed LOCALIZATION_LOST. Pi held wheels at 06:15:51 UTC when AMCL XY standard deviation briefly exceeded 0.15 m (about 0.155 m), then cancelled Nav2 after the existing 5 s localization hold. MQTT remained connected. This is localization readiness loss, not proof of a network outage. Stationary AMCL correction age crossed 0.8 s during cold re-verification and repeatedly reset stability.
+
+QualityGate now preserves an already established hypothesis for bounded re-verification when covariance is at most 1.25 times the configured entry thresholds and live scan agreement is adequate. It still returns ready=false while uncertain: no uncertain pose permits motion. Recovery requires fresh healthy evidence over two distinct scans and at least 0.5 s, within the existing 10 s recovery horizon. Larger uncertainty, identity/TF faults, body conflicts, jumps or an expired hypothesis retain full initialization requirements. Sensor freshness checks and MOVE hold timeout are unchanged. This does not freeze robot coordinates or disable AMCL updates.
+
+Validated with 23 targeted offline localization tests, including small turn-uncertainty recovery and large/expired uncertainty rejection. No physical MOVE was dispatched by this verification. The running Pi navigation session was kept at the operator's request; install localization.py only after the stack is stopped, back up and verify the existing source hash, then reopen navigation and verify the starting pose.

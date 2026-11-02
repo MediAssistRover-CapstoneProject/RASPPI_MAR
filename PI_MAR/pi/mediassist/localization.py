@@ -124,6 +124,17 @@ class QualityGate:
         if reasons:
             transient={'SCAN_AGE_SEC_STALE','ODOM_AGE_SEC_STALE','POSE_AGE_SEC_STALE',
                        'SCAN_MATCH_LOW','KNOWN_FRACTION_LOW','VALID_BEAMS_LOW'}
+            # A small covariance threshold crossing during a turn still holds
+            # the wheels, but must not discard an established map hypothesis.
+            # Otherwise stationary AMCL's slower correction cadence can keep
+            # resetting bootstrap stability until MOVE's hold timeout expires.
+            # Large uncertainty, jumps, invalid covariance, TF/body/sensor faults
+            # still require full initialization. No uncertain pose authorizes motion.
+            if (metrics.get('xy_std_m',math.inf)<=1.25*c['max_xy_std_m']
+                    and metrics.get('yaw_std_rad',math.inf)<=1.25*c['max_yaw_std_rad']
+                    and sample.get('scan_match',0)>=c['min_scan_match']
+                    and sample.get('valid_beams',0)>=c['min_valid_beams']):
+                transient.add('AMCL_UNCERTAIN')
             self.recovering=bool(self.had_lock and self.last_good_at is not None and 0<=now-self.last_good_at<=c['tracking_recovery_sec']
                                  and set(reasons)<=transient)
             if not self.recovering:self.had_lock=False
