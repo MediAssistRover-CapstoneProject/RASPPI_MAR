@@ -181,6 +181,8 @@ class LocalizationNode:
             velocity=self.odom.twist.twist
             if all(math.isfinite(v) for v in (velocity.linear.x,velocity.linear.y,velocity.angular.z)):
                 s['odom_age_sec']=ros-self.seconds(self.odom.header.stamp)
+                s['stationary']=(0<=s['odom_age_sec']<=self.cfg['max_sensor_age_sec']
+                    and max(abs(velocity.linear.x),abs(velocity.linear.y),abs(velocity.angular.z))<=.01)
         if self.pose is not None:
             p=self.pose.pose.pose;s.update(amcl_pose=dict(x_m=p.position.x,y_m=p.position.y,yaw_rad=yaw(p.orientation)),
                                          covariance=list(self.pose.pose.covariance),pose_age_sec=ros-self.seconds(self.pose.header.stamp))

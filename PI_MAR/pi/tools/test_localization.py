@@ -81,6 +81,24 @@ class LocalizationTests(unittest.TestCase):
             good=evidence(9);good['pose_age_sec']=1.1
             status=gate.update(at+.5,good)
             self.assertFalse(status['ready']);self.assertIn('POSE_AGE_SEC_STALE',status['reasons'])
+    def test_stationary_post_move_scan_loss_retains_hypothesis_without_authorizing_motion(self):
+        gate=QualityGate(cfg())
+        for i in range(8):gate.update(i*.5,evidence(i))
+        bad=evidence(8);bad.update(stationary=True,scan_match=.4)
+        self.assertFalse(gate.update(4.,bad)['ready'])
+        self.assertFalse(gate.update(20.,bad)['ready']);self.assertTrue(gate.had_lock)
+        good=evidence(9);good['stationary']=True
+        self.assertFalse(gate.update(20.1,good)['ready'])
+        good['scan_sequence']=10
+        self.assertTrue(gate.update(20.7,good)['ready'])
+    def test_stationary_retention_expires_and_never_hides_stale_sensors(self):
+        gate=QualityGate(cfg())
+        for i in range(8):gate.update(i*.5,evidence(i))
+        bad=evidence(8);bad.update(stationary=True,scan_match=.4)
+        self.assertFalse(gate.update(4.,bad)['ready'])
+        bad.update(odom_age_sec=2.,scan_age_sec=2.)
+        self.assertFalse(gate.update(15.,bad)['ready'])
+        self.assertFalse(gate.update(70.,bad)['ready']);self.assertFalse(gate.had_lock)
     def test_nan_future_stamp_and_disagreeing_pose_block(self):
         for change in ({'scan_age_sec':math.nan},{'scan_age_sec':-.1},{'pose':dict(x_m=1.,y_m=0.,yaw_rad=0.)}):
             s=evidence();s.update(change);self.assertFalse(QualityGate(cfg()).update(0,s)['ready'])

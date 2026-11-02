@@ -82,8 +82,20 @@ class SessionPoller:
                 if value['mapId']!=self.context['map_id'] or value['mapAssetHash']!=self.context['map_asset_hash']:raise StepError('NAVIGATION_SESSION_MAP_CHANGED')
                 with self.lock:self.value=value;self.at=time.monotonic();self.error=None
             except Exception as e:
-                with self.lock:self.value=None;self.error=getattr(e,'code','NAVIGATION_SESSION_UNREACHABLE')
+                self.failed(e)
             self.quit.wait(1.)
+    def failed(self,error):
+        code=getattr(error,'code','NAVIGATION_SESSION_UNREACHABLE')
+        reason=error.reason if isinstance(error,urllib.error.URLError) else error
+        transient=(code in ('NAVIGATION_SESSION_HTTP_500','NAVIGATION_SESSION_HTTP_502',
+                           'NAVIGATION_SESSION_HTTP_503','NAVIGATION_SESSION_HTTP_504')
+                   or isinstance(reason,OSError) and not isinstance(reason,ssl.SSLError))
+        with self.lock:
+            # Keep only a previously verified descriptor through a transient
+            # request failure, within the same existing 5 s authorization bound.
+            # Revocation, closed sessions, TLS and identity errors invalidate now.
+            if not transient:self.value=None
+            self.error=code
     def current(self):
         with self.lock:value=copy.deepcopy(self.value);age=time.monotonic()-self.at;error=self.error
         if expired(self.context):return None,'NAVIGATION_SESSION_EXPIRED'

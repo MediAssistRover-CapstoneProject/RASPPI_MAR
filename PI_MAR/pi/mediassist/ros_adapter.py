@@ -102,6 +102,7 @@ class RosAdapter:
 
     def publish_navigation_velocity(self,speed,rotation_only=False):
         from geometry_msgs.msg import Twist
+        pursuit=getattr(self,'worker',{}).get('navigation_runtime',{}).get('controller')=='REGULATED_PURSUIT'
         (x,y,z),fresh=self.navigation_velocity();msg=Twist()
         if fresh:
             # MOVE follows the chassis heading. Mapping has its own holonomic loop.
@@ -124,7 +125,10 @@ class RosAdapter:
             if self.cfg['motion'].get('allow_strafe') is not True:y=0.
             scale=min(1.,min(speed,self.cfg['max_speed_mps'])/max(math.hypot(x,y),1e-9))
             msg.linear.x=x*scale;msg.linear.y=y*scale
-            limit=self.cfg['motion']['max_angular_speed_rps'];msg.angular.z=max(-limit,min(z,limit))
+            # A speed-zone clamp must preserve RPP curvature. Reducing only X
+            # while retaining yaw makes the robot turn harder at the boundary.
+            turn=z*scale if pursuit and abs(x)>.01 and not rotation_only else z
+            limit=self.cfg['motion']['max_angular_speed_rps'];msg.angular.z=max(-limit,min(turn,limit))
             ramp=getattr(self,'navigation_resume_ramp',None)
             if ramp is not None:
                 msg.linear.x,msg.linear.y,msg.angular.z=ramp.update((msg.linear.x,msg.linear.y,msg.angular.z),time.monotonic())
@@ -133,7 +137,11 @@ class RosAdapter:
         # DWB/smoother can ask for a turn below the motor gate's 0.1 rad/s
         # deadband. Keep its direction and let the downstream gate veto an
         # obstructed turn; otherwise Nav2 can wait forever at a valid path.
-        pursuit=getattr(self,'worker',{}).get('navigation_runtime',{}).get('controller')=='REGULATED_PURSUIT'
+        # Apply the zone cap again after smoothing, scaling yaw with any final
+        # translation clamp. A ramp cannot reintroduce motion in a blocked zone.
+        if speed<=0:msg.linear.x=msg.linear.y=msg.angular.z=0.
+        elif pursuit and not rotation_only and abs(msg.linear.x)>speed:
+            ratio=speed/abs(msg.linear.x);msg.linear.x*=ratio;msg.angular.z*=ratio
         # Preserve RPP's curvature during translation. Wheels already turn;
         # small yaw is a steering correction, not a tiny stationary motor drive.
         # Only a deliberate in-place turn needs the minimum turn command.
@@ -593,6 +601,7 @@ class RosAdapter:
                 if time.monotonic()-started>allowance+2:raise StepError('FINAL_ALIGNMENT_TIMEOUT')
                 self._check_graph();ready=self._navigation_context(allow_localization_pause=True)
                 state=self.telemetry();pose=state.get('map_pose',{})
+                self.navigation_diagnostic(state,'FINAL_ALIGNING')
                 if not ready or not pose.get('fresh'):
                     self.hold_navigation_velocity()
                     if pause is None:pause=time.monotonic()

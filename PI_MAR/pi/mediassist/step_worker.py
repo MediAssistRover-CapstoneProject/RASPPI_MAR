@@ -254,11 +254,13 @@ class StepWorker:
                     **({'navigationSession':self.cfg['navigation_session']} if self.cfg.get('navigation_session') else {}),
                     "telemetry":self.adapter.telemetry()}))
                 last_heartbeat=now
+            # Cloud business ACKs can take 5-6 s. Avoid replaying the same
+            # durable event during that normal commit window (ACK timeout 15 s).
             # Bound each replay batch so heartbeat cannot be starved by old events.
             count=0
             for event in self.store.pending():
                 mid=event["messageId"]
-                if mid not in self.sent or time.monotonic()-self.sent[mid]>=5:
+                if mid not in self.sent or time.monotonic()-self.sent[mid]>=8:
                     self.sent[mid]=time.monotonic()
                     # Register before awaiting MQTT PUBACK: BE EVENT_ACK can arrive first.
                     await send(event)

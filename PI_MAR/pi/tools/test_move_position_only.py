@@ -44,6 +44,7 @@ class ProfileTests(unittest.TestCase):
         self.assertNotIn('critics',f);self.assertNotIn('primary_controller',f)
         self.assertFalse(f['allow_reversing']);self.assertTrue(f['use_collision_detection'])
         self.assertTrue(f['use_rotate_to_heading'])
+        self.assertEqual(f['rotate_to_heading_min_angle'],.75)
         self.assertEqual(f['rotate_to_heading_angular_vel'],.8)
         self.assertEqual(f['max_angular_accel'],3.2)
         self.assertEqual(c['general_goal_checker']['xy_goal_tolerance'],.06)
@@ -110,6 +111,27 @@ class ArrivalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(a._wait_arrival_pose.await_count,2)
         self.assertEqual(result['yaw_error_rad'],0.)
         self.assertEqual(result['verified_pose']['yaw_rad'],0.)
+
+    def test_speed_zone_scales_turn_rate_with_forward_speed(self):
+        a=self.adapter();a.navigation_velocity_output=Mock()
+        a.zones=N(zones=[{}],directional_cap=lambda *args:.15)
+        a.navigation_velocity=lambda:((.6,0.,.6),True)
+        with patch.dict(sys.modules,{'geometry_msgs.msg':N(Twist=lambda:N(linear=N(x=0.,y=0.),angular=N(z=0.)))}):
+            a.publish_navigation_velocity(.6)
+        msg=a.navigation_velocity_output.publish.call_args.args[0]
+        self.assertAlmostEqual(msg.linear.x,.15);self.assertAlmostEqual(msg.angular.z,.15)
+
+    def test_final_zone_clamp_preserves_ramped_curvature_and_zero_zone_stops_turn(self):
+        for cap in (.15,0.):
+            a=self.adapter();a.navigation_velocity_output=Mock()
+            a.zones=N(zones=[{}],directional_cap=lambda *args:cap)
+            a.navigation_velocity=lambda:((.6,0.,.6),True)
+            a.navigation_resume_ramp=N(update=lambda *args:(.5,0.,.4))
+            with patch.dict(sys.modules,{'geometry_msgs.msg':N(Twist=lambda:N(linear=N(x=0.,y=0.),angular=N(z=0.)))}):
+                a.publish_navigation_velocity(.6)
+            msg=a.navigation_velocity_output.publish.call_args.args[0]
+            self.assertAlmostEqual(msg.linear.x,cap)
+            self.assertAlmostEqual(msg.angular.z,.12 if cap else 0.)
 
     def test_nearby_icon_is_not_a_substitute_for_arriving(self):
         a=self.adapter();self.pose['x_m']=.7

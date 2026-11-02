@@ -169,7 +169,9 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
             'min_lookahead_dist':.18,'max_lookahead_dist':.45,'lookahead_time':.65,
             'use_velocity_scaled_lookahead_dist':True,'use_interpolation':True,
             'transform_tolerance':.2,'allow_reversing':False,
-            'use_rotate_to_heading':True,'rotate_to_heading_min_angle':.45,
+            # Ordinary bends are followed as forward arcs; reserve in-place
+            # heading recovery for a substantial turn, not small path updates.
+            'use_rotate_to_heading':True,'rotate_to_heading_min_angle':.75,
             'rotate_to_heading_angular_vel':angular,'max_angular_accel':3.2,
             'min_approach_linear_velocity':min(.12,speed),
             'approach_velocity_scaling_dist':.45,
