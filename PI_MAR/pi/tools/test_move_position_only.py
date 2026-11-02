@@ -22,6 +22,20 @@ def params(**kw):
 
 
 class ProfileTests(unittest.TestCase):
+    def test_final_heading_uses_forward_rpp_and_grid_path_without_a_dubins_end_loop(self):
+        p=params(angular=1.2,fast_navigation=True,forward_only=True,position_then_spin=True,
+                 footprint_planner=True,path_tracking=True)
+        c=p['controller_server']['ros__parameters'];f=c['FollowPath']
+        self.assertEqual(f['plugin'],'nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController')
+        self.assertFalse(f['allow_reversing']);self.assertTrue(f['use_collision_detection'])
+        self.assertEqual(c['general_goal_checker']['xy_goal_tolerance'],.06)
+        planner=p['planner_server']['ros__parameters']['GridBased']
+        self.assertEqual(planner['plugin'],'nav2_smac_planner/SmacPlanner2D')
+        self.assertTrue(planner['use_final_approach_orientation'])
+        self.assertFalse(planner['allow_unknown'])
+        self.assertGreater(planner['smoother']['w_smooth'],planner['smoother']['w_data'])
+        self.assertEqual(p['velocity_smoother']['ros__parameters']['min_velocity'],[0.,0.,-1.2])
+        self.assertGreaterEqual(p['behavior_server']['ros__parameters']['min_rotational_vel'],.1)
     def test_tracking_replaces_shim_dwb_and_dubins_terminal_heading(self):
         p=params(fast_navigation=True,footprint_planner=True,
             forward_only=True,position_only=True,path_tracking=True)
@@ -84,6 +98,18 @@ class ArrivalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(a.nav.send_goal_async.call_count,1)
         a._finish_heading.assert_not_awaited()
         a._wait_arrival_pose.assert_awaited_once_with('A')
+
+    async def test_heading_mode_tracks_one_goal_then_aligns_once_and_verifies_live_pose(self):
+        a=self.adapter();a.worker['navigation_runtime']['arrival_mode']='POSITION_THEN_SPIN'
+        async def align(*args):self.pose['yaw_rad']=0.
+        a._finish_heading.side_effect=align
+        with patch.dict(sys.modules,{'nav2_msgs.action':N(NavigateToPose=N(Goal=lambda:N()))}):
+            result=await a._move_one({'max_speed_mps':.6},'A')
+        self.assertEqual(a.nav.send_goal_async.call_count,1)
+        a._finish_heading.assert_awaited_once_with({'max_speed_mps':.6},'A')
+        self.assertEqual(a._wait_arrival_pose.await_count,2)
+        self.assertEqual(result['yaw_error_rad'],0.)
+        self.assertEqual(result['verified_pose']['yaw_rad'],0.)
 
     def test_nearby_icon_is_not_a_substitute_for_arriving(self):
         a=self.adapter();self.pose['x_m']=.7

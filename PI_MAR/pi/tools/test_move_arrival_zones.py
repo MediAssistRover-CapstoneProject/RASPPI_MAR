@@ -35,6 +35,13 @@ class ArrivalTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await a._finish_heading({'max_speed_mps':.8},'A'))
         a.spin.send_goal_async.assert_not_called()
 
+    async def test_eleven_hundredths_yaw_error_gets_one_final_correction(self):
+        a=self.adapter(yaw=.89)
+        with patch.dict(sys.modules,{'nav2_msgs.action':N(Spin=N(Goal=lambda:N(time_allowance=N(sec=0))))}):
+            self.assertTrue(await a._finish_heading({'max_speed_mps':.8},'A'))
+        self.assertEqual(a.spin.send_goal_async.call_count,1)
+        self.assertAlmostEqual(a.spin.send_goal_async.call_args.args[0].target_yaw,.11)
+
     async def test_blocked_spin_stops_without_a_second_attempt(self):
         a=self.adapter(status=6)
         with patch.dict(sys.modules,{'nav2_msgs.action':N(Spin=N(Goal=lambda:N(time_allowance=N(sec=0))))}):

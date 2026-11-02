@@ -480,7 +480,7 @@ class RosAdapter:
                 q=v.pose.orientation
                 yaw=math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))
                 return (v.pose.position.x,v.pose.position.y,yaw)
-            if position_only:
+            if position_only or getattr(self,'worker',{}).get('navigation_runtime',{}).get('controller')=='REGULATED_PURSUIT':
                 terminal_yaw=waypoint(path.poses[-1])[2]
                 self.approach_headings[endpoint_id]=terminal_yaw
                 self._check_endpoint_footprint(endpoint_id,terminal_yaw)
@@ -532,7 +532,9 @@ class RosAdapter:
 
     async def _wait_arrival_pose(self,endpoint_id):
         """Observe a stable live pose while stopped, without resetting AMCL."""
-        target=self.cfg['endpoints'][endpoint_id];deadline=time.monotonic()+3.
+        # Keep wheels stopped while the already-established localization recovers.
+        # A three-second arrival deadline could expire during re-verification.
+        target=self.cfg['endpoints'][endpoint_id];deadline=time.monotonic()+10.
         anchor=None;since=None
         while time.monotonic()<deadline:
             self.lease_message(False)
@@ -557,7 +559,7 @@ class RosAdapter:
         error=math.hypot(actual['x_m']-target['x_m'],actual['y_m']-target['y_m'])
         mode=getattr(self,'worker',{}).get('navigation_runtime',{}).get('arrival_mode')
         yaw=abs(math.atan2(math.sin(actual['yaw_rad']-target['yaw_rad']),math.cos(actual['yaw_rad']-target['yaw_rad'])))
-        if error>.08 or (mode!='POSITION_ONLY' and yaw>.15):raise StepError('ENDPOINT_FINAL_POSE_NOT_CONFIRMED')
+        if error>.08 or (mode!='POSITION_ONLY' and yaw>.10):raise StepError('ENDPOINT_FINAL_POSE_NOT_CONFIRMED')
         return actual,error,None if mode=='POSITION_ONLY' else yaw
 
     async def _finish_heading(self,p,endpoint_id):
@@ -570,7 +572,7 @@ class RosAdapter:
         if math.hypot(actual['x_m']-target['x_m'],actual['y_m']-target['y_m'])>.10:
             raise StepError('ENDPOINT_POSITION_NOT_CONFIRMED')
         delta=math.atan2(math.sin(target['yaw_rad']-actual['yaw_rad']),math.cos(target['yaw_rad']-actual['yaw_rad']))
-        if abs(delta)<=.12:return False
+        if abs(delta)<=.10:return False
         if getattr(self,'zones',None) is not None:
             try:self.zones.validate_path([(actual['x_m'],actual['y_m'],actual['yaw_rad']),
                 (actual['x_m'],actual['y_m'],actual['yaw_rad']+delta)])
@@ -678,6 +680,7 @@ class RosAdapter:
                 if mode=='POSITION_THEN_SPIN':
                     await self._finish_heading(p,endpoint_id)
                     await self._wait_stationary()
+                    await self._wait_arrival_pose(endpoint_id)
             actual,position_error,yaw_error=self._verify_endpoint_arrival(endpoint_id)
             feedback, pose = self.goal_feedback, None
             if feedback is not None:
