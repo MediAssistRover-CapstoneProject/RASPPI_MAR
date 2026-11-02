@@ -110,9 +110,10 @@ class ManualTests(unittest.TestCase):
 
 
 class WorkerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_scoped_cleanup_stop_preempts_held_stick_but_other_steps_do_not(self):
+    async def test_scoped_save_and_stop_preempt_held_stick_but_other_steps_do_not(self):
         for action,job,session,accepted in [('STOP','job','session',True),('STOP','other','session',False),
-                                           ('STOP','job','other',False),('START','job','session',False),('SAVE','job','session',False)]:
+                                           ('STOP','job','other',False),('START','job','session',False),('SAVE','job','session',True),
+                                           ('SAVE','other','session',False),('SAVE','job','other',False)]:
             mapping=NS(state={'job_id':'job','session_id':'session'},active=True,manual_drive=Mock(),gamepad=Mock())
             mapping.manual_drive.busy.return_value=True
             store=Mock();store.cached_command.return_value=False;store.previous.return_value=None;store.blocked.return_value=False

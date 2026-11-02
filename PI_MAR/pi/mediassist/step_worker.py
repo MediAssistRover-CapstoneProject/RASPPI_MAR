@@ -81,13 +81,14 @@ class StepWorker:
             return
         mapping=self.adapter.mapping
         params=step['params']
-        mapping_stop=bool(mapping and step['stepType']=='EXECUTE_SENSING'
-            and params.get('sensing_type')=='MAPPING' and params.get('action')=='STOP'
+        mapping_handoff=bool(mapping and step['stepType']=='EXECUTE_SENSING'
+            and params.get('sensing_type')=='MAPPING' and params.get('action') in ('SAVE','STOP')
             and step['jobId']==mapping.state.get('job_id')
             and params.get('mapping_session_id')==mapping.state.get('session_id'))
-        # A scoped cleanup STOP must not be rejected because a stick is held.
-        # Accepting it inhibits manual drive below; abort still confirms zero odometry.
-        if not mapping_stop and mapping and getattr(mapping,'manual_drive',None) and mapping.manual_drive.busy(mapping.gamepad):
+        # Scoped SAVE/STOP is an explicit end-of-drive intent. Accepting it
+        # inhibits manual input below; SAVE/abort must still confirm zero odometry.
+        # Other operations and foreign sessions cannot take over a held stick.
+        if not mapping_handoff and mapping and getattr(mapping,'manual_drive',None) and mapping.manual_drive.busy(mapping.gamepad):
             self.receipt(command,False,step,errorCode="RETURN_GAMEPAD_TO_NEUTRAL")
             return
         if mapping and mapping.active:
