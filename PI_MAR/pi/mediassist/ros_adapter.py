@@ -629,7 +629,11 @@ class RosAdapter:
                 'endpoint_id':endpoint_id,'position_error_m':error,
                 'measured_yaw_error_rad':yaw,'heading_completion':'ALIGNED_OR_SPIN_SUCCEEDED',
                 'actual_pose':actual},separators=(',',':')))
-        if error>.08 or (mode!='POSITION_ONLY' and not heading_completed and yaw>.10):
+        # Use the same 10 cm position envelope already accepted before Spin.
+        # The controller still aims for 6 cm; a small map correction during the
+        # successful in-place turn must not contradict the arrival it accepted.
+        position_tolerance=.10 if heading_completed else .08
+        if error>position_tolerance or (mode!='POSITION_ONLY' and not heading_completed and yaw>.10):
             raise StepError('ENDPOINT_FINAL_POSE_NOT_CONFIRMED')
         # The existing wire contract bounds this optional field to .15 rad.
         # Always preserve the real measured yaw in verified_pose, even when the

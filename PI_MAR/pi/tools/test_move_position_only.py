@@ -170,6 +170,22 @@ class ArrivalTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(StepError,'LOCALIZATION_LOST_AT_GOAL'):
             a._verify_endpoint_arrival('A',heading_completed=True)
 
+    async def test_nine_centimetre_post_spin_pose_correction_finishes_the_step(self):
+        a=self.adapter();a.worker['navigation_runtime']['arrival_mode']='POSITION_THEN_SPIN'
+        async def align(*args):self.pose.update(x_m=.9097,yaw_rad=.0622)
+        a._finish_heading.side_effect=align
+        with patch.dict(sys.modules,{'nav2_msgs.action':N(NavigateToPose=N(Goal=lambda:N()))}):
+            result=await a._move_one({'max_speed_mps':.4},'A')
+        self.assertTrue(result['reached'])
+        self.assertAlmostEqual(result['position_error_m'],.0903)
+        self.assertAlmostEqual(result['yaw_error_rad'],.0622)
+        a._finish_heading.assert_awaited_once()
+
+    def test_successful_spin_acceptance_ends_at_ten_centimetres(self):
+        a=self.adapter();self.pose.update(x_m=.899,yaw_rad=0.)
+        with self.assertRaisesRegex(StepError,'ENDPOINT_FINAL_POSE_NOT_CONFIRMED'):
+            a._verify_endpoint_arrival('A',heading_completed=True)
+
     def test_small_steering_is_not_amplified_but_rotation_can_start(self):
         a=self.adapter();a.navigation_velocity_output=Mock()
         with patch.dict(sys.modules,{'geometry_msgs.msg':N(Twist=lambda:N(linear=N(x=0.,y=0.),angular=N(z=0.)))}):
