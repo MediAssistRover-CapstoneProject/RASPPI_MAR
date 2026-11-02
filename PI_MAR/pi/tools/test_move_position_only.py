@@ -85,6 +85,42 @@ class ArrivalTests(unittest.IsolatedAsyncioTestCase):
         a._finish_heading.assert_not_awaited()
         a._wait_arrival_pose.assert_awaited_once_with('A')
 
+<<<<<<< Updated upstream
+=======
+    async def test_heading_mode_tracks_one_goal_then_aligns_once_and_verifies_live_pose(self):
+        a=self.adapter();a.worker['navigation_runtime']['arrival_mode']='POSITION_THEN_SPIN'
+        async def align(*args):self.pose['yaw_rad']=0.
+        a._finish_heading.side_effect=align
+        with patch.dict(sys.modules,{'nav2_msgs.action':N(NavigateToPose=N(Goal=lambda:N()))}):
+            result=await a._move_one({'max_speed_mps':.6},'A')
+        self.assertEqual(a.nav.send_goal_async.call_count,1)
+        a._finish_heading.assert_awaited_once_with({'max_speed_mps':.6},'A')
+        a._wait_arrival_pose.assert_awaited_once_with('A')
+        self.assertEqual(result['yaw_error_rad'],0.)
+        self.assertEqual(result['verified_pose']['yaw_rad'],0.)
+
+    def test_speed_zone_scales_turn_rate_with_forward_speed(self):
+        a=self.adapter();a.navigation_velocity_output=Mock()
+        a.zones=N(zones=[{}],directional_cap=lambda *args:.15)
+        a.navigation_velocity=lambda:((.6,0.,.6),True)
+        with patch.dict(sys.modules,{'geometry_msgs.msg':N(Twist=lambda:N(linear=N(x=0.,y=0.),angular=N(z=0.)))}):
+            a.publish_navigation_velocity(.6)
+        msg=a.navigation_velocity_output.publish.call_args.args[0]
+        self.assertAlmostEqual(msg.linear.x,.15);self.assertAlmostEqual(msg.angular.z,.15)
+
+    def test_final_zone_clamp_preserves_ramped_curvature_and_zero_zone_stops_turn(self):
+        for cap in (.15,0.):
+            a=self.adapter();a.navigation_velocity_output=Mock()
+            a.zones=N(zones=[{}],directional_cap=lambda *args:cap)
+            a.navigation_velocity=lambda:((.6,0.,.6),True)
+            a.navigation_resume_ramp=N(update=lambda *args:(.5,0.,.4))
+            with patch.dict(sys.modules,{'geometry_msgs.msg':N(Twist=lambda:N(linear=N(x=0.,y=0.),angular=N(z=0.)))}):
+                a.publish_navigation_velocity(.6)
+            msg=a.navigation_velocity_output.publish.call_args.args[0]
+            self.assertAlmostEqual(msg.linear.x,cap)
+            self.assertAlmostEqual(msg.angular.z,.15 if cap else 0.)
+
+>>>>>>> Stashed changes
     def test_nearby_icon_is_not_a_substitute_for_arriving(self):
         a=self.adapter();self.pose['x_m']=.7
         with self.assertRaisesRegex(StepError,'ENDPOINT_FINAL_POSE_NOT_CONFIRMED'):a._verify_endpoint_arrival('A')

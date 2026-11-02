@@ -4,7 +4,7 @@ import json
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from .mqtt_transport import MqttSession
 from .contracts import StepError, canonical
 from .step_contract import CONTRACT, SUBPROTOCOL, VERSION, validate_command, validate_step, validate_result, expiry
@@ -20,6 +20,8 @@ class StepWorker:
         self.stop_reason = "CANCELLED"
         self.session_fault = False
         self.shutting_down = False
+        self.outbox_wakeup = asyncio.Event()
+        self.ack_waiters = {}
 
     def status(self):
         if self.store.blocked() or getattr(self.adapter,"motion_uncertain",False):
@@ -32,18 +34,23 @@ class StepWorker:
 
     async def acknowledged(self, mid):
         deadline=time.monotonic()+self.cfg["ack_timeout_sec"]
-        while not self.store.is_acked(mid):
-            if not self.connection_ready:
-                raise StepError("CONNECTION_LOST")
-            if time.monotonic() >= deadline:
-                raise StepError("BE_ACK_TIMEOUT")
-            await asyncio.sleep(0.05)
+        waiter=self.ack_waiters.setdefault(mid,asyncio.Event())
+        try:
+            while not self.store.is_acked(mid):
+                if not self.connection_ready:raise StepError("CONNECTION_LOST")
+                remaining=deadline-time.monotonic()
+                if remaining<=0:raise StepError("BE_ACK_TIMEOUT")
+                try:await asyncio.wait_for(waiter.wait(),remaining)
+                except asyncio.TimeoutError:raise StepError("BE_ACK_TIMEOUT") from None
+                waiter.clear()
+        finally:self.ack_waiters.pop(mid,None)
 
     def receipt(self, command, accepted, step=None, **extra):
         event=self.store.emit("COMMAND_ACK",
             {"commandId":command["commandId"],"commandType":command["commandType"],
              "accepted":accepted,**extra}, step,command["correlationId"])
         self.store.remember_command(command,event)
+        self.outbox_wakeup.set()
         return event
 
     async def command(self, command):
@@ -127,6 +134,7 @@ class StepWorker:
             await self.acknowledged(accepted_mid)
             started=self.store.emit("STEP_STARTED",{"attemptNo":1,"stepType":step["stepType"],
                     "resolvedInputs":step["params"]},step,correlation)
+            self.outbox_wakeup.set()
             await self.acknowledged(started["messageId"])
             if expiry(expires_at) <= datetime.now(timezone.utc):
                 raise StepError("COMMAND_EXPIRED_BEFORE_EXECUTION")
@@ -177,6 +185,7 @@ class StepWorker:
                 {"status":status,"result":data,"errorCode":error,"retryable":False,
                  "details":None if not error else error_details or {"code":error},
                  "physicalStopConfirmed":stop_confirmed},step,correlation)
+            self.outbox_wakeup.set()
             self.active=None
 
     async def abandoned(self, reason):
@@ -194,6 +203,7 @@ class StepWorker:
         self.store.finish(step,status,result)
         self.active=None
         self.store.emit("STEP_ERROR",{**result,"retryable":False,"details":{"code":reason}},step)
+        self.outbox_wakeup.set()
 
     async def shutdown(self):
         """Stop once, persist the result, and drain it while MQTT is still alive."""
@@ -241,6 +251,7 @@ class StepWorker:
     async def publish(self, send):
         last_heartbeat=0
         while True:
+            self.outbox_wakeup.clear()
             now=time.monotonic()
             if now-last_heartbeat>=self.cfg["heartbeat_sec"]:
                 await send(self.store.transient("HEARTBEAT",{
@@ -266,7 +277,10 @@ class StepWorker:
                     # the remaining replay batch. No change to protocol timeouts.
                     if count>=4 or time.monotonic()-last_heartbeat>=self.cfg['heartbeat_sec']:
                         break
-            await asyncio.sleep(0.2)
+            # A new acceptance/start/result wakes this loop immediately. Heartbeat
+            # and durable retransmission keep their existing independent deadlines.
+            try:await asyncio.wait_for(self.outbox_wakeup.wait(),.2)
+            except asyncio.TimeoutError:pass
 
     async def navigation_profile(self, message, session):
         from .navigation_profile import apply_profile
@@ -362,6 +376,8 @@ class StepWorker:
                             raise StepError("BE_EVENT_REJECTED")
                         self.store.ack(mid)
                         self.sent.pop(mid,None)
+                        waiter=self.ack_waiters.get(mid)
+                        if waiter is not None:waiter.set()
                 elif message.get("messageType")=="NAV_PROFILE":
                     await self.navigation_profile(message,ws)
                 elif message.get("messageType")=="MAPPING_CONTROL":
@@ -413,6 +429,28 @@ class StepWorker:
                 last_preview=time.monotonic()
             await asyncio.sleep(.1)
 
+    async def navigation_pose_loop(self, session):
+        """Latest ROS pose for viewing only; no extra ROS node, DB write or heartbeat."""
+        context=self.cfg.get('navigation_session')
+        if not context:await asyncio.Future()
+        sequence=0
+        while True:
+            if self.connection_ready:
+                state=self.adapter.telemetry();pose=state.get('map_pose',{});quality=state.get('localization',{})
+                value=pose.get('value') or {}
+                if (pose.get('fresh') and quality.get('ready') and pose.get('age_sec',99)<=1.
+                    and value.get('navigation_session_id')==context['session_id']
+                    and value.get('initialization_revision',0)>0):
+                    sequence+=1
+                    await session.publish('/navigation/pose',{
+                        'messageType':'NAVIGATION_POSE','robotId':self.cfg['robot_id'],
+                        'transportSessionId':session.id,'producerSessionId':self.store.session,
+                        'navigationSessionId':context['session_id'],'mapId':context['map_id'],
+                        'mapAssetHash':context['map_asset_hash'],'initializationRevision':value['initialization_revision'],
+                        'sequenceNo':sequence,'capturedAt':(datetime.now(timezone.utc)-timedelta(seconds=pose['age_sec'])).isoformat(),
+                        'pose':dict(xM=value['x_m'],yM=value['y_m'],yawRad=value['yaw_rad'])},qos=0)
+            await asyncio.sleep(.2 if self.active and self.active.get('stepType')=='MOVE' else .5)
+
     async def run(self):
         delay=1
         # Local USB input keeps its 20 Hz loop across broker connect/backoff.
@@ -427,14 +465,19 @@ class StepWorker:
                         connected=asyncio.create_task(self.connected(session))
                         mapping=local_mapping or asyncio.create_task(self.mapping_loop(session))
                         media=asyncio.create_task(self.mapping_media_loop(session))
+                        poses=asyncio.create_task(self.navigation_pose_loop(session))
+                        poses.add_done_callback(lambda task:logging.warning('Live pose observation unavailable: %s',type(task.exception()).__name__)
+                            if not task.cancelled() and task.exception() else None)
                         try:
+                            # Observation failure cannot cancel a physical MOVE. Actual
+                            # MQTT failure is still handled by connected/session above.
                             done,_=await asyncio.wait({connected,mapping,media},return_when=asyncio.FIRST_COMPLETED)
                             for task in done:
                                 task.result()
                         finally:
-                            connected.cancel();media.cancel()
+                            connected.cancel();media.cancel();poses.cancel()
                             if not local_mode:mapping.cancel()
-                            await asyncio.gather(connected,media,*([] if local_mode else [mapping]),return_exceptions=True)
+                            await asyncio.gather(connected,media,poses,*([] if local_mode else [mapping]),return_exceptions=True)
                             await self.disconnect("CONNECTION_LOST")
                 except asyncio.CancelledError:
                     raise

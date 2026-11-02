@@ -242,6 +242,91 @@
         }
       },
       "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "robotId",
+        "transportSessionId",
+        "producerSessionId",
+        "navigationSessionId",
+        "mapId",
+        "messageType",
+        "sequenceNo",
+        "initializationRevision",
+        "mapAssetHash",
+        "capturedAt",
+        "pose"
+      ],
+      "properties": {
+        "robotId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "transportSessionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "producerSessionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "navigationSessionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "mapId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "messageType": {
+          "const": "NAVIGATION_POSE"
+        },
+        "sequenceNo": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "initializationRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mapAssetHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "capturedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "pose": {
+          "type": "object",
+          "properties": {
+            "xM": {
+              "type": "number",
+              "minimum": -99999999,
+              "maximum": 99999999
+            },
+            "yM": {
+              "type": "number",
+              "minimum": -99999999,
+              "maximum": 99999999
+            },
+            "yawRad": {
+              "type": "number",
+              "minimum": -3.141593,
+              "maximum": 3.141593
+            }
+          },
+          "required": [
+            "xM",
+            "yM",
+            "yawRad"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   ]
 }

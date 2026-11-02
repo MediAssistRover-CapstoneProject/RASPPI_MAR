@@ -10,6 +10,25 @@ from mediassist.navigation_zones import NavigationZones,rules,keepout_data,body_
 from mediassist.navigation_setup import nav2_params
 
 class ArrivalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_in_place_turn_distinguishes_map_correction_from_physical_translation(self):
+        for translated in (0.,.04):
+            with self.subTest(translated=translated):
+                a=self.adapter();a.odom_pose_sample=((0.,0.),10.)
+                a._check_graph=Mock();a._navigation_context=Mock(return_value=True);a.navigation_diagnostic=Mock()
+                a.publish_navigation_velocity=Mock(return_value=True);a.lease_message=Mock()
+                calls=[0]
+                def telemetry():
+                    calls[0]+=1
+                    if calls[0]>1:a.odom_pose_sample=((translated,0.),10.)
+                    return {'gate':{'age_sec':0.},'map_pose':{'fresh':True,'value':dict(x_m=.14 if calls[0]>1 else 0.,y_m=0.,yaw_rad=0.)}}
+                a.telemetry=telemetry
+                result=N(done=Mock(side_effect=[False,True]),result=lambda:N(status=4))
+                a.future=AsyncMock(return_value=N(accepted=True,get_result_async=lambda:result))
+                with patch('mediassist.ros_adapter.time.monotonic',return_value=10.),patch('mediassist.ros_adapter.asyncio.sleep',new=AsyncMock()),patch.dict(sys.modules,{'nav2_msgs.action':N(Spin=N(Goal=lambda:N(time_allowance=N(sec=0))))}):
+                    if translated:
+                        with self.assertRaisesRegex(StepError,'ENDPOINT_DRIFT_DURING_ALIGNMENT'):await a._finish_heading({'max_speed_mps':.6},'A')
+                    else:self.assertTrue(await a._finish_heading({'max_speed_mps':.6},'A'))
+                a.stop.assert_awaited_once()
     def adapter(self,yaw=0.,status=4):
         a=RosAdapter.__new__(RosAdapter)
         a.cfg={'endpoints':{'A':dict(x_m=0.,y_m=0.,yaw_rad=1.)}}

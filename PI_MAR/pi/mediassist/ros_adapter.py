@@ -86,6 +86,8 @@ class RosAdapter:
             self.samples['odom_speed']=(max(abs(t.linear.x),abs(t.linear.y),abs(t.angular.z)),now)
             # Local diagnostics only: do not change the MQTT telemetry contract.
             self.odom_twist_sample=((float(t.linear.x),float(t.linear.y),float(t.angular.z)),now)
+            p=msg.pose.pose.position
+            self.odom_pose_sample=((float(p.x),float(p.y)),now)
 
     def _navigation_plan_sample(self,msg):
         # One latest-slot sample, no backlog and no new ROS publishers/processes.
@@ -127,7 +129,19 @@ class RosAdapter:
             limit=self.cfg['motion']['max_angular_speed_rps'];msg.angular.z=max(-limit,min(z,limit))
             ramp=getattr(self,'navigation_resume_ramp',None)
             if ramp is not None:
-                msg.linear.x,msg.linear.y,msg.angular.z=ramp.update((msg.linear.x,msg.linear.y,msg.angular.z),time.monotonic())
+                requested=(msg.linear.x,msg.linear.y,msg.angular.z)
+                resumed=ramp.update(requested,time.monotonic())
+                if pursuit or rotation_only:
+                    # Nav2 already regulates braking and curvature. A resume-only
+                    # ramp must never retain a faster old command near a goal or
+                    # independently lag yaw and translation through a corner.
+                    axis=0 if abs(requested[0])>.01 and not rotation_only else 2
+                    want,limited=requested[axis],resumed[axis]
+                    factor=min(1.,abs(limited/want)) if abs(want)>1e-9 and want*limited>0 else 0.
+                    msg.linear.x,msg.linear.y,msg.angular.z=(v*factor for v in requested)
+                else:msg.linear.x,msg.linear.y,msg.angular.z=resumed
+                if all(abs(a-b)<.001 for a,b in zip(requested,resumed)):
+                    self.navigation_resume_ramp=None
         elif getattr(self,'navigation_resume_ramp',None) is not None:self.navigation_resume_ramp.reset()
         from .safety import navigation_yaw
         # DWB/smoother can ask for a turn below the motor gate's 0.1 rad/s
@@ -275,10 +289,15 @@ class RosAdapter:
         if map_id != self.cfg["map_id"] or not self.cfg["map_asset_sha256"]:
             raise StepError("MAP_NOT_COMMISSIONED")
         if not self.map_client.service_is_ready(): raise StepError("MAP_SERVER_UNAVAILABLE")
+        key=(map_id,self.cfg['map_asset_sha256'])
+        verified=getattr(self,'_map_verified',None)
+        if verified and verified[0]==key and time.monotonic()-verified[1]<1.:return
         request = GetParameters.Request(names=["yaml_filename"])
         response = await self.future(self.map_client.call_async(request))
         if not response.values or map_fingerprint(response.values[0].string_value) != self.cfg["map_asset_sha256"]:
+            self._map_verified=None
             raise StepError("MAP_ASSET_MISMATCH")
+        self._map_verified=(key,time.monotonic())
 
     def _check_graph(self):
         from .velocity_graph import check_velocity_graph
@@ -560,6 +579,17 @@ class RosAdapter:
         if error>.08 or (mode!='POSITION_ONLY' and yaw>.15):raise StepError('ENDPOINT_FINAL_POSE_NOT_CONFIRMED')
         return actual,error,None if mode=='POSITION_ONLY' else yaw
 
+    async def _settle_final_pose(self,endpoint_id):
+        # Usually returns immediately. Only a post-turn XY correction outside
+        # tolerance gets a short stopped observation window, never another goal.
+        target=self.cfg['endpoints'][endpoint_id];deadline=time.monotonic()+.5
+        while True:
+            pose=self.telemetry().get('map_pose',{})
+            if not pose.get('fresh'):return
+            p=pose['value']
+            if math.hypot(p['x_m']-target['x_m'],p['y_m']-target['y_m'])<=.10 or time.monotonic()>=deadline:return
+            self.lease_message(False);await asyncio.sleep(.05)
+
     async def _finish_heading(self,p,endpoint_id):
         """At most one Spin goal per MOVE; never restart the arrival phase."""
         from nav2_msgs.action import Spin
@@ -582,6 +612,7 @@ class RosAdapter:
         allowance=max(8.,abs(delta)/.2+4.);goal.time_allowance.sec=math.ceil(allowance)
         self.clear_navigation_velocity()
         sent=self.spin.send_goal_async(goal);received=False;started=time.monotonic()
+        odom_origin=getattr(self,'odom_pose_sample',None)
         try:
             self.goal=await self.future(sent);received=True
             if not self.goal.accepted:raise StepError('FINAL_ALIGNMENT_REJECTED')
@@ -599,7 +630,16 @@ class RosAdapter:
                 pause=None
                 if 'gate' not in state or state['gate']['age_sec']>.6:raise StepError('SAFETY_GATE_LOST')
                 v=pose['value']
-                if math.hypot(v['x_m']-target['x_m'],v['y_m']-target['y_m'])>.12:raise StepError('ENDPOINT_DRIFT_DURING_ALIGNMENT')
+                map_error=math.hypot(v['x_m']-target['x_m'],v['y_m']-target['y_m'])
+                odom=getattr(self,'odom_pose_sample',None)
+                if odom_origin and odom and started-odom_origin[1]<.5 and time.monotonic()-odom[1]<.5:
+                    # AMCL can correct map->odom while turning in place. Detect
+                    # real translation in continuous odom instead of treating a
+                    # small map correction as wheel movement. Final XY still has
+                    # to satisfy the unchanged arrival contract after stopping.
+                    translation=math.hypot(odom[0][0]-odom_origin[0][0],odom[0][1]-odom_origin[0][1])
+                    if translation>.03 or map_error>.25:raise StepError('ENDPOINT_DRIFT_DURING_ALIGNMENT')
+                elif map_error>.12:raise StepError('ENDPOINT_DRIFT_DURING_ALIGNMENT')
                 if not self.publish_navigation_velocity(p['max_speed_mps'],rotation_only=True):
                     self.lease_message(False)
                     if velocity_pause is None:velocity_pause=time.monotonic()
@@ -678,7 +718,12 @@ class RosAdapter:
                 if mode=='POSITION_THEN_SPIN':
                     await self._finish_heading(p,endpoint_id)
                     await self._wait_stationary()
+<<<<<<< Updated upstream
             actual,position_error,yaw_error=self._verify_endpoint_arrival(endpoint_id)
+=======
+                    await self._settle_final_pose(endpoint_id)
+            actual,position_error,yaw_error=self._verify_endpoint_arrival(endpoint_id,heading_completed=heading_completed)
+>>>>>>> Stashed changes
             feedback, pose = self.goal_feedback, None
             if feedback is not None:
                 pos, q = feedback.current_pose.pose.position, feedback.current_pose.pose.orientation
