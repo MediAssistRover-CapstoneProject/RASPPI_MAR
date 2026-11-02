@@ -109,6 +109,12 @@ class RosAdapter:
 
     def publish_navigation_velocity(self,speed,rotation_only=False):
         from geometry_msgs.msg import Twist
+        if getattr(self,'localization_required',False):
+            quality=self.telemetry().get('localization',{})
+            if quality.get('ready') is True and quality.get('reason')=='TRACKING_SCAN_GRACE':
+                # A brief, bounded quality dip slows the same Nav2 goal before
+                # holding it. Do not reset AMCL or race ahead at full speed.
+                speed=min(speed,.15)
         pursuit=getattr(self,'worker',{}).get('navigation_runtime',{}).get('controller')=='REGULATED_PURSUIT'
         (x,y,z),fresh=self.navigation_velocity();msg=Twist()
         if fresh:
@@ -297,14 +303,20 @@ class RosAdapter:
 
     def _check_graph(self):
         from .velocity_graph import check_velocity_graph
-        check_velocity_graph(self.node, self.cfg['ros'])
+        now=time.monotonic()
+        if now-getattr(self,'last_graph_verified_at',-math.inf)<.5:return
+        try:check_velocity_graph(self.node, self.cfg['ros'])
+        except StepError as exc:
+            if hasattr(self,'node'):self.node.get_logger().error('VELOCITY_GRAPH_NOT_READY '+str(exc))
+            raise
+        self.last_graph_verified_at=now
 
     async def _prerequisites(self, p):
         if self.motion_uncertain: raise StepError("GOAL_STOP_UNCONFIRMED")
         if not all(self.cfg["motion"][k] for k in ("commissioned", "cart_footprint_validated", "watchdog_validated")):
             raise StepError("MOTION_NOT_COMMISSIONED")
         if p["max_speed_mps"] > self.cfg["max_speed_mps"]: raise StepError("SPEED_POLICY_EXCEEDED")
-        self._check_graph()
+        self.last_graph_verified_at=-math.inf;self._check_graph()
         await self._check_map(p["map_id"])
         if not self.health()["sensors_ready"]: raise StepError("SENSORS_NOT_READY")
         # Never start a goal on a stale pose. Give an already accepted operation

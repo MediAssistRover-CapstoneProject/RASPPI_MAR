@@ -10,14 +10,13 @@ if (( EUID == 0 )); then
 fi
 source /home/ubuntu/.zshrc
 set -e
-# All project ROS nodes run in this container. Keep DDS discovery off shared
-# campus Wi-Fi; MQTT and the camera HTTP server still use the normal network.
-export ROS_LOCALHOST_ONLY=1
+root="${0:A:h:h}"
+source "$root/tools/ros_environment.zsh"
+print "PROJECT_ROS: domain=$ROS_DOMAIN_ID middleware=$RMW_IMPLEMENTATION localhost_only=$ROS_LOCALHOST_ONLY"
 if ! command -v ros2 >/dev/null 2>&1; then
     print -u2 'ROS_ENV_NOT_READY: ros2 is missing; no robot process started'
     exit 1
 fi
-root="${0:A:h:h}"
 cd "$root/pi"
 export PYTHONPATH="$root/pi${PYTHONPATH:+:$PYTHONPATH}"
 exec "$root/pi/.venv/bin/python" -u "$root/tools/robot_stack.py" "$@"

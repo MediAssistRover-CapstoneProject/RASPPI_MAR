@@ -7,7 +7,7 @@ DEFAULTS = dict(enabled=False, mode='global', max_sensor_age_sec=.6, max_pose_ag
                 min_known_fraction=.50, min_valid_beams=40, match_distance_m=.12,min_particle_support=.85,
                 stable_sec=3., stable_scans=8, bootstrap_timeout_sec=60.,
                 max_tf_amcl_distance_m=.35, max_tf_amcl_yaw_rad=.4,
-                tracking_quality_grace_sec=1.0, tracking_max_pose_age_sec=8.0, tracking_min_scan_match=.55,
+                tracking_quality_grace_sec=2.0, tracking_max_pose_age_sec=8.0, tracking_min_scan_match=.55,
                 tracking_recovery_sec=10., stationary_recovery_sec=60.)
 
 def configuration(raw):

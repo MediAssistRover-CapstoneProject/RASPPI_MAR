@@ -12,7 +12,8 @@ def check_velocity_graph(node, ros):
                         'expected exactly mediassist_motor_watchdog and mediassist_safety')
     drivers = [(name, ns) for name, ns in node.get_node_names_and_namespaces() if name == 'odom_publisher']
     if len(drivers) != 1:
-        raise StepError('CHASSIS_COUNT_INVALID')
+        subscribers=[(e.node_name,getattr(e,'node_namespace','/')) for e in node.get_subscriptions_info_by_topic(safe)]
+        raise StepError('CHASSIS_COUNT_INVALID',f'CHASSIS_COUNT_INVALID drivers={drivers!r}; safe_subscribers={subscribers!r}')
     if not any(e.node_name == 'odom_publisher' for e in node.get_subscriptions_info_by_topic(safe)):
         raise StepError('CHASSIS_NOT_GATED')
     name, namespace = drivers[0]
