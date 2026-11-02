@@ -7,8 +7,8 @@ DEFAULTS = dict(enabled=False, mode='global', max_sensor_age_sec=.6, max_pose_ag
                 min_known_fraction=.50, min_valid_beams=40, match_distance_m=.12,min_particle_support=.85,
                 stable_sec=3., stable_scans=8, bootstrap_timeout_sec=60.,
                 max_tf_amcl_distance_m=.35, max_tf_amcl_yaw_rad=.4,
-                tracking_quality_grace_sec=1.0, tracking_max_pose_age_sec=8.0, tracking_min_scan_match=.55,
-                tracking_recovery_sec=10.)
+                tracking_quality_grace_sec=2.0, tracking_max_pose_age_sec=8.0, tracking_min_scan_match=.55,
+                tracking_recovery_sec=10., stationary_recovery_sec=60.)
 
 def configuration(raw):
     cfg={**DEFAULTS, **raw}
@@ -24,6 +24,7 @@ def configuration(raw):
     bounds['tracking_max_pose_age_sec']=(.8,10.)
     bounds['tracking_min_scan_match']=(.5,1.)
     bounds['tracking_recovery_sec']=(2.,30.)
+    bounds['stationary_recovery_sec']=(10.,120.)
     for key,(lo,hi) in bounds.items():
         value=cfg[key]
         if type(value) not in (int,float) or not math.isfinite(value) or not lo<=value<=hi:
@@ -58,8 +59,9 @@ class QualityGate:
         c=self.cfg;reasons=[];metrics={}
         # Remember the established hypothesis while stopped for a short dropout.
         # This permits fast re-verification, never motion on stale evidence.
+        recovery_window=c['stationary_recovery_sec'] if sample.get('stationary') is True else c['tracking_recovery_sec']
         if (self.had_lock and not self.tracking and self.last_good_at is not None
-                and now-self.last_good_at>c['tracking_recovery_sec']):
+                and now-self.last_good_at>recovery_window):
             self.had_lock=False;self.recovering=False
             self.since=None;self.count=0;self.last_scan=None
         established=self.tracking or self.had_lock
@@ -124,7 +126,18 @@ class QualityGate:
         if reasons:
             transient={'SCAN_AGE_SEC_STALE','ODOM_AGE_SEC_STALE','POSE_AGE_SEC_STALE',
                        'SCAN_MATCH_LOW','KNOWN_FRACTION_LOW','VALID_BEAMS_LOW'}
-            self.recovering=bool(self.had_lock and self.last_good_at is not None and 0<=now-self.last_good_at<=c['tracking_recovery_sec']
+            # A small covariance threshold crossing during a turn still holds
+            # the wheels, but must not discard an established map hypothesis.
+            # Otherwise stationary AMCL's slower correction cadence can keep
+            # resetting bootstrap stability until MOVE's hold timeout expires.
+            # Large uncertainty, jumps, invalid covariance, TF/body/sensor faults
+            # still require full initialization. No uncertain pose authorizes motion.
+            if (metrics.get('xy_std_m',math.inf)<=1.25*c['max_xy_std_m']
+                    and metrics.get('yaw_std_rad',math.inf)<=1.25*c['max_yaw_std_rad']
+                    and sample.get('scan_match',0)>=c['min_scan_match']
+                    and sample.get('valid_beams',0)>=c['min_valid_beams']):
+                transient.add('AMCL_UNCERTAIN')
+            self.recovering=bool(self.had_lock and self.last_good_at is not None and 0<=now-self.last_good_at<=recovery_window
                                  and set(reasons)<=transient)
             if not self.recovering:self.had_lock=False
             self.tracking=False

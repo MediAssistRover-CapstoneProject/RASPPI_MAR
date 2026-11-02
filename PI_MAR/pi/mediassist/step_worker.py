@@ -23,6 +23,12 @@ class StepWorker:
         self.outbox_wakeup = asyncio.Event()
         self.ack_waiters = {}
 
+    def advertised_capabilities(self):
+        values=list(self.hardware['capabilities'])
+        if self.cfg.get('navigation_session') and 'MOVE' in self.cfg.get('enabled_step_types',[]) and 'move-start-commit-v1' not in values:
+            values.append('move-start-commit-v1')
+        return values
+
     def status(self):
         if self.store.blocked() or getattr(self.adapter,"motion_uncertain",False):
             return "ERROR"
@@ -88,13 +94,14 @@ class StepWorker:
             return
         mapping=self.adapter.mapping
         params=step['params']
-        mapping_stop=bool(mapping and step['stepType']=='EXECUTE_SENSING'
-            and params.get('sensing_type')=='MAPPING' and params.get('action')=='STOP'
+        mapping_handoff=bool(mapping and step['stepType']=='EXECUTE_SENSING'
+            and params.get('sensing_type')=='MAPPING' and params.get('action') in ('SAVE','STOP')
             and step['jobId']==mapping.state.get('job_id')
             and params.get('mapping_session_id')==mapping.state.get('session_id'))
-        # A scoped cleanup STOP must not be rejected because a stick is held.
-        # Accepting it inhibits manual drive below; abort still confirms zero odometry.
-        if not mapping_stop and mapping and getattr(mapping,'manual_drive',None) and mapping.manual_drive.busy(mapping.gamepad):
+        # Scoped SAVE/STOP is an explicit end-of-drive intent. Accepting it
+        # inhibits manual input below; SAVE/abort must still confirm zero odometry.
+        # Other operations and foreign sessions cannot take over a held stick.
+        if not mapping_handoff and mapping and getattr(mapping,'manual_drive',None) and mapping.manual_drive.busy(mapping.gamepad):
             self.receipt(command,False,step,errorCode="RETURN_GAMEPAD_TO_NEUTRAL")
             return
         if mapping and mapping.active:
@@ -117,27 +124,38 @@ class StepWorker:
             self.receipt(command,False,step,errorCode=getattr(exc,"code","INVALID_PARAMS"))
             return
         self.store.accept(step)
-        ack=self.receipt(command,True,step,status="ACCEPTED")
+        combined=command.get('startMode')=='ACCEPT_AND_START'
+        start={'attemptNo':1,'stepType':step['stepType'],'resolvedInputs':step['params']} if combined else None
+        ack=self.receipt(command,True,step,status='START_REQUESTED' if combined else 'ACCEPTED',
+                         **({'start':start} if combined else {}))
         self.active=step
         if mapping and getattr(mapping,'manual_drive',None):
             mapping.gamepad.stop('WORKFLOW_HANDOFF_RETURN_NEUTRAL')
         self.stop_reason="CANCELLED"
-        self.task=asyncio.create_task(self.execute(step,command["correlationId"],ack["messageId"],command["expiresAt"]))
+        self.task=asyncio.create_task(self.execute(step,command["correlationId"],ack["messageId"],command["expiresAt"],combined=combined))
 
-    async def execute(self, step, correlation, accepted_mid, expires_at):
+    async def execute(self, step, correlation, accepted_mid, expires_at,combined=False):
         status, data, error = "FAILED", None, None
         error_details = None
         physical_started=False
         stop_confirmed=None
         try:
-            # BE must durably acknowledge acceptance and STEP_STARTED before physical effects.
+            # Combined mode is sent only after mutual capability negotiation.
+            # Its ONE receipt ACK commits acceptance AND STARTED on the BE before
+            # any physical effect. Legacy commands still require both old ACKs.
+            accepted_at=time.monotonic()
             await self.acknowledged(accepted_mid)
-            started=self.store.emit("STEP_STARTED",{"attemptNo":1,"stepType":step["stepType"],
-                    "resolvedInputs":step["params"]},step,correlation)
-            self.outbox_wakeup.set()
-            await self.acknowledged(started["messageId"])
+            accepted_ack_at=time.monotonic()
+            if not combined:
+                started=self.store.emit("STEP_STARTED",{"attemptNo":1,"stepType":step["stepType"],
+                        "resolvedInputs":step["params"]},step,correlation)
+                self.outbox_wakeup.set()
+                await self.acknowledged(started["messageId"])
             if expiry(expires_at) <= datetime.now(timezone.utc):
                 raise StepError("COMMAND_EXPIRED_BEFORE_EXECUTION")
+            logging.info('STEP_START_TIMING job=%s step=%s mode=%s acceptance_ack_ms=%d started_ack_ms=%d',
+                         step.get('jobId'),step.get('jobStepId'),'ACCEPT_AND_START' if combined else 'LEGACY',
+                         round((accepted_ack_at-accepted_at)*1000),round((time.monotonic()-accepted_ack_at)*1000))
             self.store.set_running(step)
             physical_started=True
             data=await asyncio.wait_for(self.adapter.perform(step),step["timeoutSec"])
@@ -256,7 +274,7 @@ class StepWorker:
             if now-last_heartbeat>=self.cfg["heartbeat_sec"]:
                 await send(self.store.transient("HEARTBEAT",{
                     "status":self.status(),"runtimeVersion":VERSION,"protocolMajor":1,
-                    "capabilities":self.hardware["capabilities"],
+                    "capabilities":self.advertised_capabilities(),
                     "activeJobStepId":self.active["jobStepId"] if self.active else None,
                     "currentMapId":None if self.adapter.mapping else self.hardware["map_id"],
                     "mapAssetHash":None if self.adapter.mapping else self.hardware["map_asset_sha256"],
@@ -264,11 +282,13 @@ class StepWorker:
                     **({'navigationSession':self.cfg['navigation_session']} if self.cfg.get('navigation_session') else {}),
                     "telemetry":self.adapter.telemetry()}))
                 last_heartbeat=now
+            # Cloud business ACKs can take 5-6 s. Avoid replaying the same
+            # durable event during that normal commit window (ACK timeout 15 s).
             # Bound each replay batch so heartbeat cannot be starved by old events.
             count=0
             for event in self.store.pending():
                 mid=event["messageId"]
-                if mid not in self.sent or time.monotonic()-self.sent[mid]>=5:
+                if mid not in self.sent or time.monotonic()-self.sent[mid]>=8:
                     self.sent[mid]=time.monotonic()
                     # Register before awaiting MQTT PUBACK: BE EVENT_ACK can arrive first.
                     await send(event)
@@ -339,7 +359,7 @@ class StepWorker:
             "mappingEnabled":self.cfg["mapping"]["enabled"],
             "mappingSession":self.adapter.mapping.state if self.adapter.mapping else None,
             **({'navigationSession':self.cfg['navigation_session']} if self.cfg.get('navigation_session') else {}),
-            "capabilities":self.hardware["capabilities"]}))
+            "capabilities":self.advertised_capabilities()}))
         raw=await asyncio.wait_for(ws.recv(),10)
         hello=json.loads(raw)
         self.validate_hello_ack(hello)

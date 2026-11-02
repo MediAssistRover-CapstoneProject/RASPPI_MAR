@@ -245,6 +245,9 @@
             "profile_hash"
           ],
           "additionalProperties": false
+        },
+        "startMode": {
+          "const": "ACCEPT_AND_START"
         }
       },
       "required": [
@@ -259,7 +262,30 @@
         "commandType",
         "step"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "startMode"
+            ]
+          },
+          "then": {
+            "required": [
+              "navigationContext"
+            ],
+            "properties": {
+              "step": {
+                "properties": {
+                  "stepType": {
+                    "const": "MOVE"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     {
       "type": "object",

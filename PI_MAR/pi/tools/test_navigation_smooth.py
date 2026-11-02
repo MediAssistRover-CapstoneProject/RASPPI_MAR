@@ -232,7 +232,7 @@ class MoveTests(unittest.IsolatedAsyncioTestCase):
             return not blocked(clock[0])
         a._navigation_context=context
         a.telemetry=lambda:{'map_pose':{'fresh':not blocked(clock[0]),'value':dict(x_m=0.,y_m=0.,yaw_rad=0.)},'gate':{'age_sec':0.}}
-        a.publish_navigation_velocity=Mock(side_effect=lambda speed:velocity(clock[0]))
+        a.publish_navigation_velocity=Mock(side_effect=lambda speed,**kwargs:velocity(clock[0]))
         async def sleep(_):clock[0]+=.05
         with patch.dict(sys.modules,{'nav2_msgs.action':N(NavigateToPose=N(Goal=lambda:N()))}),\
              patch('mediassist.ros_adapter.time.monotonic',side_effect=lambda:clock[0]),\

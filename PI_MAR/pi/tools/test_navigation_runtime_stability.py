@@ -55,6 +55,32 @@ class RuntimeTests(unittest.TestCase):
             self.assertAlmostEqual(m.linear.x,.15);self.assertAlmostEqual(m.angular.z,.15)
             quality['reason']='LOCALIZED';a.publish_navigation_velocity(.6)
             self.assertAlmostEqual(a.navigation_velocity_output.publish.call_args.args[0].linear.x,.6)
+    def test_current_snapshot_is_shared_by_context_quality_and_zone_without_another_tf_query(self):
+        a=RosAdapter.__new__(RosAdapter);a.localization_required=True
+        context=dict(session_id='session',map_id='map',map_asset_hash='a'*64,expires_at='2099-01-01T00:00:00Z')
+        a.worker={'navigation_session':context,'navigation_runtime':{'controller':'REGULATED_PURSUIT','forward_only':True}}
+        a.active_navigation_context={**{k:context[k] for k in ('session_id','map_id','map_asset_hash')},
+            'initialization_revision':2,'profile_hash':'b'*64}
+        a.navigation_profile_hash='b'*64
+        a.cfg={'max_speed_mps':.8,'motion':{'allow_strafe':False,'max_angular_speed_rps':1.2}}
+        a.telemetry=Mock(side_effect=AssertionError('current tick must not requery TF'))
+        pose={'fresh':True,'value':{'x_m':0.,'y_m':0.,'yaw_rad':0.}}
+        state={'localization':{'ready':True,'reason':'TRACKING_SCAN_GRACE','age_sec':.1,'initialization_revision':2},'map_pose':pose}
+        zone=Mock(side_effect=lambda p,s,v:s);a.zones=N(zones=[{}],directional_cap=zone)
+        a.navigation_velocity=lambda:((.6,0.,.6),True);a.navigation_velocity_output=Mock()
+        with patch.dict(sys.modules,{'geometry_msgs.msg':N(Twist=lambda:N(linear=N(x=0.,y=0.),angular=N(z=0.)))}):
+            self.assertTrue(a._navigation_context(state=state))
+            a.publish_navigation_velocity(.6,state=state)
+            self.assertEqual(a.last_navigation_output,(.15,0.,.15));self.assertIs(zone.call_args.args[0],pose)
+            # A later tick supplies a new observation, never a retained ready flag.
+            next_state={**state,'localization':{**state['localization'],'reason':'LOCALIZED'}}
+            a.publish_navigation_velocity(.6,state=next_state)
+            self.assertEqual(a.last_navigation_output,(.6,0.,.6))
+        stale={**state,'localization':{**state['localization'],'age_sec':2.}}
+        with self.assertRaisesRegex(StepError,'LOCALIZATION_NOT_READY'):a._navigation_context(state=stale)
+        self.assertFalse(a._navigation_context(allow_localization_pause=True,state=stale))
+        a.telemetry.assert_not_called()
+
     def test_graph_checks_are_cached_only_after_success(self):
         a=RosAdapter.__new__(RosAdapter);a.node=Mock();a.cfg={'ros':{}}
         with patch('mediassist.velocity_graph.check_velocity_graph') as check,patch('mediassist.ros_adapter.time.monotonic',return_value=10.):

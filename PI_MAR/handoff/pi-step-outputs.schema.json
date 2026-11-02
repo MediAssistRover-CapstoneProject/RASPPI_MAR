@@ -180,7 +180,7 @@
         "position_error_m": {
           "type": "number",
           "minimum": 0,
-          "maximum": 0.08
+          "maximum": 0.10
         },
         "yaw_error_rad": {
           "type": "number",

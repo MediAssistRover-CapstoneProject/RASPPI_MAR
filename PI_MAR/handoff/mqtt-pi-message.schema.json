@@ -316,6 +316,9 @@
               "type": "null"
             }
           ]
+        },
+        "start": {
+          "$ref": "mqtt-pi-message.schema.json#/$defs/STEP_STARTED"
         }
       },
       "required": [

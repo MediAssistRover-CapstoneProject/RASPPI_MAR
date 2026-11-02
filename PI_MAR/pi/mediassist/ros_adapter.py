@@ -25,6 +25,8 @@ class RosAdapter:
         from std_msgs.msg import UInt16, String
         from ros_robot_controller_msgs.msg import SetPWMServoState
         from rcl_interfaces.srv import GetParameters
+        from lifecycle_msgs.srv import GetState
+        from std_srvs.srv import Trigger
         from tf2_ros import Buffer, TransformListener
         self.rclpy, self.cfg, self.remote = rclpy, config, remote
         from .configuration import validate_config
@@ -39,6 +41,11 @@ class RosAdapter:
         self.nav = ActionClient(self.node, NavigateToPose, config["ros"]["navigate_action"])
         self.planner = ActionClient(self.node, ComputePathToPose, config["ros"]["compute_path_action"])
         self.spin = ActionClient(self.node, Spin, '/spin')
+        from .nav2_startup import NODES
+        self.nav2_states={name:self.node.create_client(GetState,'/'+name+'/get_state') for name in NODES}
+        self.nav2_state_request=GetState.Request
+        self.nav2_manager_active=self.node.create_client(Trigger,'/lifecycle_manager_navigation/is_active')
+        self.nav2_manager_request=Trigger.Request
         self.plan_goal, self.motion_uncertain, self.event_sink = None, False, None
         self.map_client = self.node.create_client(GetParameters, "/map_server/get_parameters")
         self.pwm = self.node.create_publisher(SetPWMServoState, config["ros"]["pwm"], 10)
@@ -102,15 +109,27 @@ class RosAdapter:
         if not sample or time.monotonic()-sample[1]>.25 or not all(math.isfinite(x) for x in sample[0]):return (0.,0.,0.),False
         return sample[0],True
 
-    def publish_navigation_velocity(self,speed,rotation_only=False):
+    def publish_navigation_velocity(self,speed,rotation_only=False,state=None):
         from geometry_msgs.msg import Twist
+        # Reuse the current loop's snapshot for quality and zone policy. Never
+        # retain this state between ticks; legacy callers still sample on entry.
+        if state is None and (getattr(self,'localization_required',False) or getattr(self,'zones',None) is not None):
+            state=self.telemetry()
+        if getattr(self,'localization_required',False):
+            quality=state.get('localization',{})
+            if quality.get('ready') is True and quality.get('reason')=='TRACKING_SCAN_GRACE':
+                # A brief, bounded quality dip slows the same Nav2 goal before
+                # holding it. Do not reset AMCL or race ahead at full speed.
+                speed=min(speed,.15)
+        pursuit=getattr(self,'worker',{}).get('navigation_runtime',{}).get('controller')=='REGULATED_PURSUIT'
         (x,y,z),fresh=self.navigation_velocity();msg=Twist()
+        requested_input=(x,y,z)
         if fresh:
             # MOVE follows the chassis heading. Mapping has its own holonomic loop.
             y=0.
             if getattr(self,'zones',None) is not None:
                 requested_speed=speed
-                zone_pose=self.telemetry().get('map_pose')
+                zone_pose=state.get('map_pose')
                 if hasattr(self,'navigation_speed_output') and hasattr(self.zones,'speed_cap'):
                     controller_limit=self.zones.speed_cap(zone_pose,speed,(x,y,z))
                     if controller_limit>0:self.navigation_speed_limit(controller_limit)
@@ -125,8 +144,14 @@ class RosAdapter:
                 x=max(x,-self.cfg['motion'].get('max_reverse_speed_mps',0.)) if not forward_only and self.cfg['motion'].get('allow_reverse') is True else 0.
             if self.cfg['motion'].get('allow_strafe') is not True:y=0.
             scale=min(1.,min(speed,self.cfg['max_speed_mps'])/max(math.hypot(x,y),1e-9))
+            limit=self.cfg['motion']['max_angular_speed_rps']
+            if pursuit and abs(x)>.01 and not rotation_only:
+                scale=min(scale,limit/max(abs(z),1e-9))
             msg.linear.x=x*scale;msg.linear.y=y*scale
-            limit=self.cfg['motion']['max_angular_speed_rps'];msg.angular.z=max(-limit,min(z,limit))
+            # A speed-zone clamp must preserve RPP curvature. Reducing only X
+            # while retaining yaw makes the robot turn harder at the boundary.
+            turn=z*scale if pursuit and abs(x)>.01 and not rotation_only else z
+            msg.angular.z=max(-limit,min(turn,limit))
             ramp=getattr(self,'navigation_resume_ramp',None)
             if ramp is not None:
                 requested=(msg.linear.x,msg.linear.y,msg.angular.z)
@@ -147,7 +172,11 @@ class RosAdapter:
         # DWB/smoother can ask for a turn below the motor gate's 0.1 rad/s
         # deadband. Keep its direction and let the downstream gate veto an
         # obstructed turn; otherwise Nav2 can wait forever at a valid path.
-        pursuit=getattr(self,'worker',{}).get('navigation_runtime',{}).get('controller')=='REGULATED_PURSUIT'
+        # Apply the zone cap again after smoothing, scaling yaw with any final
+        # translation clamp. A ramp cannot reintroduce motion in a blocked zone.
+        if speed<=0:msg.linear.x=msg.linear.y=msg.angular.z=0.
+        elif pursuit and not rotation_only and abs(msg.linear.x)>speed:
+            ratio=speed/abs(msg.linear.x);msg.linear.x*=ratio;msg.angular.z*=ratio
         # Preserve RPP's curvature during translation. Wheels already turn;
         # small yaw is a steering correction, not a tiny stationary motor drive.
         # Only a deliberate in-place turn needs the minimum turn command.
@@ -160,6 +189,8 @@ class RosAdapter:
         msg.linear.x=max(lower,min(msg.linear.x,speed))
         self.navigation_velocity_output.publish(msg)
         self.last_navigation_output=(msg.linear.x,msg.linear.y,msg.angular.z)
+        self.last_navigation_input=requested_input
+        self.last_navigation_publish_at=time.monotonic()
         return fresh
 
     def navigation_speed_limit(self,speed):
@@ -301,7 +332,13 @@ class RosAdapter:
 
     def _check_graph(self):
         from .velocity_graph import check_velocity_graph
-        check_velocity_graph(self.node, self.cfg['ros'])
+        now=time.monotonic()
+        if now-getattr(self,'last_graph_verified_at',-math.inf)<.5:return
+        try:check_velocity_graph(self.node, self.cfg['ros'])
+        except StepError as exc:
+            if hasattr(self,'node'):self.node.get_logger().error('VELOCITY_GRAPH_NOT_READY '+str(exc))
+            raise
+        self.last_graph_verified_at=now
 
     async def _prerequisites(self, p):
         if self.motion_uncertain: raise StepError("GOAL_STOP_UNCONFIRMED")
@@ -315,13 +352,14 @@ class RosAdapter:
         # a bounded opportunity to recover a delayed sample without blocking MQTT.
         deadline=time.monotonic()+2.
         while True:
-            ready=self._navigation_context(allow_localization_pause=True)
-            if ready and self.telemetry()["map_pose"]["fresh"]:break
+            state=self.telemetry()
+            ready=self._navigation_context(allow_localization_pause=True,state=state)
+            if ready and state["map_pose"]["fresh"]:break
             self.hold_navigation_velocity()
             if time.monotonic()>=deadline:
                 raise StepError("LOCALIZATION_NOT_READY" if getattr(self,'localization_required',False) else "MAP_TF_NOT_READY")
             await asyncio.sleep(.05)
-        self._navigation_context()
+        self._navigation_context(state=state)
 
     def navigation_diagnostic(self,state,phase):
         """One sample/sec, so missing progress can be located without a motor test."""
@@ -337,16 +375,18 @@ class RosAdapter:
         if not isinstance(gate,dict):gate={}
         logging.info('NAV_MOTION %s',json.dumps(dict(phase=phase,nav_velocity=velocity,
             nav_fresh=fresh,output=getattr(self,'last_navigation_output',None),
+            input_at_publish=getattr(self,'last_navigation_input',None),
+            output_age_sec=round(now-getattr(self,'last_navigation_publish_at',now),3),
             gate_reason=gate.get('reason'),applied_velocity=gate.get('applied_velocity'),
             odom=state.get('odom_speed'),localization=state.get('localization'),
             map_pose=state.get('map_pose'),zone_policy=getattr(self,'last_zone_policy',None),
             odom_twist=getattr(self,'odom_twist_sample',None)),separators=(',',':')))
 
-    def _navigation_context(self,allow_localization_pause=False):
+    def _navigation_context(self,allow_localization_pause=False,state=None):
         if getattr(self,'worker',{}).get('navigation_session'):
             from .navigation_session import command_context
             return command_context({'navigationContext':getattr(self,'active_navigation_context',None)},self.worker,self.cfg,self,
-                                   require_localization=not allow_localization_pause)
+                                   require_localization=not allow_localization_pause,state=state)
         return True
 
     def _pose(self, endpoint_id):
@@ -361,11 +401,46 @@ class RosAdapter:
         pose.pose.orientation.w = math.cos(yaw / 2)
         return pose
 
+    async def _navigation_servers_active(self):
+        clients=getattr(self,'nav2_states',{})
+        if not clients:return True  # Legacy non-ROS adapters have no lifecycle services.
+        previous=getattr(self,'nav2_state_sample',None);now=time.monotonic()
+        if previous and now-previous[1]<1.:return previous[0]
+        async def state(name,client):
+            if not client.service_is_ready():return name,None
+            future=None
+            try:
+                future=client.call_async(self.nav2_state_request())
+                result=await self.future(future,timeout=1.)
+                return name,result.current_state.id
+            except (StepError,RuntimeError):return name,None
+            finally:
+                if future is not None and not future.done():future.cancel()
+        states=dict(await asyncio.gather(*(state(n,c) for n,c in clients.items())))
+        ready=all(v==3 for v in states.values())
+        manager=getattr(self,'nav2_manager_active',None)
+        if ready and manager is not None:
+            future=None
+            try:
+                if not manager.service_is_ready():ready=False
+                else:
+                    future=manager.call_async(self.nav2_manager_request())
+                    ready=(await self.future(future,timeout=1.)).success
+            except (StepError,RuntimeError):ready=False
+            finally:
+                if future is not None and not future.done():future.cancel()
+            states['manager_active']=bool(ready)
+        self.nav2_state_sample=(ready,time.monotonic());self.last_nav2_states=states
+        return ready
+
     async def _wait_navigation_server(self,client,code):
-        deadline=time.monotonic()+8.
-        while not client.server_is_ready():
+        deadline=time.monotonic()+15.
+        while True:
+            if client.server_is_ready() and await self._navigation_servers_active():return
             self.hold_navigation_velocity()
-            if time.monotonic()>=deadline:raise StepError(code)
+            if time.monotonic()>=deadline:
+                if hasattr(self,'node'):self.node.get_logger().error('NAV2_LIFECYCLE_NOT_READY '+str(getattr(self,'last_nav2_states',{})))
+                raise StepError(code)
             await asyncio.sleep(.1)
 
     async def _publish_plan(self,body):
@@ -450,6 +525,7 @@ class RosAdapter:
 
     async def _plan(self, p, endpoint_id, meta=None):
         from nav2_msgs.action import ComputePathToPose
+        plan_started=time.monotonic()
         self.navigation_plan_receipt=None
         await self._prerequisites(p)
         position_only=getattr(self,'worker',{}).get('navigation_runtime',{}).get('arrival_mode')=='POSITION_ONLY'
@@ -499,7 +575,7 @@ class RosAdapter:
                 q=v.pose.orientation
                 yaw=math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))
                 return (v.pose.position.x,v.pose.position.y,yaw)
-            if position_only:
+            if position_only or getattr(self,'worker',{}).get('navigation_runtime',{}).get('controller')=='REGULATED_PURSUIT':
                 terminal_yaw=waypoint(path.poses[-1])[2]
                 self.approach_headings[endpoint_id]=terminal_yaw
                 self._check_endpoint_footprint(endpoint_id,terminal_yaw)
@@ -530,7 +606,11 @@ class RosAdapter:
                       'jobId':meta['job_id'],'jobStepId':meta['job_step_id'],
                       'endpointId':endpoint_id,'points':points}
                 try:
+                    computed_at=time.monotonic()
                     await self._publish_plan(body)
+                    import logging
+                    logging.info('NAV_PLAN_TIMING endpoint=%s compute_ms=%d be_confirm_ms=%d',endpoint_id,
+                                 round((computed_at-plan_started)*1000),round((time.monotonic()-computed_at)*1000))
                     self.navigation_plan_receipt={k:v for k,v in body.items() if k!='points'}
                 except StepError:raise
                 except Exception as exc:raise StepError('NAVIGATION_PLAN_BE_UNREACHABLE') from exc
@@ -551,12 +631,15 @@ class RosAdapter:
 
     async def _wait_arrival_pose(self,endpoint_id):
         """Observe a stable live pose while stopped, without resetting AMCL."""
-        target=self.cfg['endpoints'][endpoint_id];deadline=time.monotonic()+3.
+        # Keep wheels stopped while the already-established localization recovers.
+        # A three-second arrival deadline could expire during re-verification.
+        target=self.cfg['endpoints'][endpoint_id];deadline=time.monotonic()+10.
         anchor=None;since=None
         while time.monotonic()<deadline:
             self.lease_message(False)
-            ready=self._navigation_context(allow_localization_pause=True)
-            sample=self.telemetry().get('map_pose',{})
+            state=self.telemetry()
+            ready=self._navigation_context(allow_localization_pause=True,state=state)
+            sample=state.get('map_pose',{})
             if ready and sample.get('fresh'):
                 p=sample['value']
                 position_only=getattr(self,'worker',{}).get('navigation_runtime',{}).get('arrival_mode')=='POSITION_ONLY'
@@ -569,15 +652,31 @@ class RosAdapter:
             await asyncio.sleep(.05)
         raise StepError('ARRIVAL_POSE_NOT_STABLE')
 
-    def _verify_endpoint_arrival(self,endpoint_id):
+    def _verify_endpoint_arrival(self,endpoint_id,heading_completed=False):
         current=self.telemetry().get('map_pose',{})
         if not current.get('fresh'):raise StepError('LOCALIZATION_LOST_AT_GOAL')
         actual=current['value'];target=self.cfg['endpoints'][endpoint_id]
         error=math.hypot(actual['x_m']-target['x_m'],actual['y_m']-target['y_m'])
         mode=getattr(self,'worker',{}).get('navigation_runtime',{}).get('arrival_mode')
         yaw=abs(math.atan2(math.sin(actual['yaw_rad']-target['yaw_rad']),math.cos(actual['yaw_rad']-target['yaw_rad'])))
-        if error>.08 or (mode!='POSITION_ONLY' and yaw>.15):raise StepError('ENDPOINT_FINAL_POSE_NOT_CONFIRMED')
-        return actual,error,None if mode=='POSITION_ONLY' else yaw
+        # A successful final Spin already completed the requested turn. AMCL can
+        # revise map yaw after the wheels stop; do not fail a whole route or send
+        # another turn just because this second measurement differs by > .10 rad.
+        if heading_completed:
+            self.node.get_logger().info('FINAL_ARRIVAL '+json.dumps({
+                'endpoint_id':endpoint_id,'position_error_m':error,
+                'measured_yaw_error_rad':yaw,'heading_completion':'ALIGNED_OR_SPIN_SUCCEEDED',
+                'actual_pose':actual},separators=(',',':')))
+        # Use the same 10 cm position envelope already accepted before Spin.
+        # The controller still aims for 6 cm; a small map correction during the
+        # successful in-place turn must not contradict the arrival it accepted.
+        position_tolerance=.10 if heading_completed else .08
+        if error>position_tolerance or (mode!='POSITION_ONLY' and not heading_completed and yaw>.10):
+            raise StepError('ENDPOINT_FINAL_POSE_NOT_CONFIRMED')
+        # The existing wire contract bounds this optional field to .15 rad.
+        # Always preserve the real measured yaw in verified_pose, even when the
+        # diagnostic error is outside that bounded field.
+        return actual,error,None if mode=='POSITION_ONLY' or (heading_completed and yaw>.15) else yaw
 
     async def _settle_final_pose(self,endpoint_id):
         # Usually returns immediately. Only a post-turn XY correction outside
@@ -600,7 +699,7 @@ class RosAdapter:
         if math.hypot(actual['x_m']-target['x_m'],actual['y_m']-target['y_m'])>.10:
             raise StepError('ENDPOINT_POSITION_NOT_CONFIRMED')
         delta=math.atan2(math.sin(target['yaw_rad']-actual['yaw_rad']),math.cos(target['yaw_rad']-actual['yaw_rad']))
-        if abs(delta)<=.12:return False
+        if abs(delta)<=.10:return False
         if getattr(self,'zones',None) is not None:
             try:self.zones.validate_path([(actual['x_m'],actual['y_m'],actual['yaw_rad']),
                 (actual['x_m'],actual['y_m'],actual['yaw_rad']+delta)])
@@ -620,8 +719,10 @@ class RosAdapter:
             result=self.goal.get_result_async();pause=None;velocity_pause=None
             while not result.done():
                 if time.monotonic()-started>allowance+2:raise StepError('FINAL_ALIGNMENT_TIMEOUT')
-                self._check_graph();ready=self._navigation_context(allow_localization_pause=True)
-                state=self.telemetry();pose=state.get('map_pose',{})
+                self._check_graph();state=self.telemetry()
+                ready=self._navigation_context(allow_localization_pause=True,state=state)
+                pose=state.get('map_pose',{})
+                self.navigation_diagnostic(state,'FINAL_ALIGNING')
                 if not ready or not pose.get('fresh'):
                     self.hold_navigation_velocity()
                     if pause is None:pause=time.monotonic()
@@ -640,7 +741,7 @@ class RosAdapter:
                     translation=math.hypot(odom[0][0]-odom_origin[0][0],odom[0][1]-odom_origin[0][1])
                     if translation>.03 or map_error>.25:raise StepError('ENDPOINT_DRIFT_DURING_ALIGNMENT')
                 elif map_error>.12:raise StepError('ENDPOINT_DRIFT_DURING_ALIGNMENT')
-                if not self.publish_navigation_velocity(p['max_speed_mps'],rotation_only=True):
+                if not self.publish_navigation_velocity(p['max_speed_mps'],rotation_only=True,state=state):
                     self.lease_message(False)
                     if velocity_pause is None:velocity_pause=time.monotonic()
                     if time.monotonic()-velocity_pause>3.:raise StepError('NAV2_COMMAND_STALE')
@@ -682,8 +783,8 @@ class RosAdapter:
             localization_pause=None;velocity_pause=None
             while not result_future.done():
                 self._check_graph()
-                context_ready=self._navigation_context(allow_localization_pause=True)
                 state = self.telemetry()
+                context_ready=self._navigation_context(allow_localization_pause=True,state=state)
                 self.navigation_diagnostic(state,'TRACKING' if context_ready and state['map_pose']['fresh'] else 'HOLD_LOCALIZATION')
                 if getattr(self,'localization_required',False) and (not context_ready or not state['map_pose']['fresh']):
                     self.hold_navigation_velocity()
@@ -698,7 +799,7 @@ class RosAdapter:
                     logging.info('Navigation resumed: fresh localization verified on unchanged session')
                 localization_pause=None
                 if "gate" not in state or state["gate"]["age_sec"] > 0.6: raise StepError("SAFETY_GATE_LOST")
-                if getattr(self,'worker',{}).get('navigation_runtime') and not self.publish_navigation_velocity(p['max_speed_mps']):
+                if getattr(self,'worker',{}).get('navigation_runtime') and not self.publish_navigation_velocity(p['max_speed_mps'],state=state):
                     self.lease_message(False)
                     if velocity_pause is None:velocity_pause=time.monotonic()
                     if time.monotonic()-velocity_pause>3. and time.monotonic()-accepted_at>5.:raise StepError('NAV2_COMMAND_STALE')
@@ -711,19 +812,17 @@ class RosAdapter:
             if status != 4: raise StepError("NAV_CANCELLED" if status == 5 else "NAV_ABORTED")
             mode=getattr(self,'worker',{}).get('navigation_runtime',{}).get('arrival_mode')
             separated=mode in ('POSITION_THEN_SPIN','POSITION_ONLY')
+            heading_completed=False
             if separated:
                 if not await self.stop():raise StepError('GOAL_STOP_UNCONFIRMED')
                 await self._wait_stationary()
                 await self._wait_arrival_pose(endpoint_id)
                 if mode=='POSITION_THEN_SPIN':
                     await self._finish_heading(p,endpoint_id)
+                    heading_completed=True
                     await self._wait_stationary()
-<<<<<<< Updated upstream
-            actual,position_error,yaw_error=self._verify_endpoint_arrival(endpoint_id)
-=======
                     await self._settle_final_pose(endpoint_id)
             actual,position_error,yaw_error=self._verify_endpoint_arrival(endpoint_id,heading_completed=heading_completed)
->>>>>>> Stashed changes
             feedback, pose = self.goal_feedback, None
             if feedback is not None:
                 pos, q = feedback.current_pose.pose.position, feedback.current_pose.pose.orientation
@@ -731,7 +830,7 @@ class RosAdapter:
             output={"reached": True, "endpoint_id": endpoint_id, "action_status": status, "last_feedback_pose": pose,
                     "distance_remaining_m": float(feedback.distance_remaining) if feedback else None,
                     "verified_pose":actual,"position_error_m":position_error}
-            # yaw_error_rad is optional in MAR-STEP.2 and means heading verified.
+            # yaw_error_rad is an optional bounded measurement in MAR-STEP.2.
             # Keep actual yaw in verified_pose; never fake alignment with a target.
             if yaw_error is not None:output['yaw_error_rad']=yaw_error
             return output

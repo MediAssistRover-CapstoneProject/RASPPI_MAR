@@ -48,7 +48,11 @@ class ProfileTests(unittest.TestCase):
 
     def test_saved_map_yaw_is_independent_from_mapping_yaw(self):
         p=params(angular=1.2,fast_navigation=True,forward_only=True,position_only=True,path_tracking=True)
-        self.assertEqual(p['controller_server']['ros__parameters']['FollowPath']['rotate_to_heading_angular_vel'],1.2)
+        f=p['controller_server']['ros__parameters']['FollowPath']
+        self.assertEqual(f['rotate_to_heading_angular_vel'],.8)
+        self.assertLessEqual(f['desired_linear_vel']/f['regulated_linear_scaling_min_radius'],1.2)
+        self.assertTrue(f['use_collision_detection'])
+        self.assertEqual(p['controller_server']['ros__parameters']['failure_tolerance'],2.)
         self.assertEqual(p['velocity_smoother']['ros__parameters']['max_velocity'],[.6,0.,1.2])
         self.assertEqual(p['velocity_smoother']['ros__parameters']['max_accel'][2],3.2)
         mapping=params(angular=1.2,fast_mapping=True)
@@ -70,7 +74,7 @@ class ArrivalTests(unittest.IsolatedAsyncioTestCase):
         a._prerequisites=AsyncMock();a._wait_navigation_server=AsyncMock();a._pose=Mock()
         a._wait_stationary=AsyncMock();a._wait_arrival_pose=AsyncMock();a._finish_heading=AsyncMock()
         a.clear_navigation_velocity=Mock();a.navigation_speed_limit=Mock();a.lease_message=Mock()
-        a.stop=AsyncMock(return_value=True);a.nav=Mock()
+        a.stop=AsyncMock(return_value=True);a.nav=Mock();a.node=Mock()
         a.future=AsyncMock(return_value=N(accepted=True,get_result_async=lambda:N(done=lambda:True,result=lambda:N(status=4))))
         return a
 
@@ -85,8 +89,6 @@ class ArrivalTests(unittest.IsolatedAsyncioTestCase):
         a._finish_heading.assert_not_awaited()
         a._wait_arrival_pose.assert_awaited_once_with('A')
 
-<<<<<<< Updated upstream
-=======
     async def test_heading_mode_tracks_one_goal_then_aligns_once_and_verifies_live_pose(self):
         a=self.adapter();a.worker['navigation_runtime']['arrival_mode']='POSITION_THEN_SPIN'
         async def align(*args):self.pose['yaw_rad']=0.
@@ -108,6 +110,15 @@ class ArrivalTests(unittest.IsolatedAsyncioTestCase):
         msg=a.navigation_velocity_output.publish.call_args.args[0]
         self.assertAlmostEqual(msg.linear.x,.15);self.assertAlmostEqual(msg.angular.z,.15)
 
+    def test_yaw_limit_preserves_the_requested_arc_instead_of_widening_it(self):
+        a=self.adapter();a.navigation_velocity_output=Mock()
+        a.navigation_velocity=lambda:((.4,0.,1.6),True)
+        with patch.dict(sys.modules,{'geometry_msgs.msg':N(Twist=lambda:N(linear=N(x=0.,y=0.),angular=N(z=0.)))}):
+            a.publish_navigation_velocity(.6)
+        msg=a.navigation_velocity_output.publish.call_args.args[0]
+        self.assertAlmostEqual(msg.linear.x,.2);self.assertAlmostEqual(msg.angular.z,.8)
+        self.assertAlmostEqual(msg.angular.z/msg.linear.x,4.)
+
     def test_final_zone_clamp_preserves_ramped_curvature_and_zero_zone_stops_turn(self):
         for cap in (.15,0.):
             a=self.adapter();a.navigation_velocity_output=Mock()
@@ -120,7 +131,6 @@ class ArrivalTests(unittest.IsolatedAsyncioTestCase):
             self.assertAlmostEqual(msg.linear.x,cap)
             self.assertAlmostEqual(msg.angular.z,.15 if cap else 0.)
 
->>>>>>> Stashed changes
     def test_nearby_icon_is_not_a_substitute_for_arriving(self):
         a=self.adapter();self.pose['x_m']=.7
         with self.assertRaisesRegex(StepError,'ENDPOINT_FINAL_POSE_NOT_CONFIRMED'):a._verify_endpoint_arrival('A')

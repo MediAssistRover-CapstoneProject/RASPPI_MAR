@@ -6,7 +6,7 @@ from .contracts import StepError, canonical, parse_timestamp
 
 CONTRACT = "MAR-STEP-2"
 SUBPROTOCOL = "mar-step-v1"
-VERSION = "0.14.0"
+VERSION = "0.14.1"
 UUID_SCHEMA = {"type": "string", "format": "uuid"}
 
 def obj(properties, required=None):
@@ -77,6 +77,11 @@ COMMAND_SCHEMA["oneOf"] = [
 COMMAND_SCHEMA['properties']['navigationContext']=obj({
     'session_id':UUID_SCHEMA,'map_id':UUID_SCHEMA,'map_asset_hash':{'type':'string','pattern':'^[a-f0-9]{64}$'},
     'initialization_revision':{'type':'integer','minimum':1},'profile_hash':{'type':'string','pattern':'^[a-f0-9]{64}$'}})
+
+COMMAND_SCHEMA['properties']['startMode']={'const':'ACCEPT_AND_START'}
+COMMAND_SCHEMA['allOf']=[{'if':{'required':['startMode']},'then':{
+    'required':['step','navigationContext'],
+    'properties':{'commandType':{'const':'EXECUTE_STEP'},'step':{'properties':{'stepType':{'const':'MOVE'}}}}}}]
 
 def validate(value, schema):
     # Reject Python's permissive NaN/Infinity before serialization or ROS calls.

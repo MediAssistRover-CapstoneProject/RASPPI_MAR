@@ -26,6 +26,45 @@ class StartTests(unittest.IsolatedAsyncioTestCase):
             acked.add('started');w.ack_waiters['started'].set();await task
         adapter.perform.assert_awaited_once();self.assertEqual(w.last_result['status'],'SUCCEEDED');self.assertFalse(w.ack_waiters)
 
+    async def test_negotiated_move_still_waits_for_one_committed_start_and_emits_no_second_request(self):
+        acked=set();store=Mock();store.is_acked.side_effect=lambda mid:mid in acked
+        adapter=N(mapping=None,motion_uncertain=False,perform=AsyncMock(return_value={}),stop=AsyncMock(return_value=True))
+        w=StepWorker({'ack_timeout_sec':1},{},store,adapter);w.connection_ready=True
+        step={'stepType':'MOVE','params':{},'timeoutSec':1}
+        with patch('mediassist.step_worker.validate_result'):
+            task=asyncio.create_task(w.execute(step,'correlation','combined',(datetime.now(timezone.utc)+timedelta(seconds=20)).isoformat(),combined=True))
+            await asyncio.sleep(.01);adapter.perform.assert_not_awaited();store.set_running.assert_not_called()
+            acked.add('combined');w.ack_waiters['combined'].set();await task
+        adapter.perform.assert_awaited_once();store.set_running.assert_called_once_with(step)
+        self.assertFalse(any(call.args[0]=='STEP_STARTED' for call in store.emit.call_args_list))
+        self.assertEqual(w.last_result['status'],'SUCCEEDED')
+
+    async def test_expired_combined_permission_never_moves(self):
+        store=Mock();store.is_acked.return_value=True
+        adapter=N(mapping=None,motion_uncertain=False,perform=AsyncMock(),stop=AsyncMock(return_value=True))
+        w=StepWorker({'ack_timeout_sec':1},{},store,adapter);w.connection_ready=True
+        await w.execute({'stepType':'MOVE','params':{},'timeoutSec':1},'c','ack',(datetime.now(timezone.utc)-timedelta(seconds=1)).isoformat(),combined=True)
+        adapter.perform.assert_not_awaited();store.set_running.assert_not_called()
+        self.assertEqual(w.last_result['errorCode'],'COMMAND_EXPIRED_BEFORE_EXECUTION')
+
+    async def test_cancellation_during_combined_ack_wait_never_moves(self):
+        store=Mock();store.is_acked.return_value=False
+        adapter=N(mapping=None,motion_uncertain=False,perform=AsyncMock(),stop=AsyncMock(return_value=True))
+        w=StepWorker({'ack_timeout_sec':1},{},store,adapter);w.connection_ready=True
+        step={'stepType':'MOVE','params':{},'timeoutSec':1}
+        task=asyncio.create_task(w.execute(step,'c','ack',(datetime.now(timezone.utc)+timedelta(seconds=20)).isoformat(),combined=True))
+        await asyncio.sleep(.01);task.cancel();await task
+        adapter.perform.assert_not_awaited();self.assertEqual(w.last_result['status'],'CANCELLED')
+        self.assertTrue(w.last_result['physicalStopConfirmed'])
+
+    def test_combined_capability_is_only_advertised_for_navigation_move(self):
+        hardware={'capabilities':['nav2']}
+        w=StepWorker({'enabled_step_types':['MOVE']},hardware,Mock(),Mock())
+        self.assertNotIn('move-start-commit-v1',w.advertised_capabilities())
+        w.cfg['navigation_session']={'session_id':'current'}
+        self.assertIn('move-start-commit-v1',w.advertised_capabilities())
+        self.assertEqual(hardware['capabilities'],['nav2'])
+
     async def test_new_receipt_wakes_the_outbox_instead_of_waiting_for_heartbeat(self):
         pending=[];store=Mock();store.pending.side_effect=lambda:list(pending);store.transient.side_effect=lambda kind,body:{'messageType':kind}
         adapter=N(mapping=None,telemetry=lambda:{})

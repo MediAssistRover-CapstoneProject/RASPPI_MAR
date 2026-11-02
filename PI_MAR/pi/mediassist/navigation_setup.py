@@ -16,7 +16,8 @@ def footprint_rectangle(front, rear, left, right):
 def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=False, fast_mapping=False, fast_navigation=False, position_then_spin=False, footprint_planner=False, forward_only=False, position_only=False, path_tracking=False):
     if forward_only and fast_mapping:raise ValueError('Forward only is for saved-map MOVE, not exploration')
     if position_only and (position_then_spin or fast_mapping):raise ValueError('Position-only MOVE cannot also align final heading or explore')
-    if path_tracking and not (forward_only and position_only):raise ValueError('Regulated path tracking requires forward position-only MOVE')
+    if path_tracking and not (forward_only and (position_only or position_then_spin)):
+        raise ValueError('Regulated path tracking requires forward MOVE with a separate arrival phase')
     limit = 1.00 if (fast_mapping or fast_navigation) and mecanum else .25
     yaw_limit = 2. if mecanum and fast_navigation else (1.2 if mecanum and fast_mapping else (.8 if mecanum else .6))
     if not 0 < speed <= limit or not 0 < angular <= yaw_limit:
@@ -138,7 +139,7 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
                 'cost_penalty':2.,'max_iterations':1000000,'max_on_approach_iterations':1000,
                 'max_planning_time':5.,'cache_obstacle_heuristic':False,'smooth_path':True,
                 'analytic_expansion_ratio':3.5,'lookup_table_size':5.}
-            if position_only:
+            if position_only or path_tracking:
                 # A position target must not require a Dubins terminal heading
                 # or a last-metre loop. Smac 2D smooths a cost-aware grid path;
                 # the local controller still checks the oriented real footprint.
@@ -146,8 +147,10 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
                     'plugin':'nav2_smac_planner/SmacPlanner2D','tolerance':.025,
                     'allow_unknown':False,'downsample_costmap':False,
                     'max_iterations':200000,'max_on_approach_iterations':500,
-                    'max_planning_time':2.,'cost_travel_multiplier':2.,
-                    'use_final_approach_orientation':True}
+                    'max_planning_time':2.,'cost_travel_multiplier':1.5,
+                    'use_final_approach_orientation':True,
+                    'smoother':{'max_iterations':500,'tolerance':1.e-8,
+                                'w_data':.15,'w_smooth':.35,'do_refinement':True}}
             result['global_costmap']['global_costmap']['ros__parameters'].update(rolling_window=False,track_unknown_space=True)
             for name in ('global_costmap','local_costmap'):
                 costmap=result[name][name]['ros__parameters']
@@ -159,19 +162,31 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
         # RPP follows a forward carrot and regulates speed/footprint collision
         # continuously; it does not receive one new motor goal per path point.
         ctl['controller_frequency']=20.0
+        # A 0.3 s controller failure window expires before the next 1 Hz
+        # global replan or 5 Hz costmap clearing cycle can resolve a blockage.
+        # Nav2 publishes zero velocity throughout this bounded wait.
+        ctl['failure_tolerance']=2.0
+        # Fresh dynamic obstacles must reach the planner before its retry
+        # window expires. Publication remains at the vendor's lower UI rate.
+        result['global_costmap']['global_costmap']['ros__parameters']['update_frequency']=2.0
+        ctl['general_goal_checker'].update(xy_goal_tolerance=.06,yaw_goal_tolerance=math.pi,stateful=True)
         ctl['FollowPath']={
             'plugin':'nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController',
             'desired_linear_vel':speed,'lookahead_dist':.30,
             'min_lookahead_dist':.18,'max_lookahead_dist':.45,'lookahead_time':.65,
             'use_velocity_scaled_lookahead_dist':True,'use_interpolation':True,
             'transform_tolerance':.2,'allow_reversing':False,
-            'use_rotate_to_heading':True,'rotate_to_heading_min_angle':.45,
-            'rotate_to_heading_angular_vel':angular,'max_angular_accel':3.2,
+            # Ordinary bends are followed as forward arcs; reserve in-place
+            # heading recovery for a substantial turn, not small path updates.
+            'use_rotate_to_heading':True,'rotate_to_heading_min_angle':.75,
+            'rotate_to_heading_angular_vel':min(.8,angular),'max_angular_accel':3.2,
             'min_approach_linear_velocity':min(.12,speed),
             'approach_velocity_scaling_dist':.45,
             'use_regulated_linear_velocity_scaling':True,
-            'regulated_linear_scaling_min_radius':.4,
-            'regulated_linear_scaling_min_speed':min(.12,speed),
+            # Bound normal bend yaw before the velocity smoother would clamp
+            # just angular.z and widen the requested arc into an obstacle.
+            'regulated_linear_scaling_min_radius':max(.4,speed/angular),
+            'regulated_linear_scaling_min_speed':min(.08,speed),
             'use_cost_regulated_linear_velocity_scaling':True,
             'cost_scaling_dist':.22,'cost_scaling_gain':.8,
             'inflation_cost_scaling_factor':3.,'use_collision_detection':True,
