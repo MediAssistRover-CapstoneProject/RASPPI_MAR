@@ -15,7 +15,9 @@ class SessionTransportTests(unittest.TestCase):
         p=self.poller();p.failed(urllib.error.URLError(TimeoutError('timeout')))
         with patch('mediassist.navigation_session.time.monotonic',return_value=104.):
             self.assertEqual(p.current(),({'sessionId':'verified'},None))
-        with patch('mediassist.navigation_session.time.monotonic',return_value=106.):
+        with patch('mediassist.navigation_session.time.monotonic',return_value=114.):
+            self.assertEqual(p.current(),({'sessionId':'verified'},None))
+        with patch('mediassist.navigation_session.time.monotonic',return_value=116.):
             self.assertIsNone(p.current()[0])
         self.assertEqual(p.at,100.)
     def test_protocol_auth_identity_and_tls_errors_invalidate_immediately(self):
@@ -29,4 +31,10 @@ class SessionTransportTests(unittest.TestCase):
         self.assertIsNotNone(p.value);self.assertEqual(p.at,100.)
         p.context['expires_at']='2020-01-01T00:00:00Z'
         self.assertEqual(p.current(),(None,'NAVIGATION_SESSION_EXPIRED'))
+    def test_successful_session_refresh_does_not_change_initialization_revision(self):
+        p=self.poller();p.value['initialization']={'revision':3,'mode':'SEED'}
+        p.failed(StepError('NAVIGATION_SESSION_HTTP_503'))
+        with patch('mediassist.navigation_session.time.monotonic',return_value=110.):
+            self.assertEqual(p.current()[0]['initialization']['revision'],3)
+        self.assertEqual(p.at,100.)
 if __name__=='__main__':unittest.main()

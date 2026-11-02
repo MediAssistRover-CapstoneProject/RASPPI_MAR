@@ -71,6 +71,8 @@ class SessionClient:
 
 class SessionPoller:
     """HTTPS never blocks the ROS executor. Fail closed when authorization evidence ages."""
+    POLL_INTERVAL_SEC=2.
+    AUTHORIZATION_MAX_AGE_SEC=15.
     def __init__(self,cfg):
         self.client=SessionClient(cfg);self.context=cfg['navigation_session'];self.lock=threading.Lock();self.value=None;self.at=-math.inf
         self.error='WAITING_FOR_SESSION_AUTHORIZATION';self.quit=threading.Event()
@@ -83,7 +85,7 @@ class SessionPoller:
                 with self.lock:self.value=value;self.at=time.monotonic();self.error=None
             except Exception as e:
                 self.failed(e)
-            self.quit.wait(1.)
+            self.quit.wait(self.POLL_INTERVAL_SEC)
     def failed(self,error):
         code=getattr(error,'code','NAVIGATION_SESSION_UNREACHABLE')
         reason=error.reason if isinstance(error,urllib.error.URLError) else error
@@ -92,14 +94,16 @@ class SessionPoller:
                    or isinstance(reason,OSError) and not isinstance(reason,ssl.SSLError))
         with self.lock:
             # Keep only a previously verified descriptor through a transient
-            # request failure, within the same existing 5 s authorization bound.
+            # request failure, within a bounded 15 s authorization window. This
+            # covers slow cloud DB reads without resetting AMCL every few seconds.
+            # It never relaxes live ROS pose/scan/odometry or MQTT health checks.
             # Revocation, closed sessions, TLS and identity errors invalidate now.
             if not transient:self.value=None
             self.error=code
     def current(self):
         with self.lock:value=copy.deepcopy(self.value);age=time.monotonic()-self.at;error=self.error
         if expired(self.context):return None,'NAVIGATION_SESSION_EXPIRED'
-        if value is None or age>5:return None,error or 'NAVIGATION_SESSION_AUTHORIZATION_STALE'
+        if value is None or age>self.AUTHORIZATION_MAX_AGE_SEC:return None,error or 'NAVIGATION_SESSION_AUTHORIZATION_STALE'
         return value,None
     def close(self):self.quit.set()
 
