@@ -25,6 +25,8 @@ class RosAdapter:
         from std_msgs.msg import UInt16, String
         from ros_robot_controller_msgs.msg import SetPWMServoState
         from rcl_interfaces.srv import GetParameters
+        from lifecycle_msgs.srv import GetState
+        from std_srvs.srv import Trigger
         from tf2_ros import Buffer, TransformListener
         self.rclpy, self.cfg, self.remote = rclpy, config, remote
         from .configuration import validate_config
@@ -39,6 +41,11 @@ class RosAdapter:
         self.nav = ActionClient(self.node, NavigateToPose, config["ros"]["navigate_action"])
         self.planner = ActionClient(self.node, ComputePathToPose, config["ros"]["compute_path_action"])
         self.spin = ActionClient(self.node, Spin, '/spin')
+        from .nav2_startup import NODES
+        self.nav2_states={name:self.node.create_client(GetState,'/'+name+'/get_state') for name in NODES}
+        self.nav2_state_request=GetState.Request
+        self.nav2_manager_active=self.node.create_client(Trigger,'/lifecycle_manager_navigation/is_active')
+        self.nav2_manager_request=Trigger.Request
         self.plan_goal, self.motion_uncertain, self.event_sink = None, False, None
         self.map_client = self.node.create_client(GetParameters, "/map_server/get_parameters")
         self.pwm = self.node.create_publisher(SetPWMServoState, config["ros"]["pwm"], 10)
@@ -350,11 +357,46 @@ class RosAdapter:
         pose.pose.orientation.w = math.cos(yaw / 2)
         return pose
 
+    async def _navigation_servers_active(self):
+        clients=getattr(self,'nav2_states',{})
+        if not clients:return True  # Legacy non-ROS adapters have no lifecycle services.
+        previous=getattr(self,'nav2_state_sample',None);now=time.monotonic()
+        if previous and now-previous[1]<1.:return previous[0]
+        async def state(name,client):
+            if not client.service_is_ready():return name,None
+            future=None
+            try:
+                future=client.call_async(self.nav2_state_request())
+                result=await self.future(future,timeout=1.)
+                return name,result.current_state.id
+            except (StepError,RuntimeError):return name,None
+            finally:
+                if future is not None and not future.done():future.cancel()
+        states=dict(await asyncio.gather(*(state(n,c) for n,c in clients.items())))
+        ready=all(v==3 for v in states.values())
+        manager=getattr(self,'nav2_manager_active',None)
+        if ready and manager is not None:
+            future=None
+            try:
+                if not manager.service_is_ready():ready=False
+                else:
+                    future=manager.call_async(self.nav2_manager_request())
+                    ready=(await self.future(future,timeout=1.)).success
+            except (StepError,RuntimeError):ready=False
+            finally:
+                if future is not None and not future.done():future.cancel()
+            states['manager_active']=bool(ready)
+        self.nav2_state_sample=(ready,time.monotonic());self.last_nav2_states=states
+        return ready
+
     async def _wait_navigation_server(self,client,code):
-        deadline=time.monotonic()+8.
-        while not client.server_is_ready():
+        deadline=time.monotonic()+15.
+        while True:
+            if client.server_is_ready() and await self._navigation_servers_active():return
             self.hold_navigation_velocity()
-            if time.monotonic()>=deadline:raise StepError(code)
+            if time.monotonic()>=deadline:
+                if hasattr(self,'node'):self.node.get_logger().error('NAV2_LIFECYCLE_NOT_READY '+str(getattr(self,'last_nav2_states',{})))
+                raise StepError(code)
             await asyncio.sleep(.1)
 
     async def _publish_plan(self,body):
