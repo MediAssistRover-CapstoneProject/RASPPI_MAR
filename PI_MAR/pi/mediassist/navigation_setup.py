@@ -172,8 +172,10 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
         ctl['general_goal_checker'].update(xy_goal_tolerance=.06,yaw_goal_tolerance=math.pi,stateful=True)
         ctl['FollowPath']={
             'plugin':'nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController',
-            'desired_linear_vel':speed,'lookahead_dist':.30,
-            'min_lookahead_dist':.18,'max_lookahead_dist':.45,'lookahead_time':.65,
+            # Shorter bounded preview for room/corridor bends: pursue the
+            # nearby arc instead of cutting toward a far point past a corner.
+            'desired_linear_vel':speed,'lookahead_dist':.25,
+            'min_lookahead_dist':.18,'max_lookahead_dist':.35,'lookahead_time':.50,
             'use_velocity_scaled_lookahead_dist':True,'use_interpolation':True,
             'transform_tolerance':.2,'allow_reversing':False,
             # Ordinary bends are followed as forward arcs; reserve in-place

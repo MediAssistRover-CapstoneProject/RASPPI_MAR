@@ -7,8 +7,8 @@ from mediassist.autonomous_mapping import configuration
 from mediassist.configuration import validate_config
 
 def tune(raw,hardware,speed,reverse,angular,stop_margin=.05):
-    if type(stop_margin) not in (int,float) or not math.isfinite(stop_margin) or not .03<=stop_margin<=.10:
-        raise ValueError('Stop margin must be .03..0.10 m from the body')
+    if type(stop_margin) not in (int,float) or not math.isfinite(stop_margin) or not .02<=stop_margin<=.10:
+        raise ValueError('Stop margin must be .02..0.10 m from the body')
     for name,value,low,high in (('speed',speed,.05,.8),('reverse',reverse,.02,.8),('angular',angular,.1,1.2)):
         if type(value) not in (int,float) or not math.isfinite(value) or not low<=value<=high:raise ValueError('Invalid '+name)
     if reverse>speed:raise ValueError('Reverse exceeds translation cap')

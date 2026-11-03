@@ -360,7 +360,10 @@ class StepWorker:
             "mappingSession":self.adapter.mapping.state if self.adapter.mapping else None,
             **({'navigationSession':self.cfg['navigation_session']} if self.cfg.get('navigation_session') else {}),
             "capabilities":self.advertised_capabilities()}))
-        raw=await asyncio.wait_for(ws.recv(),10)
+        try:
+            raw=await asyncio.wait_for(ws.recv(),self.cfg.get('hello_timeout_sec',20))
+        except asyncio.TimeoutError:
+            raise StepError('HELLO_ACK_TIMEOUT') from None
         hello=json.loads(raw)
         self.validate_hello_ack(hello)
         self.connection_ready=True

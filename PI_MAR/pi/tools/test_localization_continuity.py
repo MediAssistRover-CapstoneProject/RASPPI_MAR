@@ -86,6 +86,30 @@ class ContinuityTests(unittest.TestCase):
         with patch.dict(sys.modules,helper.modules()):g.bootstrap(100)
         self.assertEqual(g.call.call_args.args[0],'nomotion')
         g.initial.publish.assert_not_called()
+    def test_temporary_be_failure_keeps_local_amcl_updates_but_cannot_initialize(self):
+        helper=BootstrapTests();g=helper.fake_guard('global');g.authorization_error='NAVIGATION_SESSION_UNREACHABLE'
+        with patch.dict(sys.modules,helper.modules()):g.bootstrap(100)
+        g.call.assert_not_called();g.initial.publish.assert_not_called()
+        g.initialized=True;g.ever_ready=True;g.last_nomotion=0;g.nomotion=Mock()
+        g.pose=N(header=N(stamp=N(sec=9,nanosec=500000000)))
+        with patch.dict(sys.modules,helper.modules()):g.bootstrap(101)
+        self.assertEqual(g.call.call_args.args[0],'nomotion');g.initial.publish.assert_not_called()
+    def test_authorization_pause_withholds_ready_without_resetting_live_local_hypothesis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g=object.__new__(LocalizationNode);g.cfg={**cfg(),'status_file':str(Path(tmp)/'status.json')}
+            g.hw={'ros':{'map_frame':'map'}};g.gate=self.locked();g.initialized=True;g.ever_ready=True;g.boot_at=0.
+            g.session_context={'session_id':'session'};g.initialization_revision=1;g.authorization_error=None
+            descriptor={'initialization':{'revision':1}}
+            g.session_poller=N(current=Mock(side_effect=[(None,'NAVIGATION_SESSION_UNREACHABLE'),(descriptor,None)]))
+            g.poll_services=Mock();g.bootstrap=Mock();g.ros_now=lambda:10.;g.error='LOCALIZED';g.last_reason=None
+            g.node=Mock();g.output=Mock();g.evidence=Mock(return_value=evidence(30));g.cfg['bootstrap_timeout_sec']=60.
+            import json
+            modules={'std_msgs':N(),'std_msgs.msg':N(String=lambda **kw:N(**kw))}
+            with patch.dict(sys.modules,modules),patch('mediassist.localization_node.time.monotonic',return_value=4.):g.tick()
+            self.assertFalse(json.loads(g.output.publish.call_args.args[0].data)['ready'])
+            self.assertTrue(g.gate.tracking,'authorization pause does not erase valid sensor evidence')
+            with patch.dict(sys.modules,modules),patch('mediassist.localization_node.time.monotonic',return_value=4.25):g.tick()
+            self.assertTrue(json.loads(g.output.publish.call_args.args[0].data)['ready'])
     def test_uses_recent_older_scan_when_latest_tf_has_not_arrived(self):
         g=object.__new__(LocalizationNode);g.cfg=cfg();g.hw={'ros':{'map_frame':'map','base_frame':'base'}}
         g.map_ready=Mock(return_value=True);g.lifecycle_ready=Mock(return_value=True);g.ros_now=lambda:10.

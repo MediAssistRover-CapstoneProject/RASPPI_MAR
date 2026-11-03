@@ -34,7 +34,7 @@ def validate_config(cfg):
             if m.get('chassis_model')!='MENTORPI_M1_MECANUM':
                 raise StepError('REVERSE_REQUIRES_M1_PROFILE')
             number(m.get('max_reverse_speed_mps',.10),.01,.80,'max_reverse_speed_mps')
-            number(m.get('rear_stop_distance_m',.30),.15,1.,'rear_stop_distance_m')
+            number(m.get('rear_stop_distance_m',.30),.05 if m.get('lidar_braking') else .15,1.,'rear_stop_distance_m')
         if 'allow_reverse' in m and type(m['allow_reverse']) is not bool:
             raise StepError('INVALID_CONFIG','allow_reverse')
         braking=m.get('lidar_braking')

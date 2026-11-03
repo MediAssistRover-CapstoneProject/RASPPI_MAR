@@ -64,7 +64,7 @@ def main():
          'tls_ca_file':str(args.ca_file.resolve(strict=True)) if args.ca_file else None,
          'mqtt':{'host':args.broker_host,'port':args.broker_port,'username':args.robot_id,
                  'password_file':str(args.password_file.resolve(strict=True)),'be_timeout_sec':15,'max_publish_per_sec':8},
-         'heartbeat_sec':3,'ack_timeout_sec':15,'connect_timeout_sec':10,
+         'heartbeat_sec':3,'ack_timeout_sec':15,'connect_timeout_sec':10,'hello_timeout_sec':20,
          'enabled_step_types':enabled,'compartments':{args.compartment_id:'cargo_lock'},
          'unlock_policy':'COMMISSIONING_ONLY' if args.enable_commissioning_unlock else 'DISABLED',
          'ai':{'enabled':args.enable_ai_provider,'topic':'/mediassist/ai/observations','max_age_sec':2},

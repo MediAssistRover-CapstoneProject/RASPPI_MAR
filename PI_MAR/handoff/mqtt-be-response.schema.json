@@ -85,6 +85,52 @@
           "type": "string",
           "format": "uuid",
           "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "navigationSession": {
+          "type": "object",
+          "required": [
+            "robotId",
+            "sessionId",
+            "state",
+            "observedAt"
+          ],
+          "properties": {
+            "robotId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "sessionId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "state": {
+              "enum": [
+                "OPEN",
+                "CLOSED",
+                "EXPIRED"
+              ]
+            },
+            "observedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "mapId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "mapAssetHash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "expiresAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "initialization": {
+              "type": "object"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "required": [

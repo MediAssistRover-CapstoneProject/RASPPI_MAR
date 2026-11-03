@@ -27,7 +27,7 @@ def validate_descriptor(value,robot_id,expected=None):
     try:
         UUID(value['sessionId']);UUID(value['mapId'])
         if value['robotId']!=robot_id or expected and value['sessionId']!=expected:raise ValueError()
-        if value['state'] in ('NONE','CLOSED','EXPIRED'):raise ValueError()
+        if value['state'] not in ('OPEN','READY','LOCALIZING','WAITING_FOR_PI'):raise ValueError()
         if parse_timestamp(value['expiresAt'])<=datetime.now(timezone.utc):raise ValueError()
         import re
         if not re.fullmatch('[a-f0-9]{64}',value['mapAssetHash']):raise ValueError()
@@ -70,7 +70,7 @@ class SessionClient:
     def get(self,expected=None):return validate_descriptor(json.loads(self.request('/api/v1/pi/navigation-session')),self.cfg['robot_id'],expected)
 
 class SessionPoller:
-    """HTTPS never blocks the ROS executor. Fail closed when authorization evidence ages."""
+    """Prefer MQTT authorization; HTTPS is a compatibility/disconnection fallback."""
     POLL_INTERVAL_SEC=2.
     AUTHORIZATION_MAX_AGE_SEC=15.
     def __init__(self,cfg):
@@ -79,13 +79,36 @@ class SessionPoller:
         self.thread=threading.Thread(target=self.run,daemon=True);self.thread.start()
     def run(self):
         while not self.quit.is_set():
+            if self.mqtt_current():
+                self.quit.wait(.5);continue
             try:
                 value=self.client.get(self.context['session_id'])
                 if value['mapId']!=self.context['map_id'] or value['mapAssetHash']!=self.context['map_asset_hash']:raise StepError('NAVIGATION_SESSION_MAP_CHANGED')
-                with self.lock:self.value=value;self.at=time.monotonic();self.error=None
+                with self.lock:
+                    if self.value is None or value['initialization']['revision']>=self.value['initialization']['revision']:
+                        self.value=value;self.at=time.monotonic();self.error=None
             except Exception as e:
                 self.failed(e)
             self.quit.wait(self.POLL_INTERVAL_SEC)
+    def mqtt_current(self):
+        from .navigation_authorization import read
+        cached=read(self.client.cfg)
+        if cached is None:return False
+        at,value=cached
+        try:
+            value=validate_descriptor(value,self.client.cfg['robot_id'],self.context['session_id'])
+            if value['mapId']!=self.context['map_id'] or value['mapAssetHash']!=self.context['map_asset_hash']:
+                raise StepError('NAVIGATION_SESSION_MAP_CHANGED')
+            with self.lock:
+                if self.value and value['initialization']['revision']<self.value['initialization']['revision']:
+                    return False
+                # Reading a mailbox twice never renews its authorization time.
+                if at>self.at:self.value=value;self.at=at;self.error=None
+                return self.value is not None
+        except StepError as error:
+            # An explicit current MQTT revocation is authoritative. Do not
+            # immediately replace it with a potentially older HTTPS snapshot.
+            self.failed(error);return True
     def failed(self,error):
         code=getattr(error,'code','NAVIGATION_SESSION_UNREACHABLE')
         reason=error.reason if isinstance(error,urllib.error.URLError) else error

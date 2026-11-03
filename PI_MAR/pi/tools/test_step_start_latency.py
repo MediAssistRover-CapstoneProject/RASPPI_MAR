@@ -6,8 +6,35 @@ from unittest.mock import Mock,AsyncMock,patch
 from datetime import datetime,timedelta,timezone
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from mediassist.step_worker import StepWorker
+from mediassist.mqtt_transport import MqttSession
+from mediassist.contracts import StepError
 
 class StartTests(unittest.IsolatedAsyncioTestCase):
+    async def test_initial_hello_waits_configured_20_seconds_and_reports_its_own_timeout(self):
+        cfg={'robot_id':'robot','enabled_step_types':['MOVE'],'unlock_policy':'DISABLED','mapping':{'enabled':False},'hello_timeout_sec':20}
+        store=Mock();store.transient.return_value={};store.states.return_value=[]
+        worker=StepWorker(cfg,{'capabilities':[]},store,N(mapping=None));session=N(send=AsyncMock(),recv=AsyncMock())
+        async def timeout(coro,seconds):
+            self.assertEqual(seconds,20);coro.close();raise asyncio.TimeoutError()
+        with patch('mediassist.step_worker.asyncio.wait_for',side_effect=timeout):
+            with self.assertRaises(StepError) as error:await worker.connected(session)
+        self.assertEqual(error.exception.code,'HELLO_ACK_TIMEOUT');self.assertFalse(worker.connection_ready)
+
+    async def test_hello_gets_its_own_window_after_slow_tcp_setup(self):
+        session=object.__new__(MqttSession);session.cfg={'robot_id':'robot','mqtt':{'be_timeout_sec':15}}
+        session.id='current';session.failure=None;session.last_be=0.;session.hello_deadline=215.;session.queue=asyncio.Queue()
+        session.queue.put_nowait(('mar/robots/robot/event-acks',b'{"robotId":"robot","transportSessionId":"current","messageType":"HELLO_ACK","accepted":true}'))
+        with patch('mediassist.mqtt_transport.time',N(monotonic=lambda:200.)):
+            self.assertIn('HELLO_ACK',await session.recv())
+        self.assertIsNone(session.hello_deadline);self.assertEqual(session.last_be,200.)
+
+    async def test_hello_deadline_cannot_be_extended_by_a_recent_heartbeat(self):
+        session=object.__new__(MqttSession);session.cfg={'robot_id':'robot','mqtt':{'be_timeout_sec':15}}
+        session.failure=None;session.last_be=199.;session.hello_deadline=199.
+        with patch('mediassist.mqtt_transport.time',N(monotonic=lambda:200.)):
+            with self.assertRaises(StepError) as error:await session.recv()
+        self.assertEqual(error.exception.code,'HELLO_ACK_TIMEOUT')
+
     async def test_physical_effects_still_wait_for_both_committed_acks_without_sqlite_polling(self):
         acked=set();store=Mock();store.is_acked.side_effect=lambda mid:mid in acked
         store.emit.return_value={'messageId':'started'}

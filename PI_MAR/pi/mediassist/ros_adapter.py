@@ -9,6 +9,10 @@ from .contracts import StepError
 from .store import utcnow
 from .adapters import validate_remote_result
 
+# The controller still targets 6--8 cm and pre-turn arrival requires <=10 cm.
+# One 2.5 cm map cell of post-turn correction must not negate a completed Spin.
+POST_ALIGNMENT_POSITION_TOLERANCE_M=.125
+
 
 class RosAdapter:
     simulated = False
@@ -19,7 +23,7 @@ class RosAdapter:
         from rclpy.action import ActionClient
         from rclpy.qos import qos_profile_sensor_data
         from nav2_msgs.action import NavigateToPose, ComputePathToPose, Spin
-        from nav_msgs.msg import Odometry, Path
+        from nav_msgs.msg import Odometry
         from sensor_msgs.msg import Range, LaserScan
         from geometry_msgs.msg import Twist
         from std_msgs.msg import UInt16, String
@@ -53,7 +57,6 @@ class RosAdapter:
         self.lock = threading.Lock()
         self.samples, self.goal, self.lease_speed, self.goal_feedback = {}, None, None, None
         self.nav_velocity_sample=None
-        self.nav_plan_sample=None
         self.odom_twist_sample=None
         self.navigation_velocity_output=self.node.create_publisher(Twist,config['ros']['raw_cmd_vel'],1)
         from nav2_msgs.msg import SpeedLimit
@@ -61,7 +64,6 @@ class RosAdapter:
         def nav_velocity(msg):
             with self.lock:self.nav_velocity_sample=((float(msg.linear.x),float(msg.linear.y),float(msg.angular.z)),time.monotonic())
         self.node.create_subscription(Twist,'/mediassist/nav2_cmd_vel',nav_velocity,1)
-        self.node.create_subscription(Path,'/plan',self._navigation_plan_sample,1)
         for side in ("left", "right"):
             self.node.create_subscription(Range, config["ros"][side + "_range"], lambda m, s=side: self._sample(s, float(m.range)), qos_profile_sensor_data)
         self.node.create_subscription(UInt16, config["ros"]["battery"], lambda m: self._sample("battery", int(m.data)), qos_profile_sensor_data)
@@ -95,10 +97,6 @@ class RosAdapter:
             self.odom_twist_sample=((float(t.linear.x),float(t.linear.y),float(t.angular.z)),now)
             p=msg.pose.pose.position
             self.odom_pose_sample=((float(p.x),float(p.y)),now)
-
-    def _navigation_plan_sample(self,msg):
-        # One latest-slot sample, no backlog and no new ROS publishers/processes.
-        with self.lock:self.nav_plan_sample=(msg,time.monotonic())
 
     def clear_navigation_velocity(self):
         with self.lock:self.nav_velocity_sample=None
@@ -322,7 +320,9 @@ class RosAdapter:
         if not self.map_client.service_is_ready(): raise StepError("MAP_SERVER_UNAVAILABLE")
         key=(map_id,self.cfg['map_asset_sha256'])
         verified=getattr(self,'_map_verified',None)
-        if verified and verified[0]==key and time.monotonic()-verified[1]<1.:return
+        # The immutable map/session is already checked by local localization.
+        # Avoid repeating a ROS parameter RPC + file hash for every short leg.
+        if verified and verified[0]==key and time.monotonic()-verified[1]<5.:return
         request = GetParameters.Request(names=["yaml_filename"])
         response = await self.future(self.map_client.call_async(request))
         if not response.values or map_fingerprint(response.values[0].string_value) != self.cfg["map_asset_sha256"]:
@@ -405,7 +405,7 @@ class RosAdapter:
         clients=getattr(self,'nav2_states',{})
         if not clients:return True  # Legacy non-ROS adapters have no lifecycle services.
         previous=getattr(self,'nav2_state_sample',None);now=time.monotonic()
-        if previous and now-previous[1]<1.:return previous[0]
+        if previous and now-previous[1]<(5. if previous[0] else .25):return previous[0]
         async def state(name,client):
             if not client.service_is_ready():return name,None
             future=None
@@ -450,7 +450,7 @@ class RosAdapter:
         for attempt in range(4):
             # Keep the frozen map/session/revision, and wait for BE's MQTT view
             # to catch up. This never sends a NavigateToPose goal.
-            self._navigation_context()
+            self._navigation_context(allow_localization_pause=True)
             try:
                 reply=await asyncio.to_thread(client.request,'/api/v1/pi/navigation-session/plan',body,4096)
                 if not json.loads(reply).get('accepted'):raise StepError('NAVIGATION_PLAN_NOT_ACKNOWLEDGED')
@@ -458,6 +458,23 @@ class RosAdapter:
             except StepError as exc:
                 if not exc.retryable or attempt==3:raise
                 await asyncio.sleep(.5)
+
+    def _report_plan(self,body):
+        """Plan upload is observation; local Nav2/zone validation owns motion."""
+        self.navigation_plan_pending=body
+        previous=getattr(self,'navigation_plan_upload',None)
+        if previous and not previous.done():return
+        async def report_latest():
+            while self.navigation_plan_pending is not None:
+                value=self.navigation_plan_pending;self.navigation_plan_pending=None
+                try:await self._publish_plan(value)
+                except asyncio.CancelledError:raise
+                except Exception as exc:
+                    import logging
+                    logging.warning('NAV_PLAN_DISPLAY_UPDATE_FAILED %s',getattr(exc,'code',type(exc).__name__))
+        # One uploader, one replaceable pending path; a slow cloud response
+        # cannot create a thread/request for every new Nav2 plan.
+        self.navigation_plan_upload=asyncio.create_task(report_latest())
 
     def _plan_body(self,path,endpoint_id,receipt):
         if path.header.frame_id!=self.cfg['ros']['map_frame'] or len(path.poses)<2:
@@ -477,29 +494,6 @@ class RosAdapter:
         rounded=[(round(x,4),round(y,4),yaw) for x,y,yaw in preview]
         if getattr(self,'zones',None) is not None:self.zones.validate_path(rounded)
         return {**receipt,'points':[{'xM':x,'yM':y} for x,y,_ in rounded]}
-
-    async def _relay_navigation_plans(self,endpoint_id,accepted_at):
-        """Display successful replans without putting HTTPS on the velocity loop."""
-        receipt=getattr(self,'navigation_plan_receipt',None)
-        if not receipt or receipt['endpointId']!=endpoint_id:return
-        previous=None;last_warning=-math.inf
-        while True:
-            await asyncio.sleep(1.)
-            with self.lock:sample=self.nav_plan_sample
-            if not sample or sample[1]<accepted_at or time.monotonic()-sample[1]>3.:continue
-            try:
-                body=self._plan_body(sample[0],endpoint_id,receipt)
-                signature=json.dumps(body['points'],separators=(',',':'))
-                if signature==previous:continue
-                await self._publish_plan(body);previous=signature
-            except asyncio.CancelledError:raise
-            except Exception as exc:
-                # Initial plan ACK remains mandatory; a display refresh failure
-                # must not block local collision checks or the 20 Hz lease loop.
-                if time.monotonic()-last_warning>10.:
-                    import logging
-                    logging.warning('NAV_PLAN_DISPLAY_UPDATE_FAILED %s',getattr(exc,'code',type(exc).__name__))
-                    last_warning=time.monotonic()
 
     def _check_endpoint_footprint(self,endpoint_id,yaw=None):
         worker=getattr(self,'worker',{})
@@ -527,7 +521,6 @@ class RosAdapter:
         from nav2_msgs.action import ComputePathToPose
         plan_started=time.monotonic()
         self.navigation_plan_receipt=None
-        await self._prerequisites(p)
         position_only=getattr(self,'worker',{}).get('navigation_runtime',{}).get('arrival_mode')=='POSITION_ONLY'
         # Position-only validates the terminal footprint against the actual
         # plan tangent below, rather than an unused saved endpoint heading.
@@ -583,9 +576,8 @@ class RosAdapter:
                 self.zones.validate_path([waypoint(v) for v in path.poses])
             context=getattr(self,'worker',{}).get('navigation_session')
             if context:
-                # BE must acknowledge this exact Nav2 plan before motor navigation starts.
-                # A failed HTTPS publish leaves the robot stopped rather than displaying a
-                # misleading line from an older map or goal.
+                # Local Nav2 computes the path and the committed-path BT keeps
+                # it on Pi. UI/DB latency is not a motor authorization gate.
                 frozen=getattr(self,'active_navigation_context',None)
                 if not meta or not isinstance(frozen,dict):raise StepError('NAVIGATION_PLAN_CONTEXT_MISSING')
                 path=result.result.path
@@ -605,15 +597,11 @@ class RosAdapter:
                       'initializationRevision':frozen['initialization_revision'],
                       'jobId':meta['job_id'],'jobStepId':meta['job_step_id'],
                       'endpointId':endpoint_id,'points':points}
-                try:
-                    computed_at=time.monotonic()
-                    await self._publish_plan(body)
-                    import logging
-                    logging.info('NAV_PLAN_TIMING endpoint=%s compute_ms=%d be_confirm_ms=%d',endpoint_id,
-                                 round((computed_at-plan_started)*1000),round((time.monotonic()-computed_at)*1000))
-                    self.navigation_plan_receipt={k:v for k,v in body.items() if k!='points'}
-                except StepError:raise
-                except Exception as exc:raise StepError('NAVIGATION_PLAN_BE_UNREACHABLE') from exc
+                self.navigation_plan_receipt={k:v for k,v in body.items() if k!='points'}
+                self._report_plan(body)
+                import logging
+                logging.info('NAV_PLAN_TIMING endpoint=%s compute_ms=%d reporting=ASYNC',endpoint_id,
+                             round((time.monotonic()-plan_started)*1000))
         finally:
             if not received: sent.add_done_callback(self._late_cancel)
             if not await self.stop(): raise StepError("GOAL_STOP_UNCONFIRMED")
@@ -662,17 +650,18 @@ class RosAdapter:
         # A successful final Spin already completed the requested turn. AMCL can
         # revise map yaw after the wheels stop; do not fail a whole route or send
         # another turn just because this second measurement differs by > .10 rad.
-        if heading_completed:
-            self.node.get_logger().info('FINAL_ARRIVAL '+json.dumps({
-                'endpoint_id':endpoint_id,'position_error_m':error,
-                'measured_yaw_error_rad':yaw,'heading_completion':'ALIGNED_OR_SPIN_SUCCEEDED',
-                'actual_pose':actual},separators=(',',':')))
-        # Use the same 10 cm position envelope already accepted before Spin.
-        # The controller still aims for 6 cm; a small map correction during the
-        # successful in-place turn must not contradict the arrival it accepted.
-        position_tolerance=.10 if heading_completed else .08
+        # Nav2 already succeeded, the stable pre-turn pose was within 10 cm,
+        # and at most one collision-checked Spin completed (or was unnecessary).
+        # Allow one map cell of XY correction after that turn, not a new goal.
+        position_tolerance=POST_ALIGNMENT_POSITION_TOLERANCE_M if heading_completed else .08
+        diagnostic={'endpoint_id':endpoint_id,'position_error_m':error,
+            'position_tolerance_m':position_tolerance,'measured_yaw_error_rad':yaw,
+            'heading_completion':'ALIGNED_OR_SPIN_SUCCEEDED' if heading_completed else 'LIVE_POSE',
+            'actual_pose':actual}
         if error>position_tolerance or (mode!='POSITION_ONLY' and not heading_completed and yaw>.10):
+            self.node.get_logger().warning('FINAL_ARRIVAL_REJECTED '+json.dumps(diagnostic,separators=(',',':')))
             raise StepError('ENDPOINT_FINAL_POSE_NOT_CONFIRMED')
+        self.node.get_logger().info('FINAL_ARRIVAL '+json.dumps(diagnostic,separators=(',',':')))
         # The existing wire contract bounds this optional field to .15 rad.
         # Always preserve the real measured yaw in verified_pose, even when the
         # diagnostic error is outside that bounded field.
@@ -686,7 +675,7 @@ class RosAdapter:
             pose=self.telemetry().get('map_pose',{})
             if not pose.get('fresh'):return
             p=pose['value']
-            if math.hypot(p['x_m']-target['x_m'],p['y_m']-target['y_m'])<=.10 or time.monotonic()>=deadline:return
+            if math.hypot(p['x_m']-target['x_m'],p['y_m']-target['y_m'])<=POST_ALIGNMENT_POSITION_TOLERANCE_M or time.monotonic()>=deadline:return
             self.lease_message(False);await asyncio.sleep(.05)
 
     async def _finish_heading(self,p,endpoint_id):
@@ -758,7 +747,6 @@ class RosAdapter:
 
     async def _move_one(self, p, endpoint_id):
         from nav2_msgs.action import NavigateToPose
-        await self._prerequisites(p)
         await self._wait_navigation_server(self.nav,'NAV2_UNAVAILABLE')
         await self._prerequisites(p)
         goal = NavigateToPose.Goal()
@@ -771,15 +759,12 @@ class RosAdapter:
         self.navigation_speed_limit(p['max_speed_mps'])
         sent = self.nav.send_goal_async(goal, feedback_callback=lambda m: setattr(self, "goal_feedback", m.feedback))
         received = False
-        plan_relay=None
         try:
             self.goal = await self.future(sent)
             received = True
             if not self.goal.accepted: raise StepError("NAV_GOAL_REJECTED")
             result_future = self.goal.get_result_async()
             accepted_at=time.monotonic()
-            if getattr(self,'worker',{}).get('navigation_session'):
-                plan_relay=asyncio.create_task(self._relay_navigation_plans(endpoint_id,accepted_at))
             localization_pause=None;velocity_pause=None
             while not result_future.done():
                 self._check_graph()
@@ -835,10 +820,6 @@ class RosAdapter:
             if yaw_error is not None:output['yaw_error_rad']=yaw_error
             return output
         finally:
-            if plan_relay is not None:
-                plan_relay.cancel()
-                try:await plan_relay
-                except asyncio.CancelledError:pass
             self.lease_message(False)
             if not received: sent.add_done_callback(self._late_cancel)
             if not await self.stop(): raise StepError("GOAL_STOP_UNCONFIRMED")
@@ -899,6 +880,9 @@ class RosAdapter:
         if getattr(self, "closed", False):
             return
         self.closed = True
+        self.navigation_plan_pending=None
+        upload=getattr(self,'navigation_plan_upload',None)
+        if upload and not upload.done():upload.cancel()
         if self.rclpy.ok(context=self.node.context):
             self.rclpy.shutdown(context=self.node.context)
         self.thread.join(timeout=3)

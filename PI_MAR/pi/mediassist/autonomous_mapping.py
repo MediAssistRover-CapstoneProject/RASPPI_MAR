@@ -27,7 +27,7 @@ def configuration(mapping):
     # joystick ceiling. Rigid exploration has an independent 1.2 rad/s limit.
     braking_yaw=(2. if cfg.get('include_points') is True else 1.2) if cfg['vehicle']=='rigid' else .8
     for key, low, high in (('speed_mps', .02, 1.00), ('angular_rps', .10, braking_yaw),
-                          ('stop_margin_m', .03, .4), ('turn_clearance_m', .2, 1.),
+                          ('stop_margin_m', .02, .4), ('turn_clearance_m', .2, 1.),
                           ('slow_clearance_m', .3, 2.), ('max_duration_sec', 10, 600),
                           ('return_radius_m', .15, .5), ('min_return_sec', 10, 300),
                           ('min_return_travel_m', 1, 50), ('scan_max_age_sec', .1, .6),
@@ -41,6 +41,9 @@ def configuration(mapping):
             raise StepError('INVALID_AUTONOMY_CONFIG', key)
     if not cfg['stop_margin_m'] < cfg['turn_clearance_m'] < cfg['slow_clearance_m']:
         raise StepError('INVALID_AUTONOMY_CLEARANCES')
+    near=cfg.get('near_slow_margin_m')
+    if near is not None and (type(near) not in (int,float) or not math.isfinite(near) or not cfg['stop_margin_m']<near<=.4):
+        raise StepError('INVALID_AUTONOMY_CLEARANCES','near_slow_margin_m')
     if max(cfg['speed_mps'],cfg['max_reverse_mps']) > .25:
         if cfg['vehicle'] != 'rigid' or (cfg['exploration_mode']=='frontier' and cfg['frontier_controller'] != 'nav2'):
             raise StepError('FAST_MAPPING_REQUIRES_RIGID_NAV2')

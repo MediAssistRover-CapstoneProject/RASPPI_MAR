@@ -98,7 +98,8 @@ def load(path):
     cfg.setdefault("heartbeat_sec", 3)
     cfg.setdefault("ack_timeout_sec", 15)
     cfg.setdefault("connect_timeout_sec", 10)
-    for key, lo, hi in (("heartbeat_sec",1,10),("ack_timeout_sec",3,60),("connect_timeout_sec",3,60)):
+    cfg.setdefault("hello_timeout_sec", 20)
+    for key, lo, hi in (("heartbeat_sec",1,10),("ack_timeout_sec",3,60),("connect_timeout_sec",3,60),("hello_timeout_sec",5,60)):
         if type(cfg[key]) not in (int,float) or not lo <= cfg[key] <= hi:
             raise StepError("INVALID_CONFIG",key)
     if cfg.get("unlock_policy") not in ("DISABLED","COMMISSIONING_ONLY"):

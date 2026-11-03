@@ -56,8 +56,8 @@ class PlanTests(unittest.IsolatedAsyncioTestCase):
         a=self.adapter();started=asyncio.Event();release=asyncio.Event()
         async def publish(body):started.set();await release.wait()
         a._publish_plan=publish
-        now=time.monotonic();a.nav_plan_sample=(self.path(),now)
-        task=asyncio.create_task(a._relay_navigation_plans('A',now-.1))
+        a._report_plan(a._plan_body(self.path(),'A',a.navigation_plan_receipt))
+        task=a.navigation_plan_upload
         try:
             await asyncio.wait_for(started.wait(),2.)
             # A lease/velocity task can still run while HTTPS is waiting.

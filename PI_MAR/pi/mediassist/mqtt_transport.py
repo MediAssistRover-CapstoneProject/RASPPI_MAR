@@ -22,6 +22,7 @@ class MqttSession:
         self.ready = asyncio.Event()
         self.failure = None
         self.last_be = time.monotonic()
+        self.hello_deadline = None
         self.publish_lock = asyncio.Lock()
         self.next_publish = 0.0
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
@@ -135,12 +136,19 @@ class MqttSession:
         value['transportSessionId'] = self.id
         heartbeat = value.get('messageType') == 'HEARTBEAT'
         await self.publish('/heartbeat' if heartbeat else '/events', value, qos=0 if heartbeat else 1)
+        if value.get('messageType')=='HELLO':
+            # Give HELLO its full application response window after delivery.
+            # TCP/TLS setup time is not time spent waiting for BE heartbeat.
+            self.hello_deadline=time.monotonic()+self.cfg.get('hello_timeout_sec',20)
 
     async def recv(self):
         while True:
             if self.failure:
                 raise StepError(self.failure)
-            if time.monotonic()-self.last_be > self.cfg['mqtt']['be_timeout_sec']:
+            hello_deadline=getattr(self,'hello_deadline',None)
+            if hello_deadline is not None and time.monotonic()>=hello_deadline:
+                raise StepError('HELLO_ACK_TIMEOUT')
+            if hello_deadline is None and time.monotonic()-self.last_be > self.cfg['mqtt']['be_timeout_sec']:
                 raise StepError('BE_HEARTBEAT_TIMEOUT')
             try:
                 topic, raw = await asyncio.wait_for(self.queue.get(), 0.25)
@@ -164,7 +172,12 @@ class MqttSession:
             if kind not in allowed:
                 raise StepError('WRONG_MQTT_TOPIC')
             self.last_be = time.monotonic()
+            if kind=='HELLO_ACK':self.hello_deadline=None
             if kind == 'SERVER_HEARTBEAT':
+                if 'navigationSession' in value and self.hello_deadline is None:
+                    from .navigation_authorization import receive
+                    try:receive(self.cfg,value['navigationSession'])
+                    except (OSError,ValueError,TypeError,KeyError):logging.warning('Navigation authorization mailbox unavailable; HTTPS fallback retained')
                 continue
             if kind != 'MAPPING_CONTROL':value.pop('transportSessionId')
             # Command schema already has robotId; legacy EVENT_ACK handler accepts it too.

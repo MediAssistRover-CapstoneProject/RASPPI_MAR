@@ -180,7 +180,8 @@
         "position_error_m": {
           "type": "number",
           "minimum": 0,
-          "maximum": 0.10
+          "maximum": 0.125,
+          "description": "Measured XY error; post-alignment completion allows 10 cm pre-turn arrival plus one 2.5 cm map cell. Controller target remains tighter."
         },
         "yaw_error_rad": {
           "type": "number",

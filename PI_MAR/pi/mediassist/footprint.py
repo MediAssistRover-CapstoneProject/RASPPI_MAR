@@ -3,7 +3,7 @@ import math
 
 # Extra clearance beyond each physical body edge; shared by Nav2, zone sweep
 # validation and endpoint validation. Grid discretization can add more space.
-NAVIGATION_PADDING_M=.03
+NAVIGATION_PADDING_M=.02
 
 def overlap(a,b):
     for polygon in (a,b):

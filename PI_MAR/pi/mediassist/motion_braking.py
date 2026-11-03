@@ -8,7 +8,8 @@ def limit_velocity(velocity,view,age,profile):
     if view.get('nearest_lidar_m',0.)<=profile['lidar_stop_distance_m']:
         return (0.,0.,0.),'LIDAR_OBSTACLE_WITHIN_STOP_DISTANCE'
     x,y,z=velocity;speed=math.hypot(x,y)
-    if z and not view.get('rotation_clear',False):
+    turn_blocked=bool(z and not view.get('rotation_clear',False))
+    if turn_blocked:
         z=0.
     if speed<1e-9:
         return (0.,0.,z), 'TURN_ENVELOPE_BLOCKED' if z!=velocity[2] else None
@@ -26,8 +27,16 @@ def limit_velocity(velocity,view,age,profile):
     # Same 0.6 m/s^2 deceleration as Nav2; include sensing + command latency.
     reaction=age+.35
     cap=max(0.,math.sqrt((.6*reaction)**2+1.2*gap)-.6*reaction)
+    # Near-field creep is additional to stopping-distance braking, never a
+    # reason to keep full speed until only a few centimetres remain.
+    slow=profile.get('near_slow_margin_m',margin)
+    if slow>margin:cap=min(cap,profile['speed_mps']*min(1.,gap/(slow-margin)))
     scale=min(1.,cap/speed,profile['speed_mps']/speed)
+    if speed*scale<1e-6:scale=0.
+    # Preserve curvature while slowing a moving arc. A stationary turn keeps
+    # its independent swept-body check above.
+    z*=scale
     if speed*scale<=.01:
         from .safety import angular_deadband
         z=angular_deadband(z)
-    return (x*scale,y*scale,z),'TURN_ENVELOPE_BLOCKED' if z!=velocity[2] else None
+    return (x*scale,y*scale,z),'TURN_ENVELOPE_BLOCKED' if turn_blocked else None

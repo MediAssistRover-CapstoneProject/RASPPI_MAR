@@ -131,7 +131,11 @@ class LocalizationNode:
         from geometry_msgs.msg import PoseWithCovarianceStamped
         from std_srvs.srv import Empty
         if not self.map_ready(now) or not self.lifecycle_ready(now):return
-        if self.authorization_error:return
+        # A slow/offline BE may suspend motion, but must not suspend local
+        # AMCL measurements for an already initialized map. No-motion updates
+        # do not move wheels. A new seed/global initialization still needs
+        # authorization, and tick() withholds READY while authorization is lost.
+        if self.authorization_error and not self.initialized:return
         if self.cfg['mode']=='manual' and not self.initialized:self.error='WAITING_FOR_INITIAL_POSE';return
         if not self.initialized:
             if self.odom is None or abs(self.ros_now()-self.seconds(self.odom.header.stamp))>.6:return
@@ -254,7 +258,12 @@ class LocalizationNode:
             now-self.boot_at if self.boot_at is not None else 0.,self.cfg['bootstrap_timeout_sec'],self.error)
         if status['ready']:self.ever_ready=True
         if self.authorization_error:
-            status.update(ready=False,reason=self.authorization_error);self.gate.reset()
+            # Keep evaluating the same local hypothesis while publishing NOT
+            # READY. Resetting the gate on every HTTP failure discards a good
+            # lock and can create a new bootstrap delay between workflow steps.
+            # Changed initialization revisions reset above; sensor/map/TF faults
+            # still invalidate the hypothesis inside QualityGate.update().
+            status.update(ready=False,reason=self.authorization_error)
         pose=sample.get('pose')
         if pose and not all(math.isfinite(v) for v in pose.values()):pose=None
         status.update(map_id=self.cfg['map_id'],map_asset_hash=self.cfg['map_asset_hash'],frame_id=self.hw['ros']['map_frame'],
