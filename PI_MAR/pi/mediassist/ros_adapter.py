@@ -8,13 +8,14 @@ from datetime import datetime, timezone
 from .contracts import StepError
 from .store import utcnow
 from .adapters import validate_remote_result
+from .cargo_recovery import CargoRecovery
 
 # The controller still targets 6--8 cm and pre-turn arrival requires <=10 cm.
 # One 2.5 cm map cell of post-turn correction must not negate a completed Spin.
 POST_ALIGNMENT_POSITION_TOLERANCE_M=.125
 
 
-class RosAdapter:
+class RosAdapter(CargoRecovery):
     simulated = False
 
     def __init__(self, config, remote):
@@ -67,7 +68,7 @@ class RosAdapter:
         for side in ("left", "right"):
             self.node.create_subscription(Range, config["ros"][side + "_range"], lambda m, s=side: self._sample(s, float(m.range)), qos_profile_sensor_data)
         self.node.create_subscription(UInt16, config["ros"]["battery"], lambda m: self._sample("battery", int(m.data)), qos_profile_sensor_data)
-        self.node.create_subscription(LaserScan, config["ros"]["scan"], lambda m: self._sample("scan", bool(m.ranges)), qos_profile_sensor_data)
+        self.node.create_subscription(LaserScan, config["ros"]["scan"], self._scan_sample, qos_profile_sensor_data)
         self.node.create_subscription(Odometry, config["ros"]["odom"], self._odometry_sample, qos_profile_sensor_data)
         self.node.create_subscription(String, "/mediassist/safety_state", lambda m: self._sample("gate", m.data), 10)
         if getattr(self,'localization_required',False):
@@ -89,6 +90,12 @@ class RosAdapter:
     def _sample(self, key, value):
         with self.lock: self.samples[key] = (value, time.monotonic())
 
+    def _scan_sample(self,msg):
+        with self.lock:
+            now=time.monotonic()
+            self.samples['scan']=(bool(msg.ranges),now)
+            self.scan_message_sample=(msg,now)
+
     def _odometry_sample(self,msg):
         t=msg.twist.twist;now=time.monotonic()
         with self.lock:
@@ -96,7 +103,9 @@ class RosAdapter:
             # Local diagnostics only: do not change the MQTT telemetry contract.
             self.odom_twist_sample=((float(t.linear.x),float(t.linear.y),float(t.angular.z)),now)
             p=msg.pose.pose.position
-            self.odom_pose_sample=((float(p.x),float(p.y)),now)
+            q=msg.pose.pose.orientation
+            yaw=math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))
+            self.odom_pose_sample=((float(p.x),float(p.y),yaw),now)
 
     def clear_navigation_velocity(self):
         with self.lock:self.nav_velocity_sample=None
@@ -517,7 +526,7 @@ class RosAdapter:
             self.node.get_logger().warning('ENDPOINT_FOOTPRINT_NOT_CLEAR '+message)
             raise StepError('ENDPOINT_FOOTPRINT_NOT_CLEAR',message)
 
-    async def _plan(self, p, endpoint_id, meta=None):
+    async def _plan(self, p, endpoint_id, meta=None,start_override=None,probe=False):
         from nav2_msgs.action import ComputePathToPose
         plan_started=time.monotonic()
         self.navigation_plan_receipt=None
@@ -537,26 +546,53 @@ class RosAdapter:
         if getattr(self,'worker',{}).get('navigation_runtime',{}).get('arrival_mode') in ('POSITION_THEN_SPIN','POSITION_ONLY'):
             current=self.telemetry().get('map_pose',{})
             if not current.get('fresh'):raise StepError('LOCALIZATION_LOST')
-            actual=current['value'];target=self.cfg['endpoints'][endpoint_id]
+            # Cargo still uses full SE2 collision search. Its translation goal
+            # must not force a Dubins loop merely to match the saved final yaw;
+            # the one separate arrival Spin owns that orientation.
+            actual=start_override if start_override is not None else current['value'];target=self.cfg['endpoints'][endpoint_id]
             dx,dy=target['x_m']-actual['x_m'],target['y_m']-actual['y_m']
             self.approach_headings[endpoint_id]=math.atan2(dy,dx) if math.hypot(dx,dy)>.10 else actual['yaw_rad']
         goal = ComputePathToPose.Goal()
         goal.goal = self._pose(endpoint_id)
         goal.use_start, goal.planner_id = False, self.cfg["navigation"]["planner_id"]
+        saved_yaw=self.cfg['endpoints'][endpoint_id]['yaw_rad']
+        approach_yaw=self.approach_headings.get(endpoint_id,saved_yaw)
+        alternative_heading=(not probe and getattr(self,'worker',{}).get('navigation_runtime',{}).get('full_footprint_search')
+                             and abs(math.atan2(math.sin(saved_yaw-approach_yaw),math.cos(saved_yaw-approach_yaw)))>.1)
+        attempts=3 if alternative_heading else 2
+        if start_override is not None:
+            from geometry_msgs.msg import PoseStamped
+            goal.start=PoseStamped();goal.start.header=goal.goal.header
+            goal.start.pose.position.x=float(start_override['x_m']);goal.start.pose.position.y=float(start_override['y_m'])
+            goal.start.pose.orientation.z=math.sin(start_override['yaw_rad']/2);goal.start.pose.orientation.w=math.cos(start_override['yaw_rad']/2)
+            goal.use_start=True
         sent = self.planner.send_goal_async(goal)
         received = False
         try:
-            for attempt in range(2):
+            for attempt in range(attempts):
                 self.plan_goal = await self.future(sent)
                 received = True
                 if not self.plan_goal.accepted: raise StepError("PLAN_GOAL_REJECTED")
-                result = await self.future(self.plan_goal.get_result_async(), self.cfg["navigation"]["planning_timeout_sec"])
+                try:result = await self.future(self.plan_goal.get_result_async(), .75 if probe else self.cfg["navigation"]["planning_timeout_sec"])
+                except StepError as exc:
+                    if probe and exc.code=='ROS_RESPONSE_TIMEOUT':raise StepError('PATH_UNAVAILABLE') from exc
+                    raise
                 self.plan_goal = None
                 unavailable=result.status == 6 or (result.status == 4 and not result.result.path.poses)
                 if not unavailable:break
+                if alternative_heading:
+                    # A wall beside the endpoint may require a different final
+                    # approach. Prefer the direct bearing, but retain the known
+                    # saved approach as a bounded SE2 fallback in tight rooms.
+                    alternative_heading=False
+                    self.approach_headings[endpoint_id]=saved_yaw
+                    goal.goal=self._pose(endpoint_id)
+                    self.node.get_logger().warning('PATH_REPLAN_ALTERNATE_APPROACH')
+                    sent=self.planner.send_goal_async(goal);received=False
+                    continue
                 # Wait for a new costmap update once. Never clear obstacles or
                 # remove a keepout merely to manufacture a successful route.
-                if attempt:raise StepError("PATH_UNAVAILABLE")
+                if attempt==attempts-1 or probe:raise StepError("PATH_UNAVAILABLE")
                 self.node.get_logger().warning('PATH_REPLAN_WAITING_FOR_COSTMAP_UPDATE')
                 await asyncio.sleep(1.)
                 await self._prerequisites(p)
@@ -575,7 +611,7 @@ class RosAdapter:
             if getattr(self,'zones',None) is not None:
                 self.zones.validate_path([waypoint(v) for v in path.poses])
             context=getattr(self,'worker',{}).get('navigation_session')
-            if context:
+            if context and not probe:
                 # Local Nav2 computes the path and the committed-path BT keeps
                 # it on Pi. UI/DB latency is not a motor authorization gate.
                 frozen=getattr(self,'active_navigation_context',None)
@@ -631,11 +667,19 @@ class RosAdapter:
             if ready and sample.get('fresh'):
                 p=sample['value']
                 position_only=getattr(self,'worker',{}).get('navigation_runtime',{}).get('arrival_mode')=='POSITION_ONLY'
-                if math.hypot(p['x_m']-target['x_m'],p['y_m']-target['y_m'])>(.08 if position_only else .10):
-                    raise StepError('ENDPOINT_POSITION_NOT_CONFIRMED')
                 if anchor is None or math.hypot(p['x_m']-anchor['x_m'],p['y_m']-anchor['y_m'])>.03 or (not position_only and abs(math.atan2(math.sin(p['yaw_rad']-anchor['yaw_rad']),math.cos(p['yaw_rad']-anchor['yaw_rad'])))>.08):
                     anchor=dict(p);since=time.monotonic()
-                elif time.monotonic()-since>=.3:return
+                elif time.monotonic()-since>=.3:
+                    # One stopped observation avoids rejecting the first TF
+                    # correction immediately after Nav2 reports success.
+                    error=math.hypot(p['x_m']-target['x_m'],p['y_m']-target['y_m'])
+                    tolerance=.08 if position_only else .10
+                    if error>tolerance:
+                        self.node.get_logger().warning('ARRIVAL_POSITION_OUTSIDE_TOLERANCE '+json.dumps(
+                            dict(endpoint_id=endpoint_id,position_error_m=error,position_tolerance_m=tolerance,
+                                 actual_pose=p,target_pose=target),separators=(',',':')))
+                        raise StepError('ENDPOINT_POSITION_NOT_CONFIRMED')
+                    return
             else:anchor=None;since=None
             await asyncio.sleep(.05)
         raise StepError('ARRIVAL_POSE_NOT_STABLE')
@@ -689,15 +733,19 @@ class RosAdapter:
             raise StepError('ENDPOINT_POSITION_NOT_CONFIRMED')
         delta=math.atan2(math.sin(target['yaw_rad']-actual['yaw_rad']),math.cos(target['yaw_rad']-actual['yaw_rad']))
         if abs(delta)<=.10:return False
+        selected_sign=getattr(self,'cargo_final_turn_sign',None)
+        if selected_sign is not None and delta*selected_sign<0:
+            delta-=math.copysign(2*math.pi,delta)
         if getattr(self,'zones',None) is not None:
-            try:self.zones.validate_path([(actual['x_m'],actual['y_m'],actual['yaw_rad']),
-                (actual['x_m'],actual['y_m'],actual['yaw_rad']+delta)])
+            from .cargo_recovery import maneuver_points
+            try:self.zones.validate_path(maneuver_points(actual,0.,target['yaw_rad'],turn_delta=delta))
             except StepError as exc:
                 if exc.code=='NAVIGATION_PATH_INTERSECTS_KEEPOUT':raise StepError('FINAL_ALIGNMENT_BLOCKED_BY_ZONE') from exc
                 raise
         await self._wait_navigation_server(self.spin,'FINAL_ALIGNMENT_UNAVAILABLE')
         goal=Spin.Goal();goal.target_yaw=float(delta)
-        allowance=max(8.,abs(delta)/.2+4.);goal.time_allowance.sec=math.ceil(allowance)
+        cargo=getattr(self,'worker',{}).get('navigation_runtime',{}).get('geometry',{}).get('profile')=='cargo'
+        allowance=max(8.,abs(delta)/(.1 if cargo else .2)+4.);goal.time_allowance.sec=math.ceil(allowance)
         self.clear_navigation_velocity()
         sent=self.spin.send_goal_async(goal);received=False;started=time.monotonic()
         odom_origin=getattr(self,'odom_pose_sample',None)
@@ -765,7 +813,7 @@ class RosAdapter:
             if not self.goal.accepted: raise StepError("NAV_GOAL_REJECTED")
             result_future = self.goal.get_result_async()
             accepted_at=time.monotonic()
-            localization_pause=None;velocity_pause=None
+            localization_pause=None;velocity_pause=None;gate_blocked_at=None
             while not result_future.done():
                 self._check_graph()
                 state = self.telemetry()
@@ -784,6 +832,14 @@ class RosAdapter:
                     logging.info('Navigation resumed: fresh localization verified on unchanged session')
                 localization_pause=None
                 if "gate" not in state or state["gate"]["age_sec"] > 0.6: raise StepError("SAFETY_GATE_LOST")
+                from .cargo_recovery import blocked_motion_reason
+                blocked=blocked_motion_reason(state)
+                if blocked:
+                    if gate_blocked_at is None:gate_blocked_at=time.monotonic()
+                    if time.monotonic()-gate_blocked_at>=1.:
+                        self.node.get_logger().warning('NAV_GATE_BLOCKED reason='+blocked+'; stop and choose another maneuver')
+                        raise StepError('NAV_GATE_BLOCKED')
+                else:gate_blocked_at=None
                 if getattr(self,'worker',{}).get('navigation_runtime') and not self.publish_navigation_velocity(p['max_speed_mps'],state=state):
                     self.lease_message(False)
                     if velocity_pause is None:velocity_pause=time.monotonic()
@@ -803,6 +859,7 @@ class RosAdapter:
                 await self._wait_stationary()
                 await self._wait_arrival_pose(endpoint_id)
                 if mode=='POSITION_THEN_SPIN':
+                    await self._cargo_prepare_final_heading(p,endpoint_id)
                     await self._finish_heading(p,endpoint_id)
                     heading_completed=True
                     await self._wait_stationary()
@@ -826,6 +883,8 @@ class RosAdapter:
 
     async def _move(self, p, meta):
         from .navigation import select_and_move
+        self.cargo_escape_used=False
+        self.cargo_final_turn_sign=None
         # A workflow's requested ceiling must not raise the local MOVE limit.
         # Mapping and manual control use their independent speed profiles.
         p={**p,'max_speed_mps':min(p['max_speed_mps'],self.cfg['navigation'].get('max_speed_mps',p['max_speed_mps']))}
@@ -833,7 +892,7 @@ class RosAdapter:
             if self.event_sink:
                 self.event_sink(meta["job_id"], "ENDPOINT_ATTEMPT", {**meta, **data})
         return await select_and_move(p, self.cfg,
-            lambda eid: self._plan(p, eid, meta), lambda eid: self._move_one(p, eid), report)
+            lambda eid: self._plan_with_cargo_recovery(p, eid, meta), lambda eid: self._move_with_path_recovery(p, eid, meta), report)
 
     def health(self):
         data = self.telemetry()

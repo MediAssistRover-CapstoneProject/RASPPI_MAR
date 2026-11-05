@@ -7,19 +7,22 @@ from mediassist.navigation_session import SessionClient,summary
 from mediassist.map_sync import verify_bundle
 from mediassist.navigation_profile import validate_profile
 from mediassist.navigation_setup import nav2_params,footprint_rectangle
+from mediassist.navigation_geometry import session_geometry
 from mediassist.be_token import write_private
 from mediassist.worker_config import load
 from configure_mapping import stopped_configuration
 from configure_localization import nav_parameters
 
-def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN'):
+def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profile=None):
     if arrival_mode not in ('POSITION_ONLY','POSITION_THEN_SPIN'):raise ValueError('Unsupported arrival mode')
     position_only=arrival_mode=='POSITION_ONLY'
     native=ROOT/'pi/native/navigation_bt/build'
     if not (native/'libmar_commit_navigation_path_bt_node.so').is_file():
         raise RuntimeError('BUILD_NAVIGATION_BT_FIRST: bash tools/build_navigation_bt.sh')
     os.environ['LD_LIBRARY_PATH']=str(native)+os.pathsep+os.environ.get('LD_LIBRARY_PATH','')
-    cfg,hw=load(config);client=SessionClient(cfg);descriptor=client.get(session_id)
+    cfg,hw=load(config)
+    cfg,hw,geometry=session_geometry(cfg,hw,load_profile)
+    client=SessionClient(cfg);descriptor=client.get(session_id)
     session_id=descriptor['sessionId'];map_id=descriptor['mapId']
     import uuid
     root=ROOT/'pi/state/navigation-sessions'/session_id/uuid.uuid4().hex;root.mkdir(parents=True,mode=0o700,exist_ok=False)
@@ -48,14 +51,16 @@ def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN'):
         angular=min(2. if mecanum else .6,hw['navigation'].get('max_angular_speed_rps',.8 if mecanum else .6),hw['motion']['max_angular_speed_rps']),
         mecanum=mecanum,fast_navigation=mecanum and hw['motion'].get('lidar_braking') is not None,
         position_then_spin=not position_only,footprint_planner=True,forward_only=True,
-        position_only=position_only,path_tracking=True),hardware)
+        position_only=position_only,path_tracking=True,
+        full_footprint_search=geometry['profile']=='cargo'),hardware)
     (root/'nav2.yaml').write_text(yaml.safe_dump(params,sort_keys=False),encoding='utf-8')
     write_private(root/'hardware.json',json.dumps(hardware,indent=2))
     runtime=copy.deepcopy(cfg);runtime['hardware_profile']=str(root/'hardware.json');runtime['navigation_session']=context
     runtime['stack_state_dir']=str(ROOT/'pi/state/stack')
     runtime['navigation_runtime']=dict(map_yaml=str(root/'map.yaml'),nav2_params=str(root/'nav2.yaml'),localization_only=False,
         arrival_mode=arrival_mode,controller='REGULATED_PURSUIT',
-        footprint_planner=True,forward_only=True,preserve_path_on_replan=True)
+        footprint_planner=True,forward_only=True,preserve_path_on_replan=True,geometry=geometry,
+        full_footprint_search=geometry['profile']=='cargo')
     runtime['localization']=dict(enabled=True,mode='manual',map_id=map_id,map_asset_hash=meta['asset_hash'],status_file=str(root/'localization.json'))
     runtime['mapping']['enabled']=False
     runtime['enabled_step_types']=list(dict.fromkeys([*runtime['enabled_step_types'],'MOVE']))
@@ -67,11 +72,14 @@ def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN'):
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--config',type=Path,default=ROOT/'pi/config/mqtt.worker.json');p.add_argument('--session-id')
     p.add_argument('--arrival-mode',choices=['POSITION_ONLY','POSITION_THEN_SPIN'],default='POSITION_THEN_SPIN')
+    p.add_argument('--load-profile',choices=['bare','cargo'],help='Override saved-map load geometry; mapping configuration is unchanged')
     a=p.parse_args()
-    with stopped_configuration(a.config):root,client,descriptor=prepare(a.config,a.session_id,a.arrival_mode)
+    with stopped_configuration(a.config):root,client,descriptor=prepare(a.config,a.session_id,a.arrival_mode,a.load_profile)
     print('NAVIGATION_SESSION:',descriptor['sessionId'],'MAP:',descriptor['mapId'])
     print('Base configuration preserved. Waiting for initial pose/global localization from the map UI; no goal sent.')
     print('ARRIVAL_MODE:',a.arrival_mode,'; forward RPP path tracking; at most one final Spin when heading is requested.')
+    geometry=json.loads((root/'worker.json').read_text())['navigation_runtime']['geometry']
+    print('NAVIGATION_GEOMETRY:',json.dumps(geometry))
     process=None
     try:
         process=subprocess.Popen(['zsh',str(ROOT/'tools/robot.zsh'),'run','--config',str(root/'worker.json'),'--mode','navigation','--nav2-params',str(root/'nav2.yaml')],cwd=ROOT)

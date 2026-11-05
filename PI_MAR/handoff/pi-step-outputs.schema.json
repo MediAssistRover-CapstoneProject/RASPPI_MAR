@@ -726,6 +726,156 @@
             "evidence_ref"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sensing_type": {
+              "const": "VOICE_CAPTURE"
+            },
+            "metrics": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2000
+                },
+                "playback_text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                },
+                "language_code": {
+                  "enum": [
+                    "vi",
+                    "en"
+                  ]
+                },
+                "duration_sec": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 15
+                },
+                "sample_rate_hz": {
+                  "const": 16000
+                },
+                "channels": {
+                  "const": 1
+                },
+                "bits_per_sample": {
+                  "const": 16
+                },
+                "processing_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "text",
+                "playback_text",
+                "language_code",
+                "duration_sec",
+                "sample_rate_hz",
+                "channels",
+                "bits_per_sample",
+                "processing_ms"
+              ],
+              "additionalProperties": false
+            },
+            "captured_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "evidence_ref": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "sensing_type",
+            "metrics",
+            "captured_at",
+            "evidence_ref"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sensing_type": {
+              "const": "AUDIO_LOOPBACK"
+            },
+            "metrics": {
+              "type": "object",
+              "properties": {
+                "duration_sec": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 15
+                },
+                "sample_rate_hz": {
+                  "const": 16000
+                },
+                "channels": {
+                  "const": 1
+                },
+                "bits_per_sample": {
+                  "const": 16
+                },
+                "volume": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "original_recording": {
+                  "const": true
+                },
+                "playback_completed": {
+                  "const": true
+                },
+                "audible_verified": {
+                  "const": false
+                },
+                "rms": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "peak": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              },
+              "required": [
+                "duration_sec",
+                "sample_rate_hz",
+                "channels",
+                "bits_per_sample",
+                "volume",
+                "original_recording",
+                "playback_completed",
+                "audible_verified",
+                "rms",
+                "peak"
+              ],
+              "additionalProperties": false
+            },
+            "captured_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "evidence_ref": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "sensing_type",
+            "metrics",
+            "captured_at",
+            "evidence_ref"
+          ],
+          "additionalProperties": false
         }
       ]
     }

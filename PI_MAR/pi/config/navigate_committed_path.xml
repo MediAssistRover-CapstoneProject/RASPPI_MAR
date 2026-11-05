@@ -3,10 +3,16 @@
     <PipelineSequence name="PlanAndFollow">
       <RateController hz="2.0">
         <RecoveryNode number_of_retries="2" name="BoundedPlanningRetry">
-          <Sequence name="CommitOnlyValidPlan">
-            <ComputePathToPose goal="{goal}" path="{candidate_path}" planner_id="GridBased"/>
-            <CommitNavigationPath candidate="{candidate_path}" path="{path}"/>
-          </Sequence>
+          <Fallback name="KeepUsablePath">
+            <Sequence name="UnchangedGoalAndClearPath">
+              <NavigationPathMatchesGoal path="{path}" goal="{goal}" committed_goal="{committed_goal}"/>
+              <IsPathValid path="{path}" server_timeout="100"/>
+            </Sequence>
+            <Sequence name="CommitOnlyValidPlan">
+              <ComputePathToPose goal="{goal}" path="{candidate_path}" planner_id="GridBased"/>
+              <CommitNavigationPath candidate="{candidate_path}" path="{path}" goal="{goal}" committed_goal="{committed_goal}"/>
+            </Sequence>
+          </Fallback>
           <Wait wait_duration="1"/>
         </RecoveryNode>
       </RateController>

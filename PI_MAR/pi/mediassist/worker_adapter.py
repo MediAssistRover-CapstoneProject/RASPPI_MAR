@@ -116,6 +116,12 @@ class WorkerAdapter(RosAdapter):
                     "COMMISSIONING_ONLY" if action=="UNLOCK" else "DEVICE_COMMAND"}
         if kind == "EXECUTE_SENSING":
             task = p["sensing_type"]
+            if task == "AUDIO_LOOPBACK":
+                from .voice_capture import loopback
+                return await loopback(self.speech,p)
+            if task == "VOICE_CAPTURE":
+                from .voice_capture import capture
+                return await capture(self.worker,self.speech,p)
             if task == "MAPPING":
                 if not self.mapping:
                     raise StepError("MAPPING_NOT_ENABLED")

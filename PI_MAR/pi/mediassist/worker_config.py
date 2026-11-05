@@ -128,6 +128,8 @@ def load(path):
     mapping=cfg["mapping"]
     from .autonomous_mapping import configuration as autonomy_configuration
     autonomy_configuration(mapping)
+    from .navigation_geometry import configuration as geometry_configuration
+    geometry_configuration(cfg)
     for key,value in {'fresh_session':True,'reset_service':'/mediassist/slam/new_session','slam_resolution_m':.025,
         'slam_min_travel_m':.05,'slam_min_heading_rad':.10,'slam_min_interval_sec':.15,'slam_map_interval_sec':.5}.items():mapping.setdefault(key,value)
     if type(mapping['fresh_session']) is not bool or not isinstance(mapping['reset_service'],str) or not mapping['reset_service'].startswith('/'):

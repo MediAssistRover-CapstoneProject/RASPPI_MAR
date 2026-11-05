@@ -13,11 +13,13 @@ def footprint_rectangle(front, rear, left, right):
     return [[front, left], [-rear, left], [-rear, -right], [front, -right]]
 
 
-def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=False, fast_mapping=False, fast_navigation=False, position_then_spin=False, footprint_planner=False, forward_only=False, position_only=False, path_tracking=False):
+def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=False, fast_mapping=False, fast_navigation=False, position_then_spin=False, footprint_planner=False, forward_only=False, position_only=False, path_tracking=False, full_footprint_search=False):
     if forward_only and fast_mapping:raise ValueError('Forward only is for saved-map MOVE, not exploration')
     if position_only and (position_then_spin or fast_mapping):raise ValueError('Position-only MOVE cannot also align final heading or explore')
     if path_tracking and not (forward_only and (position_only or position_then_spin)):
         raise ValueError('Regulated path tracking requires forward MOVE with a separate arrival phase')
+    if full_footprint_search and (not footprint_planner or fast_mapping):
+        raise ValueError('Full footprint search requires saved-map footprint planning')
     limit = 1.00 if (fast_mapping or fast_navigation) and mecanum else .25
     yaw_limit = 2. if mecanum and fast_navigation else (1.2 if mecanum and fast_mapping else (.8 if mecanum else .6))
     if not 0 < speed <= limit or not 0 < angular <= yaw_limit:
@@ -132,14 +134,19 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
             # SE2 search checks the oriented rectangle instead of assuming a
             # circumscribed disc fits every door. Keep the existing planner ID.
             result['planner_server']['ros__parameters']['GridBased']={
-                'plugin':'nav2_smac_planner/SmacPlannerHybrid','tolerance':.05,'allow_unknown':False,
+                'plugin':'nav2_smac_planner/SmacPlannerHybrid','tolerance':.025,'allow_unknown':False,
                 'downsample_costmap':False,'angle_quantization_bins':72,
                 'motion_model_for_search':'DUBIN' if forward_only else 'REEDS_SHEPP','minimum_turning_radius':.20,
                 'reverse_penalty':2.,'change_penalty':0.,'non_straight_penalty':1.2,
                 'cost_penalty':2.,'max_iterations':1000000,'max_on_approach_iterations':1000,
                 'max_planning_time':5.,'cache_obstacle_heuristic':False,'smooth_path':True,
                 'analytic_expansion_ratio':3.5,'lookup_table_size':5.}
-            if position_only or path_tracking:
+            if full_footprint_search and mecanum:
+                # M1 can pivot; do not impose a car-like 20 cm turning radius.
+                # Two 2.5 cm grid cells keep finite Dubins primitives, while
+                # SE2 still collision-checks the complete cargo rectangle.
+                result['planner_server']['ros__parameters']['GridBased']['minimum_turning_radius']=.05
+            if (position_only or path_tracking) and not full_footprint_search:
                 # A position target must not require a Dubins terminal heading
                 # or a last-metre loop. Smac 2D smooths a cost-aware grid path;
                 # the local controller still checks the oriented real footprint.
@@ -169,19 +176,23 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
         # Fresh dynamic obstacles must reach the planner before its retry
         # window expires. Publication remains at the vendor's lower UI rate.
         result['global_costmap']['global_costmap']['ros__parameters']['update_frequency']=2.0
-        ctl['general_goal_checker'].update(xy_goal_tolerance=.06,yaw_goal_tolerance=math.pi,stateful=True)
+        # Keep planner approximation + controller stop radius inside the
+        # worker's 8/10 cm measured arrival window, with room for TF settling.
+        ctl['general_goal_checker'].update(xy_goal_tolerance=.04,yaw_goal_tolerance=math.pi,stateful=True)
         ctl['FollowPath']={
             'plugin':'nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController',
-            # Shorter bounded preview for room/corridor bends: pursue the
-            # nearby arc instead of cutting toward a far point past a corner.
-            'desired_linear_vel':speed,'lookahead_dist':.25,
-            'min_lookahead_dist':.18,'max_lookahead_dist':.35,'lookahead_time':.50,
+            # The old 18 cm / 0.5 s carrot amplified centimetre-scale pose
+            # corrections into alternating turns on an otherwise clear path.
+            # Keep a bounded preview; footprint collision checking still owns
+            # narrow corners rather than silently cutting through the wall.
+            'desired_linear_vel':speed,'lookahead_dist':.35,
+            'min_lookahead_dist':.28,'max_lookahead_dist':.50,'lookahead_time':.90,
             'use_velocity_scaled_lookahead_dist':True,'use_interpolation':True,
             'transform_tolerance':.2,'allow_reversing':False,
             # Ordinary bends are followed as forward arcs; reserve in-place
             # heading recovery for a substantial turn, not small path updates.
             'use_rotate_to_heading':True,'rotate_to_heading_min_angle':.75,
-            'rotate_to_heading_angular_vel':min(.8,angular),'max_angular_accel':3.2,
+            'rotate_to_heading_angular_vel':min(1.,angular),'max_angular_accel':1.8,
             'min_approach_linear_velocity':min(.12,speed),
             'approach_velocity_scaling_dist':.45,
             'use_regulated_linear_velocity_scaling':True,
@@ -197,11 +208,12 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
         # Align decisively before forward travel; preserve smooth curvature
         # corrections while moving. Do not increase exploration spin speed.
         smoother=result['velocity_smoother']['ros__parameters']
-        smoother['max_accel'][2]=3.2
-        smoother['max_decel'][2]=-3.2
+        smoother['max_accel'][2]=1.8
+        smoother['max_decel'][2]=-1.8
     navigator=result.get('bt_navigator',{}).get('ros__parameters',{})
     if 'plugin_lib_names' in navigator:
-        for plugin in ('nav2_recovery_node_bt_node','nav2_clear_costmap_service_bt_node','nav2_wait_action_bt_node'):
+        for plugin in ('nav2_recovery_node_bt_node','nav2_clear_costmap_service_bt_node','nav2_wait_action_bt_node',
+                       'nav2_is_path_valid_condition_bt_node'):
             if plugin not in navigator['plugin_lib_names']:navigator['plugin_lib_names'].append(plugin)
         if forward_only and 'mar_commit_navigation_path_bt_node' not in navigator['plugin_lib_names']:
             navigator['plugin_lib_names'].append('mar_commit_navigation_path_bt_node')

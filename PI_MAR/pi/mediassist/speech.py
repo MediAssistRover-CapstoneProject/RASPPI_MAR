@@ -26,7 +26,8 @@ def audio_device(config, cards_file=Path('/proc/asound/cards')):
 class SpeechPlayer:
     def __init__(self, config):
         self.cfg = config
-        self.lock = asyncio.Lock()
+        from .audio_lock import AudioLock
+        self.lock = AudioLock()
 
     async def process(self, argv, content=None):
         # Keep bounded diagnostic text; never include the supplied speech text in argv/logs.
@@ -42,7 +43,7 @@ class SpeechPlayer:
                     message=diagnostic.read(2048).decode('utf-8',errors='replace').strip()
                     message=re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '?', message)
                     program=Path(argv[0]).name
-                    code={'espeak-ng':'AUDIO_SYNTHESIS_FAILED','aplay':'AUDIO_PLAYBACK_FAILED'}.get(program,'AUDIO_PROCESS_FAILED')
+                    code={'espeak-ng':'AUDIO_SYNTHESIS_FAILED','aplay':'AUDIO_PLAYBACK_FAILED','arecord':'VOICE_RECORDING_FAILED'}.get(program,'AUDIO_PROCESS_FAILED')
                     details={'code':code,'program':program,'exitCode':process.returncode,'message':message}
                     logging.error('%s: %s',code,details)
                     error=StepError(code,program+' exited '+str(process.returncode))

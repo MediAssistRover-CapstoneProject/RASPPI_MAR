@@ -26,6 +26,9 @@ def main():
                 body_stop_margin_m=auto['stop_margin_m'],map_id=hardware.get('map_id'),
                 localization={k:loc.get(k) for k in ('enabled','mode','map_id','initial_pose')},
                 navigation_map_configured=bool(nav.get('map_yaml')),navigation_parameters_configured=bool(nav.get('nav2_params')))
+    report['navigation_geometry_config']=cfg.get('navigation_geometry')
+    report['active_navigation_geometry']=nav.get('geometry')
+    report['braking_footprint_m']=hardware['motion'].get('lidar_braking',{}).get('footprint')
     if nav.get('nav2_params'):
         import yaml
         try:report['nav2_config_footprints']=nav_footprints(yaml.safe_load(Path(nav['nav2_params']).read_text()) or {})

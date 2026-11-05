@@ -1,4 +1,5 @@
 """MAR-STEP-2: resolved step commands; BE owns workflow transitions."""
+import math
 from datetime import datetime, timezone
 from uuid import UUID
 from jsonschema import Draft202012Validator, FormatChecker
@@ -49,7 +50,11 @@ MAPPING_PARAMS = {
                    "mapping_session_id":UUID_SCHEMA,"artifact_id":UUID_SCHEMA}),
               obj({"sensing_type":{"const":"MAPPING"},"action":{"const":"STOP"},
                    "mapping_session_id":UUID_SCHEMA})]}
-PARAMS["EXECUTE_SENSING"] = {"oneOf":[SENSING_BASE,MAPPING_PARAMS]}
+VOICE_PARAMS=obj({"sensing_type":{"const":"VOICE_CAPTURE"},
+    "duration_sec":{"type":"integer","minimum":1,"maximum":15},"language_code":{"enum":["vi","en"]}})
+LOOPBACK_PARAMS=obj({"sensing_type":{"const":"AUDIO_LOOPBACK"},
+    "duration_sec":{"type":"integer","minimum":1,"maximum":15},"volume":{"type":"integer","minimum":0,"maximum":100}})
+PARAMS["EXECUTE_SENSING"] = {"oneOf":[SENSING_BASE,MAPPING_PARAMS,VOICE_PARAMS,LOOPBACK_PARAMS]}
 STEP_SCHEMA = obj({
     "jobId": UUID_SCHEMA, "jobStepId": UUID_SCHEMA, "stepId": UUID_SCHEMA,
     "stepCode": text(), "stepType": text(["MOVE","INTERACT","DATA_SERVICE","AUTHENTICATE",
@@ -138,6 +143,18 @@ def validate_step(step, cfg, hardware):
         if step["timeoutSec"] < p["duration_sec"] + 1:
             raise StepError("TIMEOUT_TOO_SHORT")
     if kind == "EXECUTE_SENSING":
+        if p["sensing_type"] == "AUDIO_LOOPBACK":
+            if not cfg.get("speech",{}).get("enabled"):
+                raise StepError("SPEECH_NOT_ENABLED")
+            if step["timeoutSec"] < 35:
+                raise StepError("TIMEOUT_TOO_SHORT")
+            return step
+        if p["sensing_type"] == "VOICE_CAPTURE":
+            if not cfg.get("speech",{}).get("enabled"):
+                raise StepError("SPEECH_NOT_ENABLED")
+            if step["timeoutSec"] < 65:
+                raise StepError("TIMEOUT_TOO_SHORT")
+            return step
         if p["sensing_type"] == "MAPPING":
             if not cfg["mapping"]["enabled"]:
                 raise StepError("MAPPING_NOT_ENABLED")
@@ -177,6 +194,24 @@ def validate_result(step, data):
     if kind == "EXECUTE_SENSING":
         if data.get("sensing_type") != p["sensing_type"] or not isinstance(data.get("metrics"), dict):
             raise StepError("INVALID_SENSING_OUTPUT")
+        if p["sensing_type"] == "AUDIO_LOOPBACK":
+            m=data['metrics']
+            if (type(m.get('duration_sec')) not in (int,float) or not math.isfinite(m['duration_sec'])
+                    or abs(m['duration_sec']-p['duration_sec'])>.1 or m.get('volume')!=p['volume']
+                    or m.get('sample_rate_hz')!=16000 or m.get('channels')!=1 or m.get('bits_per_sample')!=16
+                    or m.get('original_recording') is not True or m.get('playback_completed') is not True
+                    or m.get('audible_verified') is not False
+                    or any(type(m.get(k)) not in (int,float) or not math.isfinite(m[k]) or not 0<=m[k]<=1 for k in ('rms','peak'))):
+                raise StepError("INVALID_AUDIO_LOOPBACK_OUTPUT")
+        if p["sensing_type"] == "VOICE_CAPTURE":
+            m=data['metrics'];text=m.get('text')
+            if (not isinstance(text,str) or not text.strip() or len(text)>2000
+                    or m.get('playback_text')!=text[:500] or m.get('language_code')!=p['language_code']
+                    or type(m.get('duration_sec')) not in (int,float) or not math.isfinite(m['duration_sec'])
+                    or abs(m['duration_sec']-p['duration_sec'])>.1
+                    or m.get('sample_rate_hz')!=16000 or m.get('channels')!=1 or m.get('bits_per_sample')!=16
+                    or type(m.get('processing_ms')) is not int or m['processing_ms']<0):
+                raise StepError("INVALID_VOICE_CAPTURE_OUTPUT")
         if "captured_at" not in data:
             raise StepError("SENSING_TIMESTAMP_REQUIRED")
         if p["sensing_type"] in ("CROWD_DENSITY", "RESTRICTED_ZONE") and data.get("zone_id") != p["zone_id"]:
