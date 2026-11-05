@@ -296,6 +296,66 @@ Giữ stack/worker chạy và chờ MQTT sẵn sàng; không cần phiên map ch
 Nút **Chạy một job phát nội dung trên** dùng `INTERACT/SPEAK`; cũng có thể thêm
 step phát loa vào workflow MOVE/WAIT/servo bằng nút **Thêm phát loa vào workflow**.
 
+### Hội thoại RAG trên laptop
+
+Chạy AI trên laptop bằng `run_robot_api.ps1` trong repo `AI_VOICE`. Dịch vụ
+HTTPS cổng 7861 dùng index tài liệu của AI_VOICE; OpenAI key chỉ nằm ở server.
+Pi dùng `/home/ubuntu/mar-secrets/voice-ai.json`, public CA và một token AI
+riêng. Không chép OpenAI key, CA private key hoặc server private key lên Pi.
+
+Trong terminal container MentorPi, chạy bằng user `ubuntu`:
+
+```sh
+cd /home/ubuntu/mediassist-mqtt-2026-10-08
+pi/.venv/bin/python tools/voice_audio.py chat --start-now --once
+```
+
+Robot chào, phát bíp rồi mới nghe. Nói một câu; sau khoảng 0,8 giây im lặng,
+Pi gửi WAV PCM16 mono 16 kHz tới BE STT, gửi text tới RAG laptop, rồi phát
+câu trả lời bằng BE TTS. Nói “tạm biệt” hoặc Ctrl+C để kết thúc. Lệnh này không
+khởi động ROS/động cơ/worker. Micro và loa có khóa chung với worker để tránh
+hai tiến trình tranh thiết bị. Không gọi thử SPEAK/VOICE_CAPTURE từ job khi
+đang trò chuyện vì chúng sẽ chờ chung thiết bị âm thanh.
+
+Bỏ `--start-now` để chờ tín hiệu wake từ `/dev/wonderecho`. Cụm từ đánh thức
+thực tế phụ thuộc firmware WonderEcho; cần thử “Hello MAR” trên thiết bị.
+Nếu chưa phát ra frame wake, dùng `--start-now`; phần mềm này không nạp lại
+firmware hoặc tuyên bố đã thay cụm từ đánh thức của hãng.
+
+Âm thanh người dùng được đọc từ ALSA vào RAM, không ghi WAV thu âm vào thẻ,
+không upload kho lưu âm thanh. Bộ đệm được bỏ sau STT; lịch sử chữ/câu trả lời
+và nguồn tài liệu được ghi vào BE qua `/api/v1/pi/voice/*`. Pi chỉ giữ ID/
+bộ đếm của phiên để đóng phiên bị gián đoạn, không giữ transcript trên đĩa.
+File bíp và WAV TTS là âm thanh hệ thống, được xóa khi phát xong/hủy.
+
+Để bật lệnh di chuyển, đặt `actions_enabled=true` trong file private
+`/home/ubuntu/mar-secrets/voice-ai.json`; `navigation_speed_mps` mặc định 0,2,
+được chọn trong 0,1..0,3 m/s cho lượt thử voice. Trên HTML bấm **Chuẩn bị
+workflow voice MOVE → báo đã tới nơi** một lần. Workflow chuẩn
+`WF_VOICE_ENDPOINT_V1` nhận endpoint/map/tốc độ qua tham số, không cố định a/b/c.
+
+Mở map đúng nơi robot đứng, tạo phiên tạm và chạy navigation với session ID
+HTML cung cấp. Chờ READY rồi mở terminal khác, chạy `voice_audio.py chat`
+như trên. Câu Việt/Anh hoặc trộn ngôn ngữ như “dẫn tôi tới point b”, “take me
+to point b” được đối chiếu với endpoint của map hiện tại. Danh sách lấy qua
+`GET /api/v1/pi/voice/navigation-destinations` bằng token DEVICE; không cần
+gắn room, bật publicVisible hoặc thêm map vào RAG. Tên nghe chưa rõ do AI
+đối chiếu danh mục thật; Pi/BE vẫn kiểm tra ID/map khi xác nhận.
+
+Robot đọc lại tên điểm. Nói “xác nhận”/“confirm”/“yes” trong 60 giây để gửi
+`POST /api/v1/pi/voice/navigation-requests`; nói “hủy”/“cancel” để bỏ. BE tạo
+request/job NAVIGATION có MOVE → INTERACT/SPEAK. Chỉ MOVE thành công mới đọc
+“đã tới điểm”; MOVE thất bại dừng tuyến, không phát câu thành công. Chat kết
+thúc sau khi gửi yêu cầu, nhường loa cho job. Chạy lại chat để gửi lượt tiếp
+theo trong cùng phiên map, không khởi tạo lại AMCL. Ctrl+C terminal chat
+không hủy job đã gửi; hủy job trên HTML hoặc API cancel nếu cần dừng robot.
+
+STT của chat dùng `languageCode=auto` để nhận Việt/Anh; các job thu âm cũ
+vẫn giữ `vi`/`en`. BE tạo workflow từ mẫu chuẩn, không nhận graph do LLM
+viết. Mỗi lượt có Idempotency-Key; phản hồi tạo request không rõ ràng giữ
+`voice-action-pending.json` để nhân viên đối chiếu, không tự gửi job mới.
+LLM không được mở servo hoặc gửi vận tốc.
+
 ## Kiểm thử offline
 
 Chạy từ thư mục `PI_MAR`, với Python đã cài các dependency trong

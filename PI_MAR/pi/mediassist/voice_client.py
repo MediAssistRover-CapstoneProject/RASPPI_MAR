@@ -49,11 +49,12 @@ class VoiceClient:
         context.minimum_version=ssl.TLSVersion.TLSv1_2
         self.opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect(),urllib.request.HTTPSHandler(context=context))
 
-    def request(self,path,data=None,content_type=None,timeout=50):
+    def request(self,path,data=None,content_type=None,timeout=50,idempotency_key=None):
         for attempt in range(2):
             token=upload_token(self.auth,self.cfg['robot_id'],force=attempt==1)
             headers={'Authorization':'Bearer '+token}
             if content_type:headers['Content-Type']=content_type
+            if idempotency_key:headers['Idempotency-Key']=idempotency_key
             req=urllib.request.Request(self.origin+path,data=data,headers=headers)
             try:
                 with self.opener.open(req,timeout=timeout) as response:
@@ -80,7 +81,7 @@ class VoiceClient:
         return self.value(raw)
 
     def transcribe_result(self,raw,language):
-        if language not in ('vi','en'):raise StepError('VOICE_LANGUAGE_UNSUPPORTED')
+        if language not in ('vi','en','auto'):raise StepError('VOICE_LANGUAGE_UNSUPPORTED')
         info=describe_audio(raw)
         if info['sample_rate']!=16000 or not .2<=info['duration_sec']<=20:
             raise StepError('VOICE_STT_REQUIRES_PCM16_MONO_16000HZ_MAX_20_SECONDS')

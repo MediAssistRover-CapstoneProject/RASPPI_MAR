@@ -2,6 +2,7 @@
 import asyncio
 import array
 import io
+import functools
 import json
 import math
 import os
@@ -10,6 +11,7 @@ import shutil
 import ssl
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -23,9 +25,17 @@ from .speech import SpeechPlayer,audio_device
 from .store import utcnow
 from .voice_capture import recording_cue
 from .voice_client import VoiceClient
+from .voice_actions import VoiceActions
 
 INTRO='Xin chào, bạn cần MAR giúp gì không?'
 GOODBYE='Phiên trò chuyện đã kết thúc. Khi cần hỗ trợ, hãy gọi MAR.'
+
+
+def serialized(method):
+    @functools.wraps(method)
+    def call(self,*args,**kwargs):
+        with self.lock:return method(self,*args,**kwargs)
+    return call
 
 
 class AiClient:
@@ -50,11 +60,13 @@ class AiClient:
             raise StepError('VOICE_AI_HTTP_'+str(e.code)) from None
         except OSError:raise StepError('VOICE_AI_UNREACHABLE') from None
         if len(raw)>65536:raise StepError('VOICE_AI_RESPONSE_TOO_LARGE')
-        return json.loads(raw)
+        result=json.loads(raw)
+        if not isinstance(result,dict):raise StepError('VOICE_AI_INVALID_RESPONSE')
+        return result
 
-    def ask(self,session_id,text,history):
+    def ask(self,session_id,text,history,destinations=None):
         turn=str(uuid.uuid4())
-        result=self.request('/api/robot/chat',dict(session_id=session_id,turn_id=turn,text=text,language='vi',history=history[-8:]))
+        result=self.request('/api/robot/chat',dict(session_id=session_id,turn_id=turn,text=text,language='vi',history=history[-8:],destinations=destinations or []))
         if (result.get('session_id')!=session_id or result.get('turn_id')!=turn
                 or not isinstance(result.get('answer'),str) or not 1<=len(result['answer'])<=2000
                 or not isinstance(result.get('speech_text'),str) or not 1<=len(result['speech_text'])<=500):
@@ -65,7 +77,7 @@ class AiClient:
 class History:
     """Only session IDs/counters are retained locally, never user audio or transcript."""
     def __init__(self,be,marker):
-        self.be=be;self.marker=marker;self.state=None
+        self.be=be;self.marker=marker;self.state=None;self.lock=threading.RLock()
 
     def save(self):
         fd,temp=tempfile.mkstemp(prefix='.voice-session-',dir=self.marker.parent)
@@ -93,6 +105,7 @@ class History:
             except (OSError,urllib.error.URLError):
                 if attempt:raise
 
+    @serialized
     def recover(self):
         if not self.marker.exists():return
         self.state=json.loads(self.marker.read_text())
@@ -101,6 +114,7 @@ class History:
             if 'HTTP 404' not in str(exc):raise
             self.marker.unlink(missing_ok=True);self.state=None
 
+    @serialized
     def start(self):
         self.state=dict(id=str(uuid.uuid4()),producer=str(uuid.uuid4()),sequence=0,commands=0,started_at=utcnow())
         self.save()
@@ -108,10 +122,12 @@ class History:
             dict(languageCode='vi-VN',startedAt=self.state['started_at']),self.state['id']))
         return self.state['id']
 
+    @serialized
     def record(self,question,reply,result,received_at,status='EXECUTED',request_id=None):
         self.state['commands']+=1
         params=dict(answer_text=reply,sources=result.get('sources',[]),speech_playback_completed=True,
-            physical_action_executed=False,ai_model='gpt-4o-mini')
+            physical_action_executed=False)
+        if result.get('model'):params['ai_model']=result['model']
         if result.get('action'):params['action_proposed']=result['action']
         payload=dict(voiceInteractionId=self.state['id'],serviceRequestId=request_id,sequenceNo=self.state['commands'],
             rawText=question,normalizedText=question.strip().casefold(),intentCode=result.get('intent','UNKNOWN'),
@@ -119,12 +135,17 @@ class History:
             status=status,receivedAt=received_at,processedAt=utcnow())
         self.post('/api/v1/pi/voice/commands',self.envelope('VOICE_COMMAND',payload))
 
+    @serialized
     def close(self,status='COMPLETED',summary=None):
         if not self.state:return
         sid=self.state['id']
         payload=dict(status=status,endedAt=utcnow(),detectedIntent=None,
             transcriptSummary=summary or 'Robot voice chat; turns='+str(self.state['commands']),audioUri=None)
-        self.post('/api/v1/pi/voice/interactions/'+sid+'/completion',self.envelope('VOICE_INTERACTION_COMPLETED',payload))
+        # Preserve the exact completion on a lost ACK, including its status.
+        # Recovery must not try to change an already COMPLETED row to FAILED.
+        event=self.state.get('completion') or self.envelope('VOICE_INTERACTION_COMPLETED',payload)
+        self.state['completion']=event;self.save()
+        self.post('/api/v1/pi/voice/interactions/'+sid+'/completion',event)
         self.marker.unlink(missing_ok=True);self.state=None
 
 
@@ -199,6 +220,9 @@ async def wait_wake(port):
 async def run_chat(worker,config_path,start_now=False,once=False,max_turns=10):
     if os.name=='posix' and os.geteuid()==0:raise StepError('VOICE_CHAT_RUN_AS_UBUNTU')
     ai=AiClient(config_path);be=VoiceClient(worker);player=SpeechPlayer(worker['speech']);history=History(be,ai.marker)
+    actions=VoiceActions(be,ai.config,ai.marker)
+    stt_language=ai.config.get('stt_language','auto')
+    if stt_language not in ('vi','en','auto'):raise StepError('VOICE_LANGUAGE_UNSUPPORTED')
     # Separate from the audio lease: only one conversation controller may run.
     import fcntl
     fd=os.open('/tmp/mar-voice-chat-'+str(os.getuid())+'.lock',os.O_CREAT|os.O_RDWR|os.O_CLOEXEC|os.O_NOFOLLOW,0o600)
@@ -211,34 +235,45 @@ async def run_chat(worker,config_path,start_now=False,once=False,max_turns=10):
         while True:
             if not start_now:await wait_wake(ai.config.get('wake_serial','/dev/wonderecho'))
             start_now=False
+            actions.pending=None
             sid=await asyncio.to_thread(history.start);print('VOICE_SESSION:',sid,flush=True)
-            status='COMPLETED';turns=[]
+            status='COMPLETED';turns=[];dispatched=False
             try:
+                candidates=await asyncio.to_thread(actions.candidates)
                 await say(player,INTRO)
                 for _ in range(max_turns):
                     raw=await listen(player)
                     if raw is None:break
                     received=utcnow()
-                    try:text=await asyncio.to_thread(be.transcribe,raw,'vi')
+                    try:text=await asyncio.to_thread(be.transcribe,raw,stt_language)
                     finally:del raw
                     print('USER:',text,flush=True)
-                    result=await asyncio.to_thread(ai.ask,sid,text,turns)
-                    reply=result['speech_text']
-                    # Navigation is proposed, never dispatched by the LLM endpoint.
-                    if result.get('action'):
-                        reply='Tôi đã nhận yêu cầu dẫn đường. Chức năng này cần phòng gắn với endpoint và phiên bản đồ sẵn sàng; hiện tôi đang ở chế độ thử hội thoại.'
+                    request_id=None
+                    handled=await asyncio.to_thread(actions.consume,text)
+                    if handled:
+                        reply,request_id=handled
+                        dispatched=bool(request_id)
+                        result=dict(intent='ESCORT_CONFIRMATION',confidence=1.,sources=[],end_session=bool(request_id))
+                    else:
+                        result=await asyncio.to_thread(ai.ask,sid,text,turns,candidates)
+                        reply=result['speech_text']
+                        if result.get('action'):
+                            reply=await asyncio.to_thread(actions.prepare,result['action'],sid)
                     await say(player,reply)
-                    await asyncio.to_thread(history.record,text,reply,result,received,'RESOLVED' if result.get('action') else 'EXECUTED')
+                    await asyncio.to_thread(history.record,text,reply,result,received,
+                        'RESOLVED' if result.get('action') or request_id else 'EXECUTED',request_id)
                     turns.extend([dict(role='user',content=text[:1000]),dict(role='assistant',content=reply[:1000])]);turns=turns[-8:]
                     if result.get('end_session'):break
                 else:print('VOICE_SESSION_MAX_TURNS',flush=True)
-                await say(player,GOODBYE)
+                if not dispatched:await say(player,GOODBYE)
             except BaseException:
                 status='FAILED';raise
             finally:
                 try:await asyncio.shield(asyncio.to_thread(history.close,status))
                 except Exception as exc:print('VOICE_HISTORY_CLOSE_PENDING:',type(exc).__name__,flush=True)
-                turns.clear()
-            if once:return
+                turns.clear();actions.pending=None
+            # The independent BE job now owns MOVE and arrival SPEAK. Leave
+            # the audio device free and do not cancel the job on chat shutdown.
+            if once or dispatched:return
     finally:
         fcntl.flock(fd,fcntl.LOCK_UN);os.close(fd)
