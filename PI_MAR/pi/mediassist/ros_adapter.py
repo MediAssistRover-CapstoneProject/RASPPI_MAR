@@ -24,7 +24,7 @@ class RosAdapter(CargoRecovery):
         from rclpy.action import ActionClient
         from rclpy.qos import qos_profile_sensor_data
         from nav2_msgs.action import NavigateToPose, ComputePathToPose, Spin
-        from nav_msgs.msg import Odometry
+        from nav_msgs.msg import Odometry, Path
         from sensor_msgs.msg import Range, LaserScan
         from geometry_msgs.msg import Twist
         from std_msgs.msg import UInt16, String
@@ -57,6 +57,11 @@ class RosAdapter(CargoRecovery):
         self.lease = self.node.create_publisher(String, config["ros"]["lease"], 10)
         self.lock = threading.Lock()
         self.samples, self.goal, self.lease_speed, self.goal_feedback = {}, None, None, None
+        self.latest_navigation_path=None
+        def navigation_path(message):
+            with self.lock:
+                self.latest_navigation_path=(message,time.monotonic())
+        self.node.create_subscription(Path,'/plan',navigation_path,1)
         self.nav_velocity_sample=None
         self.odom_twist_sample=None
         self.navigation_velocity_output=self.node.create_publisher(Twist,config['ros']['raw_cmd_vel'],1)
@@ -805,6 +810,8 @@ class RosAdapter(CargoRecovery):
         self.goal_feedback = None
         self.clear_navigation_velocity()
         self.navigation_speed_limit(p['max_speed_mps'])
+        path_after=time.monotonic()
+        path_reported_at=0.
         sent = self.nav.send_goal_async(goal, feedback_callback=lambda m: setattr(self, "goal_feedback", m.feedback))
         received = False
         try:
@@ -816,6 +823,17 @@ class RosAdapter(CargoRecovery):
             localization_pause=None;velocity_pause=None;gate_blocked_at=None
             while not result_future.done():
                 self._check_graph()
+                if time.monotonic()-path_reported_at>=.5:
+                    with self.lock:
+                        sample=self.latest_navigation_path
+                    receipt=getattr(self,'navigation_plan_receipt',None)
+                    if sample and sample[1]>path_after and receipt and receipt.get('endpointId')==endpoint_id:
+                        path_after=sample[1]
+                        try:
+                            self._report_plan(self._plan_body(sample[0],endpoint_id,receipt))
+                        except StepError as exc:
+                            self.node.get_logger().warning('NAV_PLAN_DISPLAY_REJECTED '+exc.code)
+                    path_reported_at=time.monotonic()
                 state = self.telemetry()
                 context_ready=self._navigation_context(allow_localization_pause=True,state=state)
                 self.navigation_diagnostic(state,'TRACKING' if context_ready and state['map_pose']['fresh'] else 'HOLD_LOCALIZATION')
@@ -878,6 +896,12 @@ class RosAdapter(CargoRecovery):
             return output
         finally:
             self.lease_message(False)
+            self.navigation_plan_receipt=None
+            self.navigation_plan_pending=None
+            upload=getattr(self,'navigation_plan_upload',None)
+            if upload and not upload.done():
+                upload.cancel()
+                await asyncio.gather(upload,return_exceptions=True)
             if not received: sent.add_done_callback(self._late_cancel)
             if not await self.stop(): raise StepError("GOAL_STOP_UNCONFIRMED")
 

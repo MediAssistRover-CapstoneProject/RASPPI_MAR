@@ -64,7 +64,7 @@ class SpeechPlayer:
                             pass
                         await process.wait()
 
-    async def speak(self, params):
+    async def speak(self, params, playback_guard=None):
         if not self.cfg.get('enabled'):
             raise StepError('SPEECH_NOT_ENABLED')
         engine = self.cfg.get('engine', 'espeak-ng')
@@ -74,6 +74,8 @@ class SpeechPlayer:
         device = audio_device(self.cfg)
         data = params['data']
         async with self.lock:
+            if playback_guard is not None and not playback_guard():
+                raise StepError('NAVIGATION_GUIDANCE_EXPIRED')
             with tempfile.TemporaryDirectory(prefix='mar-speech-') as folder:
                 wav = str(Path(folder) / 'speech.wav')
                 if engine == 'be-tts':
@@ -89,6 +91,8 @@ class SpeechPlayer:
                     raise StepError('INVALID_SPEECH_ENGINE')
                 if not Path(wav).is_file() or Path(wav).stat().st_size <= 44:
                     raise StepError('SPEECH_EMPTY_AUDIO')
+                if playback_guard is not None and not playback_guard():
+                    raise StepError('NAVIGATION_GUIDANCE_EXPIRED')
                 await self.process([player, '-q', '-D', device, wav])
         # Playback process completion is not a microphone verification of audibility.
         return {'completed': True, 'action': 'SPEAK', 'prompt_key': params['prompt_key'],

@@ -20,6 +20,9 @@ class StepStore:
             status TEXT NOT NULL, result TEXT);
           CREATE TABLE IF NOT EXISTS worker_commands(
             command_id TEXT PRIMARY KEY, hash TEXT NOT NULL, ack_id TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS navigation_guidance(
+            step_id TEXT NOT NULL, cue_id TEXT NOT NULL, status TEXT NOT NULL,
+            result TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(step_id,cue_id));
           CREATE TABLE IF NOT EXISTS worker_outbox(
             seq INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT UNIQUE NOT NULL,
             body TEXT NOT NULL, acked INTEGER NOT NULL DEFAULT 0);
@@ -43,6 +46,17 @@ class StepStore:
             self.emit("STEP_ERROR", {"status":"RECOVERY_REQUIRED", "errorCode":"PROCESS_RESTART",
                       "retryable":False, "details":{"code":"PROCESS_RESTART"}},
                       step, str(uuid.uuid4()))
+
+    def guidance_start(self, step, cue):
+        with self.db:
+            cursor = self.db.execute('INSERT OR IGNORE INTO navigation_guidance VALUES(?,?,?,?,?)',
+                (step['jobStepId'], cue, 'STARTED', None, utcnow()))
+        return cursor.rowcount == 1
+
+    def guidance_result(self, step, cue, status, result):
+        with self.db:
+            self.db.execute('UPDATE navigation_guidance SET status=?,result=?,updated_at=? WHERE step_id=? AND cue_id=?',
+                (status, json.dumps(result), utcnow(), step['jobStepId'], cue))
 
     def emit(self, kind, payload, step=None, correlation=None):
         if self.db.execute("SELECT count(*) FROM worker_outbox WHERE acked=0 AND superseded_by IS NULL").fetchone()[0] >= 10000:

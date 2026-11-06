@@ -139,6 +139,7 @@ class StepWorker:
         error_details = None
         physical_started=False
         stop_confirmed=None
+        guidance_task=None
         try:
             # Combined mode is sent only after mutual capability negotiation.
             # Its ONE receipt ACK commits acceptance AND STARTED on the BE before
@@ -158,6 +159,11 @@ class StepWorker:
                          round((accepted_ack_at-accepted_at)*1000),round((time.monotonic()-accepted_ack_at)*1000))
             self.store.set_running(step)
             physical_started=True
+            if (step['stepType']=='MOVE' and self.cfg.get('navigation_session')
+                    and 'INTERACT' in self.cfg.get('enabled_step_types',[])
+                    and self.cfg.get('speech',{}).get('enabled')):
+                from .navigation_guidance import run_navigation_guidance
+                guidance_task=asyncio.create_task(run_navigation_guidance(self,step))
             data=await asyncio.wait_for(self.adapter.perform(step),step["timeoutSec"])
             validate_result(step,data)
             status="SUCCEEDED"
@@ -177,6 +183,9 @@ class StepWorker:
             status="RECOVERY_REQUIRED" if error in ("BE_ACK_TIMEOUT","CONNECTION_LOST") else "FAILED"
             logging.warning("Step failed: %s (%s)",error,type(exc).__name__)
         finally:
+            if guidance_task is not None:
+                guidance_task.cancel()
+                await asyncio.gather(guidance_task,return_exceptions=True)
             if status!="SUCCEEDED" and self.adapter.mapping and self.adapter.mapping.active:
                 try:
                     await self.adapter.mapping.abort("ABORTED")
