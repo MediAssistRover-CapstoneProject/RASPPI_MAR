@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 
@@ -66,15 +65,9 @@ def main():
         print('Read-only; use --apply to install. No Docker/robot restart is required.')
         return
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-    backup = Path('/var/lib/mediassist-container-dns/backups') / stamp
-    backup.mkdir(parents=True, mode=0o700)
     old = {}
     for target in payloads:
-        old[str(target)] = target.read_bytes() if target.exists() else None
-        if target.exists():
-            saved = backup / target.relative_to('/')
-            saved.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(target, saved)
+        old[str(target)] = (target.read_bytes(), target.stat().st_mode & 0o777) if target.exists() else None
     try:
         for target, (content, mode) in payloads.items():
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -86,7 +79,7 @@ def main():
         subprocess.run(['systemctl', 'daemon-reload'], check=True, timeout=15)
         subprocess.run(['systemctl', 'enable', 'mar-container-dns.service'], check=True, timeout=15)
         receipt.parent.mkdir(parents=True, exist_ok=True)
-        receipt.write_text(json.dumps({'installed_at':stamp, 'backup':str(backup),
+        receipt.write_text(json.dumps({'installed_at':stamp,
             'files':{str(p):hashlib.sha256(data).hexdigest() for p,(data,_) in payloads.items()}}, indent=2))
         receipt.chmod(0o600)
     except BaseException:
@@ -94,10 +87,12 @@ def main():
             if old[str(target)] is None:
                 target.unlink(missing_ok=True)
             else:
-                shutil.copy2(backup / target.relative_to('/'), target)
+                raw, mode = old[str(target)]
+                temp = target.with_name(target.name + '.mar-restore')
+                temp.write_bytes(raw); temp.chmod(mode); os.replace(temp, target)
         subprocess.run(['systemctl', 'daemon-reload'], timeout=15, check=False)
         raise
-    print('DNS_SYNC_INSTALLED', 'BACKUP=' + str(backup), flush=True)
+    print('DNS_SYNC_INSTALLED; rollback bytes were held in RAM, no persistent backup created', flush=True)
     print('Run: sudo systemctl start mar-container-dns.service')
     print('No Docker/container/robot restarted. Existing MQTT worker can retry normally.')
 

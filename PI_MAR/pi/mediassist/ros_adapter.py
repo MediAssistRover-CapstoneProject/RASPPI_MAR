@@ -5,7 +5,7 @@ import math
 import threading
 import time
 from datetime import datetime, timezone
-from .contracts import StepError
+from .contracts import StepError, parse_timestamp
 from .store import utcnow
 from .adapters import validate_remote_result
 from .cargo_recovery import CargoRecovery
@@ -951,6 +951,8 @@ class RosAdapter(CargoRecovery):
             item = PWMServoState()
             item.id, item.position, item.offset = [4], [value], []
             msg.state, msg.duration = [item], float(servo["duration_sec"])
+            if meta.get('unlock_valid_until') and parse_timestamp(meta['unlock_valid_until']) <= datetime.now(timezone.utc):
+                raise StepError('STAFF_VERIFICATION_EXPIRED')
             self.pwm.publish(msg)
             await asyncio.sleep(msg.duration)
             return {"published": True, "controller_ack": False, "verified": False, "commanded_state": p["action"], "position_raw": value, "ros_servo_id": 4}

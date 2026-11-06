@@ -23,6 +23,7 @@ class MqttSession:
         self.failure = None
         self.last_be = time.monotonic()
         self.hello_deadline = None
+        self.staff_qr_scan = None
         self.publish_lock = asyncio.Lock()
         self.next_publish = 0.0
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
@@ -174,6 +175,8 @@ class MqttSession:
             self.last_be = time.monotonic()
             if kind=='HELLO_ACK':self.hello_deadline=None
             if kind == 'SERVER_HEARTBEAT':
+                window = value.get('staffQrScan')
+                self.staff_qr_scan = (window, self.last_be) if isinstance(window,dict) else None
                 if 'navigationSession' in value and self.hello_deadline is None:
                     from .navigation_authorization import receive
                     try:receive(self.cfg,value['navigationSession'])

@@ -5,7 +5,6 @@ tokens or MQTT credentials are changed. This is a repair for the current network
 Docker/container recreation or a network change can require a new check.
 """
 import argparse
-from datetime import datetime, timezone
 import ipaddress
 import json
 from pathlib import Path
@@ -99,12 +98,10 @@ def main():
         raise RuntimeError('NO_USABLE_UPSTREAM_DNS: no change made. Need the active network DNS; loopback host DNS cannot be copied into a bridge container.')
     print('DNS candidates from current host network:', ', '.join(servers), flush=True)
     if not args.apply:
-        print('Read-only. Run again with --apply to back up and repair container DNS.')
+        print('Read-only. Run again with --apply to repair container DNS.')
         return
-    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')
-    backup = '/tmp/mar-resolv-before-' + stamp + '.conf'
-    run(['docker', 'exec', '-i', '-u', '0', args.container, 'sh', '-c', 'umask 077; set -C; cat > "$1"', 'sh', backup], data=original)
-    print('Original DNS backup inside container:', backup, flush=True)
+    # apply_and_verify retains the original bytes in RAM and restores them on
+    # failure. Network changes must not accumulate resolver backups on the SD.
     write = lambda content: run(['docker', 'exec', '-i', '-u', '0', args.container, 'sh', '-c', 'cat > /etc/resolv.conf'], data=content)
     apply_and_verify(original, replacement(original, servers), write, resolves)
     print('CONTAINER_DNS_REPAIRED: worker can retry automatically. Keep the existing stack running; do not start a second worker.')

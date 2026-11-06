@@ -59,6 +59,7 @@ def vendor_bringup(info):
 
 def conflict(info):
     a = info['argv']
+    if any(Path(x).name=='voice_audio.py' for x in a) and any(x in a for x in ('chat','chat-daemon')):return True
     if any(x in a for x in ('mediassist.worker_cli', 'mediassist.safety_node', 'mediassist.cli', 'mediassist.camera_stream','mediassist.vendor_camera','mediassist.slam_session','mediassist.localization_node')):
         return True
     if any(Path(x).name in ('us100_dual_ros2.py', 'manual_mapping.py', 'mediassist_demo_slam.launch.py',
@@ -263,7 +264,7 @@ class Supervisor:
     def close(self):
         # Worker first, hardware while gate/watchdog remain available, then sensors
         # and finally gate/watchdog. No automatic restart/replay of a failed job.
-        order = {'worker':0,'gamepad':1,'camera':2,'navigation':3,'localization':4,'slam':5,'us100':6,'gate':7,'watchdog':8}
+        order = {'worker':0,'voice':1,'gamepad':2,'camera':3,'navigation':4,'localization':5,'slam':6,'us100':7,'gate':8,'watchdog':9}
         for name, child, identity in sorted(self.children, key=lambda item: order.get(item[0],3)):
             say('STOP ' + name)
             try:
@@ -465,6 +466,10 @@ def main():
                     say('CAMERA_STREAM_REQUESTED: backend=' + camera['stream_backend'] + ' HTTP port=' + str(camera['stream_port']) + '; see camera.log')
                     say('CAMERA_URL: http://<PI_IP>:' + str(camera['stream_port']) + stream_path(camera))
                 supervisor.start('worker', [python, '-m', 'mediassist.worker_cli', 'run', '--config', str(config)])
+                from mediassist.voice_runtime import enabled as voice_enabled
+                if voice_enabled(cfg) and cfg['speech']['enabled']:
+                    supervisor.start('voice',[python,str(ROOT/'tools/voice_audio.py'),'--config',str(config),'chat-daemon'],required=False)
+                    say('VOICE: idle wake listener; workflows have priority; see voice.log')
                 say('STACK_READY: map/odom/topology checked; localization readiness is in localization.log' if args.mode=='navigation'
                     else 'STACK_READY: map/odom/TF/topology checked; check BE MQTT handshake separately')
                 flags = ('commissioned', 'cart_footprint_validated', 'watchdog_validated')

@@ -22,11 +22,25 @@ class StepWorker:
         self.shutting_down = False
         self.outbox_wakeup = asyncio.Event()
         self.ack_waiters = {}
+        self.staff_qr = None
+        self.voice_publisher=None
+        from .voice_runtime import enabled,StatePublisher
+        if enabled(cfg):
+            try:self.voice_publisher=StatePublisher(cfg)
+            except (OSError,StepError):logging.warning('VOICE_STATE_UNAVAILABLE: voice stays optional')
+
+    def publish_voice_state(self,status=None):
+        if self.voice_publisher:
+            self.voice_publisher.publish(status or self.status(),
+                self.connection_ready and not self.shutting_down and not self.session_fault)
 
     def advertised_capabilities(self):
-        values=list(self.hardware['capabilities'])
+        from .staff_qr import CAPABILITIES
+        values=[value for value in self.hardware['capabilities'] if value not in CAPABILITIES]
         if self.cfg.get('navigation_session') and 'MOVE' in self.cfg.get('enabled_step_types',[]) and 'move-start-commit-v1' not in values:
             values.append('move-start-commit-v1')
+        if self.staff_qr is not None:
+            values.extend(CAPABILITIES)
         return values
 
     def status(self):
@@ -129,6 +143,7 @@ class StepWorker:
         ack=self.receipt(command,True,step,status='START_REQUESTED' if combined else 'ACCEPTED',
                          **({'start':start} if combined else {}))
         self.active=step
+        self.publish_voice_state('BUSY')
         if mapping and getattr(mapping,'manual_drive',None):
             mapping.gamepad.stop('WORKFLOW_HANDOFF_RETURN_NEUTRAL')
         self.stop_reason="CANCELLED"
@@ -214,6 +229,7 @@ class StepWorker:
                  "physicalStopConfirmed":stop_confirmed},step,correlation)
             self.outbox_wakeup.set()
             self.active=None
+            self.publish_voice_state()
 
     async def abandoned(self, reason):
         if self.active is None:
@@ -235,6 +251,7 @@ class StepWorker:
     async def shutdown(self):
         """Stop once, persist the result, and drain it while MQTT is still alive."""
         self.shutting_down=True
+        self.publish_voice_state('STOPPING')
         self.stop_reason='PROCESS_SHUTDOWN'
         if self.task and not self.task.done():
             self.task.cancel()
@@ -250,6 +267,7 @@ class StepWorker:
 
     async def disconnect(self, reason):
         self.connection_ready=False
+        self.publish_voice_state('OFFLINE')
         self.stop_reason=reason
         if self.task and not self.task.done():
             self.task.cancel()
@@ -281,8 +299,10 @@ class StepWorker:
             self.outbox_wakeup.clear()
             now=time.monotonic()
             if now-last_heartbeat>=self.cfg["heartbeat_sec"]:
+                status=self.status()
+                self.publish_voice_state(status)
                 await send(self.store.transient("HEARTBEAT",{
-                    "status":self.status(),"runtimeVersion":VERSION,"protocolMajor":1,
+                    "status":status,"runtimeVersion":VERSION,"protocolMajor":1,
                     "capabilities":self.advertised_capabilities(),
                     "activeJobStepId":self.active["jobStepId"] if self.active else None,
                     "currentMapId":None if self.adapter.mapping else self.hardware["map_id"],
@@ -361,10 +381,23 @@ class StepWorker:
             async with self.send_lock:
                 await ws.send(canonical(value))
         self.sent.clear()
+        unlock_policy = self.cfg['unlock_policy']
+        self.staff_qr = None
+        if unlock_policy == 'STAFF_VERIFIED':
+            try:
+                from .staff_qr import StaffQrScanner
+                if await self.adapter.probe_staff_unlock():
+                    self.staff_qr = StaffQrScanner(self)
+            except Exception as exc:
+                logging.warning('STAFF_UNLOCK_UNAVAILABLE code=%s', getattr(exc, 'code', type(exc).__name__))
+            if self.staff_qr is None:
+                unlock_policy = 'DISABLED'
+                self.adapter.staff_unlock_ready = False
+                logging.warning('STAFF_UNLOCK_DISABLED: camera and PWM readback must be ready')
         await send(self.store.transient("HELLO",{
             "contract":CONTRACT,"runtimeVersion":VERSION,"simulation":False,
             "enabledStepTypes":self.cfg["enabled_step_types"],
-            "unlockPolicy":self.cfg["unlock_policy"],"states":self.store.states(),
+            "unlockPolicy":unlock_policy,"states":self.store.states(),
             "mappingEnabled":self.cfg["mapping"]["enabled"],
             "mappingSession":self.adapter.mapping.state if self.adapter.mapping else None,
             **({'navigationSession':self.cfg['navigation_session']} if self.cfg.get('navigation_session') else {}),
@@ -378,6 +411,7 @@ class StepWorker:
         self.connection_ready=True
         logging.info("BE MQTT session ready: %s",self.cfg["robot_id"])
         outgoing=asyncio.create_task(self.publish(send))
+        scanner = asyncio.create_task(self.staff_qr.run(ws)) if self.staff_qr is not None else None
         try:
             while True:
                 incoming=asyncio.create_task(ws.recv())
@@ -426,6 +460,10 @@ class StepWorker:
                     raise StepError("UNKNOWN_MESSAGE_TYPE")
         finally:
             outgoing.cancel()
+            if scanner is not None:
+                scanner.cancel()
+                await asyncio.gather(scanner, return_exceptions=True)
+            self.staff_qr = None
             await asyncio.gather(outgoing,return_exceptions=True)
 
     async def mapping_loop(self, session):

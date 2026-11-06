@@ -101,6 +101,15 @@ def expiry(value):
     except ValueError:
         raise StepError("INVALID_EXPIRY") from None
 
+
+def require_current_unlock_grant(params):
+    grant = params.get('authorization')
+    if not isinstance(grant,dict) or grant.get('mode')!='STAFF_VERIFIED':
+        raise StepError('STAFF_VERIFICATION_REQUIRED')
+    if expiry(grant['valid_until']) <= datetime.now(timezone.utc):
+        raise StepError('STAFF_VERIFICATION_EXPIRED')
+    return grant
+
 def validate_command(command, robot_id, check_expiry=True):
     validate(command, COMMAND_SCHEMA)
     if command["robotId"] != robot_id:
@@ -132,11 +141,12 @@ def validate_step(step, cfg, hardware):
     if kind == "CONTROL_HARDWARE":
         if p["compartment_id"] not in cfg["compartments"]:
             raise StepError("COMPARTMENT_NOT_CONFIGURED")
-        if p["action"] == "UNLOCK_COMPARTMENT":
-            # Staff authentication is explicitly deferred, never silently granted.
-            # Only a locally enabled bench/commissioning mode permits opening.
-            if cfg["unlock_policy"] != "COMMISSIONING_ONLY":
-                raise StepError("AUTHENTICATION_PENDING")
+        if p["action"] == "LOCK_COMPARTMENT":
+            if 'authorization' in p:raise StepError('UNEXPECTED_STAFF_VERIFICATION')
+        elif cfg["unlock_policy"] == "STAFF_VERIFIED":
+            require_current_unlock_grant(p)
+        elif cfg["unlock_policy"] != "COMMISSIONING_ONLY" or 'authorization' in p:
+            raise StepError("STAFF_VERIFICATION_REQUIRED")
     if kind == "WAIT":
         if set(p) != {"wait_type","duration_sec"} or p["wait_type"] != "DURATION":
             raise StepError("INVALID_WAIT_PARAMS")
@@ -185,10 +195,13 @@ def validate_result(step, data):
         raise StepError("INVALID_MOVE_OUTPUT")
     if kind == "CONTROL_HARDWARE":
         expected = 1500 if p["action"] == "LOCK_COMPARTMENT" else 2400
+        staff = p["action"] == "UNLOCK_COMPARTMENT" and p.get('authorization',{}).get('mode') == 'STAFF_VERIFIED'
         if (data.get("published") is not True or data.get("verified") is not False
-            or data.get("controller_ack") is not False or data.get("position_raw") != expected
+            or data.get("controller_ack") is not staff or data.get("position_raw") != expected
             or data.get("ros_servo_id") != 4):
             raise StepError("INVALID_SERVO_OUTPUT")
+        if staff and data.get('authorization_mode')!='STAFF_VERIFIED':
+            raise StepError('INVALID_SERVO_AUTHORIZATION_OUTPUT')
     if kind == "WAIT" and (data.get("completed") is not True or data.get("wake_reason") != "DURATION"):
         raise StepError("INVALID_WAIT_OUTPUT")
     if kind == "EXECUTE_SENSING":

@@ -96,6 +96,10 @@ class MappingManager:
             'layout':pad.get('layout','legacy'),'session_required':pad.get('session_required',True),
             'forward_mps':pad.get('forward_mps',.10),'angular_rps':pad.get('angular_rps',.35),
             'continuous':pad.get('max_run_sec',3.)==0}
+        if self.cfg.get('control_source')=='mqtt':
+            from .mapping_control import MAX_LINEAR,MAX_ANGULAR
+            status['manual_control'].update(layout='legacy',session_required=True,
+                forward_mps=MAX_LINEAR,angular_rps=MAX_ANGULAR,continuous=False)
         if self.auto.cfg['enabled'] and getattr(self,'exploration',None):
             status['exploration']=self.exploration.tracker.status()
         return status

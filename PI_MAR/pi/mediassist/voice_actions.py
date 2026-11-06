@@ -18,8 +18,9 @@ def words(text):
 
 class VoiceActions:
     """The model proposes a catalog endpoint, never coordinates or a workflow graph."""
-    def __init__(self,be,config,marker):
+    def __init__(self,be,config,marker,before_dispatch=None):
         self.be=be;self.enabled=config.get('actions_enabled') is True
+        self.before_dispatch=before_dispatch
         self.marker=Path(marker).with_name('voice-action-pending.json');self.pending=None
         self.speed=config.get('navigation_speed_mps',.2)
         if type(self.speed) not in (int,float) or not math.isfinite(self.speed) or not .1<=self.speed<=.3:
@@ -55,6 +56,8 @@ class VoiceActions:
                 return 'Chưa có phiên bản đồ đang mở. Bạn vui lòng mở phiên navigation trước.'
             raise
         session=catalog['navigationSession']
+        if catalog.get('robotAvailable') is False:
+            return 'Tôi đang thực hiện một nhiệm vụ. Bạn vui lòng chờ nhiệm vụ kết thúc.'
         if session.get('state')!='READY':
             return 'Phiên bản đồ của tôi chưa sẵn sàng dẫn đường. Bạn vui lòng nhờ nhân viên mở phiên trước.'
         if catalog.get('workflowPrepared') is not True:
@@ -89,6 +92,8 @@ class VoiceActions:
             return None
         self.pending=None
         catalog=self.catalog();session=catalog['navigationSession']
+        if catalog.get('robotAvailable') is False:
+            return 'Robot vừa nhận một nhiệm vụ khác. Tôi chưa gửi yêu cầu dẫn đường mới.',None
         if session.get('state')!='READY' or session.get('sessionId')!=pending['session_id']:
             return 'Phiên bản đồ đã thay đổi. Tôi chưa gửi nhiệm vụ; bạn vui lòng nhờ nhân viên kiểm tra.',None
         if not any(p.get('endpointId')==pending['body']['endpointId'] and p.get('mapId')==session['mapId'] for p in catalog['endpoints']):
@@ -97,6 +102,7 @@ class VoiceActions:
         # response must not cause a second job with a new idempotency key.
         write_private(self.marker,json.dumps(dict(idempotency_key=pending['key'],body=pending['body'])))
         try:
+            if self.before_dispatch:self.before_dispatch()
             _,_,raw=self.be.request('/api/v1/pi/voice/navigation-requests',json.dumps(pending['body']).encode(),
                 'application/json',timeout=15,idempotency_key=pending['key'])
         except StepError as error:

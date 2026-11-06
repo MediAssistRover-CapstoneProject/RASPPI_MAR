@@ -356,6 +356,46 @@ viết. Mỗi lượt có Idempotency-Key; phản hồi tạo request không rõ
 `voice-action-pending.json` để nhân viên đối chiếu, không tự gửi job mới.
 LLM không được mở servo hoặc gửi vận tốc.
 
+## Voice thường trực trong phiên map
+
+`voice_chat.enabled=true` trong worker config bật một tiến trình voice phụ do
+supervisor quản lý khi chạy navigation. Không tạo thêm ROS node hoặc MQTT worker.
+Ví dụ cấu hình (file AI vẫn giữ riêng bên ngoài repo):
+
+```json
+"voice_chat": {
+  "enabled": true,
+  "config_file": "/home/ubuntu/mar-secrets/voice-ai.json",
+  "idle_settle_sec": 2,
+  "start_timeout_sec": 12,
+  "max_turns": 10
+}
+```
+
+Mở phiên map trên HTML rồi chạy đúng lệnh `navigation_session.zsh` của phiên.
+Có thể dùng `--voice-chat` hoặc `--no-voice-chat` để đổi riêng lượt chạy này.
+Không mở thêm `voice_audio.py chat` khi listener đã chạy; xem
+`pi/state/stack/voice.log`, trạng thái `VOICE_STATE WAIT_WAKE` là đang chờ gọi.
+Để dùng câu **“Chào cậu”**, đặt `"wake": {"mode": "local_ai", "phrase": "Chào cậu"}`
+trong `/home/ubuntu/mar-secrets/voice-ai.json`. Chạy `run_robot_api.ps1` trên máy AI
+với model Zipformer tiếng Việt và `AI_WAKE_ENABLED=true`. Pi chỉ gửi đoạn có
+tiếng nói tối đa 4 giây qua HTTPS đến máy AI, xử lý trong RAM. Cấu hình cũ không
+có `wake.mode` vẫn nhận sự kiện từ firmware WonderEcho qua `/dev/wonderecho`.
+
+Voice chỉ nhận khi robot IDLE. Khi có tín hiệu đánh thức, BE kiểm tra còn job
+đang chạy hay cần recovery không, kể cả bước chờ do server xử lý. Admin vẫn dùng
+workflow/API hiện có trên cùng map. Khi Pi nhận step mới, voice nhường micro/loa;
+không đổi trạng thái job hoặc hủy MOVE vì kết thúc hội thoại. Sau job, listener
+tự trở lại. Nói “tạm biệt”, “không cần nữa”, “goodbye” hoặc im lặng 12 giây để
+đóng hội thoại. Phiên map/AMCL được giữ nguyên. Dẫn đường cần xác nhận và vẫn dùng
+workflow MOVE → SPEAK đã publish.
+
+Trạng thái worker trao đổi trong `/dev/shm` (RAM), không đọc DB trong vòng chờ.
+Không ghi transcript vào log voice của stack, không giữ file thu âm của người
+dùng. Lịch sử văn bản tiếp tục về BE. Lỗi AI/micro không dừng stack di chuyển.
+Chưa có phiên map thì chức năng thường trực này không tự bật; CLI thu/phát/chat
+thủ công vẫn dùng được. `Ctrl+C` stack dừng cả tiến trình voice và thiết bị thu/phát.
+
 ## Kiểm thử offline
 
 Chạy từ thư mục `PI_MAR`, với Python đã cài các dependency trong

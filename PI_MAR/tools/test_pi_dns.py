@@ -52,7 +52,7 @@ def scenario(post_timeout=False, host_timeout=False):
     if host_timeout:
         assert writes == [] and backups == []
     else:
-        assert backups == [old]
+        assert backups == []
         assert b'nameserver 192.168.1.1' in writes[0]
         assert b'116.97.90.124' not in writes[0]
         assert 'CONTAINER_DNS_TIMEOUT' in output.getvalue()
@@ -63,7 +63,7 @@ def scenario(post_timeout=False, host_timeout=False):
 
 
 scenario()
-print('PASS initial container timeout -> backup -> repair -> successful DNS verification')
+print('PASS initial container timeout -> repair -> successful DNS verification, no persistent backup')
 scenario(post_timeout=True)
 print('PASS timeout after repair -> original DNS restored')
 scenario(host_timeout=True)

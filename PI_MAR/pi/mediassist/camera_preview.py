@@ -6,15 +6,22 @@ import threading
 import time
 from .store import utcnow
 
-def encode_jpeg(sample, cfg):
+def frame_pixels(sample):
     import cv2
     import numpy as np
-    data,width,height,step,encoding,captured,received = sample
+    data,width,height,step,encoding,_,_ = sample
     channels={'rgb8':3,'bgr8':3,'rgba8':4,'bgra8':4,'mono8':1}[encoding]
     pixels=np.frombuffer(data,dtype=np.uint8).reshape(height,step)[:,:width*channels]
     frame=pixels.reshape(height,width,channels) if channels>1 else pixels.reshape(height,width)
     colors={'rgb8':cv2.COLOR_RGB2BGR,'rgba8':cv2.COLOR_RGBA2BGR,'bgra8':cv2.COLOR_BGRA2BGR}
     if encoding in colors:frame=cv2.cvtColor(frame,colors[encoding])
+    return frame
+
+
+def encode_jpeg(sample, cfg):
+    import cv2
+    _,width,height,_,_,captured,_ = sample
+    frame=frame_pixels(sample)
     scale=min(1.,cfg['max_width']/width,cfg['max_height']/height)
     if scale<1:frame=cv2.resize(frame,(max(1,int(width*scale)),max(1,int(height*scale))),interpolation=cv2.INTER_AREA)
     for quality in (cfg['jpeg_quality'],30,20):
@@ -41,7 +48,7 @@ class CameraPreview:
         self.source_clock=adapter.node.get_clock() if hasattr(adapter.node,'get_clock') else None
         self.lock=threading.Lock();self.sample=None;self.last_sample=0.;self.revision=0;self.error=None
         qos=QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT,durability=DurabilityPolicy.VOLATILE)
-        adapter.node.create_subscription(Image,cfg['topic'],self.on_image,qos)
+        self.subscription=adapter.node.create_subscription(Image,cfg['topic'],self.on_image,qos)
 
     def on_image(self,msg):
         now=time.monotonic()
@@ -71,9 +78,13 @@ class CameraPreview:
         observer=getattr(self,'on_receive',None)
         if observer:observer(msg.width,msg.height,now)
 
-    async def preview(self,session_id):
+    def take_sample(self,max_age):
         with self.lock:sample=self.sample;self.sample=None
-        if not sample or time.monotonic()-sample[-1]>3:return None
+        return sample if sample and time.monotonic()-sample[-1]<=max_age else None
+
+    async def preview(self,session_id):
+        sample=self.take_sample(3)
+        if sample is None:return None
         try:
             frame=await asyncio.to_thread(encode_frame,sample,self.cfg)
             if not frame:return None

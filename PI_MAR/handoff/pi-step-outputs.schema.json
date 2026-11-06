@@ -216,7 +216,7 @@
           "const": true
         },
         "controller_ack": {
-          "const": false
+          "type": "boolean"
         },
         "verified": {
           "const": false
@@ -239,7 +239,8 @@
         "authorization_mode": {
           "enum": [
             "DEVICE_COMMAND",
-            "COMMISSIONING_ONLY"
+            "COMMISSIONING_ONLY",
+            "STAFF_VERIFIED"
           ]
         }
       },
@@ -289,7 +290,39 @@
                 "const": 2400
               },
               "authorization_mode": {
-                "const": "COMMISSIONING_ONLY"
+                "enum": [
+                  "COMMISSIONING_ONLY",
+                  "STAFF_VERIFIED"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "authorization_mode": {
+                "const": "STAFF_VERIFIED"
+              }
+            },
+            "required": [
+              "authorization_mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "action": {
+                "const": "UNLOCK_COMPARTMENT"
+              },
+              "controller_ack": {
+                "const": true
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "controller_ack": {
+                "const": false
               }
             }
           }

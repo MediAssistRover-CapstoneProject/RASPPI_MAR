@@ -102,21 +102,51 @@ class SweepTests(unittest.TestCase):
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):
     def adapter(self):
         a=CargoRecovery()
-        a.worker={'navigation_runtime':{'geometry':{'profile':'cargo'}}}
+        a.worker={'navigation_runtime':{'map_yaml':'saved-map.yaml','geometry':{'profile':'cargo'}}}
         a.cfg={'motion':{'allow_reverse':True,'allow_strafe':True,'chassis_model':'MENTORPI_M1_MECANUM'},'endpoints':{'A':dict(x_m=0.,y_m=1.,yaw_rad=0.)}}
         a._wait_stationary=AsyncMock();a._cargo_pose=Mock(return_value=({},dict(x_m=0.,y_m=0.,yaw_rad=0.)))
         a._cargo_reverse=AsyncMock();a._cargo_translate=AsyncMock();a._cargo_rotate=AsyncMock();a.node=Mock()
         a._cargo_clear=lambda p,d,y,**kw:(True,maneuver_points(p,d,y,**kw))
         return a
 
-    async def test_controller_abort_replans_once_inside_same_step(self):
+    async def test_controller_abort_repositions_once_inside_same_step_even_with_a_clear_gate(self):
         a=self.adapter();a._move_one=AsyncMock(side_effect=[StepError('NAV_ABORTED'),{'reached':True}])
         a.telemetry=Mock(return_value={});a._navigation_context=Mock(return_value=True)
         a._prerequisites=AsyncMock();a._plan_with_cargo_recovery=AsyncMock()
         params={'max_speed_mps':.4};meta={'job_id':'same','job_step_id':'same-step'}
         self.assertTrue((await a._move_with_path_recovery(params,'A',meta))['reached'])
-        a._plan_with_cargo_recovery.assert_awaited_once_with(params,'A',meta)
+        a._plan_with_cargo_recovery.assert_awaited_once_with(params,'A',meta,force_escape=True)
         self.assertEqual(a._move_one.await_count,2)
+
+    async def test_bare_chassis_can_reposition_after_controller_abort(self):
+        a=self.adapter();a.worker['navigation_runtime']['geometry']['profile']='bare'
+        a._move_one=AsyncMock(side_effect=[StepError('NAV_ABORTED'),{'reached':True}])
+        a.telemetry=Mock(return_value={});a._navigation_context=Mock(return_value=True)
+        a._prerequisites=AsyncMock();a._plan=AsyncMock(side_effect=['virtual','actual'])
+        self.assertTrue((await a._move_with_path_recovery({},'A',{}))['reached'])
+        a._cargo_translate.assert_awaited_once_with(0.,.06,{})
+        a._cargo_reverse.assert_not_awaited()
+        self.assertTrue(a._plan.await_args_list[0].kwargs['probe'])
+        self.assertEqual(a._plan.await_args_list[-1].kwargs,{})
+
+    async def test_controller_abort_without_clear_escape_can_only_retry_a_normal_route(self):
+        a=self.adapter();a._move_one=AsyncMock(side_effect=[StepError('NAV_ABORTED'),{'reached':True}])
+        a.telemetry=Mock(return_value={});a._navigation_context=Mock(return_value=True)
+        a._prerequisites=AsyncMock();a._plan=AsyncMock()
+        a._cargo_clear=lambda *args,**kw:(False,[])
+        self.assertTrue((await a._move_with_path_recovery({},'A',{}))['reached'])
+        a._cargo_translate.assert_not_awaited();a._cargo_reverse.assert_not_awaited()
+        a._plan.assert_awaited_once_with({},'A',{})
+
+    async def test_scan_loss_during_escape_search_never_restarts_navigation(self):
+        a=self.adapter();a._move_one=AsyncMock(side_effect=StepError('NAV_ABORTED'))
+        a.telemetry=Mock(return_value={});a._navigation_context=Mock(return_value=True)
+        a._prerequisites=AsyncMock();a._plan=AsyncMock()
+        a._cargo_clear=Mock(side_effect=StepError('CARGO_ESCAPE_SCAN_NOT_READY'))
+        with self.assertRaisesRegex(StepError,'CARGO_ESCAPE_SCAN_NOT_READY'):
+            await a._move_with_path_recovery({},'A',{})
+        self.assertEqual(a._move_one.await_count,1)
+        a._plan.assert_not_awaited();a._cargo_translate.assert_not_awaited()
 
     async def test_small_arrival_error_replans_once_without_faking_success(self):
         a=self.adapter();a._move_one=AsyncMock(side_effect=[StepError('ENDPOINT_POSITION_NOT_CONFIRMED'),{'reached':True}])
@@ -166,6 +196,14 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         a._prerequisites=AsyncMock();a._plan_with_cargo_recovery=AsyncMock()
         self.assertTrue((await a._move_with_path_recovery({},'A',{}))['reached'])
         self.assertEqual(a._move_one.await_count,3);self.assertEqual(a._plan_with_cargo_recovery.await_count,2)
+
+    async def test_two_controller_aborts_never_repeat_the_physical_reposition(self):
+        a=self.adapter();a._move_one=AsyncMock(side_effect=[StepError('NAV_ABORTED'),StepError('NAV_ABORTED'),{'reached':True}])
+        a.telemetry=Mock(return_value={});a._navigation_context=Mock(return_value=True)
+        a._prerequisites=AsyncMock();a._plan=AsyncMock(side_effect=['virtual','actual','updated'])
+        self.assertTrue((await a._move_with_path_recovery({},'A',{}))['reached'])
+        a._cargo_translate.assert_awaited_once_with(0.,.06,{})
+        self.assertEqual(a._plan.await_count,3)
 
     async def test_repeated_gate_blockage_never_repeats_physical_cargo_escape(self):
         a=self.adapter();a._move_one=AsyncMock(side_effect=[StepError('NAV_GATE_BLOCKED'),StepError('NAV_GATE_BLOCKED'),{'reached':True}])
@@ -262,6 +300,20 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await a._plan_with_cargo_recovery({},'A',{},force_escape=True),'actual')
         a._cargo_translate.assert_awaited_once_with(0.,.06,{})
         self.assertEqual(a._plan.await_args_list[-1].kwargs,{})
+
+    async def test_recovery_chooses_right_when_left_is_blocked_and_preserves_heading(self):
+        a=self.adapter();a._plan=AsyncMock(side_effect=['virtual','actual'])
+        a._cargo_clear=lambda p,d,y,**kw:(kw.get('lateral',0)<0,maneuver_points(p,d,y,**kw))
+        await a._plan_with_cargo_recovery({},'A',{},force_escape=True)
+        a._cargo_translate.assert_awaited_once_with(0.,-.06,{})
+        self.assertEqual(a._cargo_rotate.await_args.args[0],0.)
+
+    async def test_recovery_search_does_not_choose_a_stationary_or_spin_only_pose(self):
+        a=self.adapter();a._plan=AsyncMock()
+        a._cargo_clear=lambda p,d,y,**kw:(not(d or kw.get('lateral',0)),maneuver_points(p,d,y,**kw))
+        with self.assertRaisesRegex(StepError,'NAV_RECOVERY_NO_CLEAR_MANEUVER'):
+            await a._plan_with_cargo_recovery({},'A',{},force_escape=True)
+        a._plan.assert_not_awaited();a._cargo_rotate.assert_not_awaited()
 
     async def test_final_alignment_selects_the_other_direction_before_moving_the_body(self):
         a=self.adapter();a.cfg['endpoints']['A']=dict(x_m=0.,y_m=0.,yaw_rad=1.)

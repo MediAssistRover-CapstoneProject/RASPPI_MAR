@@ -102,7 +102,7 @@ def load(path):
     for key, lo, hi in (("heartbeat_sec",1,10),("ack_timeout_sec",3,60),("connect_timeout_sec",3,60),("hello_timeout_sec",5,60)):
         if type(cfg[key]) not in (int,float) or not lo <= cfg[key] <= hi:
             raise StepError("INVALID_CONFIG",key)
-    if cfg.get("unlock_policy") not in ("DISABLED","COMMISSIONING_ONLY"):
+    if cfg.get("unlock_policy") not in ("DISABLED","COMMISSIONING_ONLY","STAFF_VERIFIED"):
         raise StepError("INVALID_UNLOCK_POLICY")
     if not isinstance(cfg.get("compartments"),dict) or any(v!="cargo_lock" for v in cfg["compartments"].values()):
         raise StepError("INVALID_COMPARTMENT_MAPPING")
@@ -120,6 +120,8 @@ def load(path):
     if speech.get('engine') == 'be-tts':
         from .cloud_speech import validate_cloud_config
         validate_cloud_config(speech)
+    from .voice_runtime import configuration as voice_configuration
+    voice_configuration(cfg)
     ai = cfg.get("ai")
     if not isinstance(ai,dict) or type(ai.get("enabled")) is not bool or not isinstance(ai.get("topic"),str):
         raise StepError("INVALID_AI_CONFIG")

@@ -25,6 +25,8 @@ class WorkerAdapter(RosAdapter):
         self.stop_lock = asyncio.Lock()
         self.closed = False
         super().__init__(hardware, NoRemote())
+        self.staff_unlock_ready = False
+        self.pwm_read_client = None
         from .speech import SpeechPlayer
         self.speech = SpeechPlayer(worker.get("speech", {}))
         self.mapping = None
@@ -95,6 +97,56 @@ class WorkerAdapter(RosAdapter):
             self.motion_uncertain = True
             return False
 
+    def stationary_for_handover(self):
+        odom = self.telemetry().get('odom_speed') or {}
+        age, speed = odom.get('age_sec'), odom.get('value')
+        return (type(age) in (int, float) and 0 <= age <= .5
+                and type(speed) in (int, float) and 0 <= speed <= .01)
+
+    async def probe_staff_unlock(self):
+        """Advertise staff unlock only after bounded readback from the existing controller."""
+        self.staff_unlock_ready = False
+        if (not self.worker.get('navigation_session') or self.worker['mapping']['enabled']
+                or 'CONTROL_HARDWARE' not in self.worker['enabled_step_types']
+                or self.worker.get('compartments', {}).get('CART_MAIN') != 'cargo_lock'
+                or not self.cfg['servo']['commissioned'] or not self.stationary_for_handover()):
+            return False
+        from ros_robot_controller.ros_robot_controller_node import RosRobotController
+        from ros_robot_controller_msgs.srv import GetPWMServoState
+
+        topic = self.cfg['ros']['pwm']
+        if not getattr(RosRobotController, 'MAR_BOUNDED_PWM_READBACK', False) or not topic.endswith('/set_state'):
+            return False
+        if self.pwm_read_client is None:
+            service = topic.removesuffix('/set_state') + '/get_state'
+            self.pwm_read_client = self.node.create_client(GetPWMServoState, service)
+        deadline = time.monotonic() + 1.2
+        while not self.pwm_read_client.service_is_ready():
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(.05)
+        position = await self.read_servo_pwm()
+        self.staff_unlock_ready = 500 <= position <= 2500
+        return self.staff_unlock_ready
+
+    async def read_servo_pwm(self):
+        from ros_robot_controller_msgs.msg import GetPWMServoCmd
+        from ros_robot_controller_msgs.srv import GetPWMServoState
+
+        if self.pwm_read_client is None or not self.pwm_read_client.service_is_ready():
+            raise StepError('PWM_READBACK_UNAVAILABLE')
+        request = GetPWMServoState.Request()
+        request.cmd = [GetPWMServoCmd(id=4, get_position=1, get_offset=0)]
+        future = self.pwm_read_client.call_async(request)
+        try:
+            result = await self.future(future, timeout=1.2)
+        finally:
+            if not future.done():future.cancel()
+        if (result is None or not result.success or len(result.state) != 1
+                or list(result.state[0].id) != [4] or len(result.state[0].position) != 1):
+            raise StepError('PWM_READBACK_UNAVAILABLE')
+        return int(result.state[0].position[0])
+
     async def perform(self, step):
         kind, p = step["stepType"], step["params"]
         meta = {"job_id":step["jobId"],"job_step_id":step["jobStepId"],
@@ -110,10 +162,23 @@ class WorkerAdapter(RosAdapter):
             return await self.execute(kind,p,meta)
         if kind == "CONTROL_HARDWARE":
             action = "LOCK" if p["action"] == "LOCK_COMPARTMENT" else "UNLOCK"
+            mode = 'DEVICE_COMMAND' if action == 'LOCK' else self.worker['unlock_policy']
+            if action == 'UNLOCK' and mode not in ('COMMISSIONING_ONLY','STAFF_VERIFIED'):
+                raise StepError('STAFF_VERIFICATION_REQUIRED')
+            if mode == 'STAFF_VERIFIED':
+                from .step_contract import require_current_unlock_grant
+                grant = require_current_unlock_grant(p)
+                if (not self.staff_unlock_ready or self.pwm_read_client is None
+                        or not self.pwm_read_client.service_is_ready() or not self.stationary_for_handover()):
+                    raise StepError('STAFF_UNLOCK_NOT_READY')
+                meta['unlock_valid_until'] = grant['valid_until']
             data = await self.execute(kind,{"device_id":"cargo_lock","action":action},meta)
+            if mode == 'STAFF_VERIFIED':
+                if await self.read_servo_pwm() != data['position_raw']:
+                    raise StepError('SERVO_READBACK_MISMATCH')
+                data['controller_ack'] = True
             return {**data,"compartment_id":p["compartment_id"],
-                "action":p["action"],"authorization_mode":
-                    "COMMISSIONING_ONLY" if action=="UNLOCK" else "DEVICE_COMMAND"}
+                "action":p["action"],"authorization_mode":mode}
         if kind == "EXECUTE_SENSING":
             task = p["sensing_type"]
             if task == "AUDIO_LOOPBACK":

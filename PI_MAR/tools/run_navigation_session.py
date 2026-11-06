@@ -13,7 +13,7 @@ from mediassist.worker_config import load
 from configure_mapping import stopped_configuration
 from configure_localization import nav_parameters
 
-def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profile=None):
+def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profile=None,voice_chat=None):
     if arrival_mode not in ('POSITION_ONLY','POSITION_THEN_SPIN'):raise ValueError('Unsupported arrival mode')
     position_only=arrival_mode=='POSITION_ONLY'
     native=ROOT/'pi/native/navigation_bt/build'
@@ -21,6 +21,7 @@ def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profil
         raise RuntimeError('BUILD_NAVIGATION_BT_FIRST: bash tools/build_navigation_bt.sh')
     os.environ['LD_LIBRARY_PATH']=str(native)+os.pathsep+os.environ.get('LD_LIBRARY_PATH','')
     cfg,hw=load(config)
+    if voice_chat is not None:cfg['voice_chat']['enabled']=voice_chat
     cfg,hw,geometry=session_geometry(cfg,hw,load_profile)
     client=SessionClient(cfg);descriptor=client.get(session_id)
     session_id=descriptor['sessionId'];map_id=descriptor['mapId']
@@ -73,8 +74,10 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--config',type=Path,default=ROOT/'pi/config/mqtt.worker.json');p.add_argument('--session-id')
     p.add_argument('--arrival-mode',choices=['POSITION_ONLY','POSITION_THEN_SPIN'],default='POSITION_THEN_SPIN')
     p.add_argument('--load-profile',choices=['bare','cargo'],help='Override saved-map load geometry; mapping configuration is unchanged')
+    p.add_argument('--voice-chat',action=argparse.BooleanOptionalAction,default=None,
+                   help='Override the managed idle wake/chat listener for this session only')
     a=p.parse_args()
-    with stopped_configuration(a.config):root,client,descriptor=prepare(a.config,a.session_id,a.arrival_mode,a.load_profile)
+    with stopped_configuration(a.config):root,client,descriptor=prepare(a.config,a.session_id,a.arrival_mode,a.load_profile,a.voice_chat)
     print('NAVIGATION_SESSION:',descriptor['sessionId'],'MAP:',descriptor['mapId'])
     print('Base configuration preserved. Waiting for initial pose/global localization from the map UI; no goal sent.')
     print('ARRIVAL_MODE:',a.arrival_mode,'; forward RPP path tracking; at most one final Spin when heading is requested.')

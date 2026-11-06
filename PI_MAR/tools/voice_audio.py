@@ -90,6 +90,7 @@ def main():
     p.add_argument('--start-now',action='store_true',help='Start one conversation without waiting for the hardware wake event')
     p.add_argument('--once',action='store_true',help='Exit when the conversation ends instead of waiting for another wake')
     p.add_argument('--max-turns',type=int,choices=range(1,21),default=10)
+    commands.add_parser('chat-daemon',help='Managed navigation idle listener; no extra ROS/MQTT worker')
     args=parser.parse_args()
     if args.action=='devices':
         for executable in ('arecord','aplay'):
@@ -101,6 +102,11 @@ def main():
         if args.play:playback(audio_device({'device':args.output_device}),raw)
         return
     cfg,_=load(args.config.resolve(strict=True))
+    if args.action=='chat-daemon':
+        import asyncio,logging
+        from mediassist.voice_runtime import run_daemon
+        logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(message)s')
+        asyncio.run(run_daemon(cfg));return
     if args.action=='chat':
         import asyncio
         from mediassist.voice_chat import run_chat

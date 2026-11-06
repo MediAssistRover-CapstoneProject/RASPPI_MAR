@@ -33,7 +33,8 @@
         "unlockPolicy": {
           "enum": [
             "DISABLED",
-            "COMMISSIONING_ONLY"
+            "COMMISSIONING_ONLY",
+            "STAFF_VERIFIED"
           ]
         },
         "mappingEnabled": {

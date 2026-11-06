@@ -1,4 +1,4 @@
-"""A bounded escape inside an executing rigid-cargo MOVE, never during preview."""
+"""Bounded, collision-checked repositioning inside MOVE, never during preview."""
 import asyncio
 import math
 import time
@@ -150,7 +150,6 @@ class CargoRecovery:
             try:return await self._move_one(p,endpoint_id)
             except StepError as exc:
                 if exc.code not in ('NAV_ABORTED','NAV_GATE_BLOCKED','ENDPOINT_POSITION_NOT_CONFIRMED'):raise
-                gate_blocked=exc.code=='NAV_GATE_BLOCKED'
                 arrival_correction=exc.code=='ENDPOINT_POSITION_NOT_CONFIRMED'
                 if arrival_correction:
                     if arrival_corrected:raise
@@ -173,12 +172,23 @@ class CargoRecovery:
                 self.node.get_logger().warning('ARRIVAL_POSITION_REPLANNING endpoint='+endpoint_id+' error_m='+str(error)+' attempt=1')
             else:self.node.get_logger().warning('NAVIGATION_BLOCKED_REPLANNING endpoint='+endpoint_id+' attempt='+str(obstacle_retries))
             await self._prerequisites(p)
-            # The original step deadline is unchanged. Nav2 can replan again
-            # for a moving person, but the physical cargo escape remains once
-            # only; all translations and turns require current collision data.
-            cargo=getattr(self,'worker',{}).get('navigation_runtime',{}).get('geometry',{}).get('profile')=='cargo'
-            if gate_blocked and cargo and not getattr(self,'cargo_escape_used',False):
-                await self._plan_with_cargo_recovery(p,endpoint_id,meta,force_escape=True)
+            # RPP can reject a colliding arc before emitting any velocity: the
+            # independent gate then correctly reports CLEAR, not BLOCKED. A
+            # global replan from that same pose alone can repeat the deadlock.
+            # Reposition once, including on a bare Mecanum chassis, only after
+            # cancelling/stopping the old goal and checking a virtual route.
+            runtime=getattr(self,'worker',{}).get('navigation_runtime',{})
+            escape=(not arrival_correction and runtime.get('map_yaml')
+                    and runtime.get('geometry',{}).get('profile') in ('bare','cargo')
+                    and not getattr(self,'cargo_escape_used',False))
+            if escape:
+                try:await self._plan_with_cargo_recovery(p,endpoint_id,meta,force_escape=True)
+                except StepError as error:
+                    if error.code!='NAV_RECOVERY_NO_CLEAR_MANEUVER':raise
+                    # A passing person can disappear on the next costmap
+                    # update. Never force a maneuver merely to avoid failure.
+                    self.node.get_logger().warning('NAV_RECOVERY_NO_CLEAR_MANEUVER; replan without repositioning')
+                    await self._plan(p,endpoint_id,meta)
             else:await self._plan_with_cargo_recovery(p,endpoint_id,meta)
 
     async def _cargo_prepare_final_heading(self,p,endpoint_id):
@@ -337,7 +347,7 @@ class CargoRecovery:
             except StepError as exc:
                 if (exc.code!='PATH_UNAVAILABLE' or runtime.get('geometry',{}).get('profile')!='cargo'
                         or 'endpoint_group_id' in p):raise
-        elif runtime.get('geometry',{}).get('profile')!='cargo':raise StepError('NAV_GATE_BLOCKED')
+        elif runtime.get('geometry',{}).get('profile') not in ('bare','cargo'):raise StepError('NAV_GATE_BLOCKED')
         if getattr(self,'cargo_escape_used',False):raise StepError('CARGO_ESCAPE_LIMIT_REACHED')
         await self._wait_stationary()
         _,origin=self._cargo_pose();target=self.cfg['endpoints'][endpoint_id]
@@ -346,23 +356,35 @@ class CargoRecovery:
         for a in (bearing,origin['yaw_rad']+math.pi/2,origin['yaw_rad']-math.pi/2,origin['yaw_rad']):
             if not any(abs(wrap(a-b))<.1 for b in headings):headings.append(a)
         selected=None;deadline=time.monotonic()+5.;probes=0
-        for distance,lateral in self._cargo_offsets():
-            offset_probes=0
-            for yaw in headings:
-                if time.monotonic()>deadline or probes>=6 or offset_probes>=2:break
-                if not (distance or lateral) and abs(wrap(yaw-origin['yaw_rad']))<=.15:continue
-                for delta in turn_options(origin['yaw_rad'],yaw):
-                    clear,points=self._cargo_clear(origin,distance,yaw,lateral=lateral,turn_delta=delta)
-                    if not clear:continue
-                    x,y,a=points[-1];probes+=1;offset_probes+=1
-                    try:await self._plan(p,endpoint_id,meta,start_override=dict(x_m=x,y_m=y,yaw_rad=a),probe=True)
-                    except StepError as exc:
-                        if exc.code=='PATH_UNAVAILABLE':break
-                        raise
-                    selected=(distance,lateral,yaw,delta);break
-                if selected is not None:break
-            if selected is not None or time.monotonic()>deadline or probes>=6:break
-        if selected is None:raise StepError('PATH_UNAVAILABLE')
+        offsets=self._cargo_offsets()
+        if force_escape:
+            # Leave the blocked arc with the body heading unchanged first.
+            # Prefer a small side step, then reverse, then forward; every
+            # direction still needs the full cargo/scan/keepout sweep below.
+            offsets=sorted((v for v in offsets if any(v)),key=lambda v:
+                           (max(abs(v[0]),abs(v[1])),0 if v[1] else 1 if v[0]>0 else 2))
+            candidates=[(d,l,origin['yaw_rad']) for d,l in offsets]
+            candidates.extend((d,l,y) for d,l in offsets for y in headings
+                              if abs(wrap(y-origin['yaw_rad']))>.10)
+        else:
+            candidates=[(d,l,y) for d,l in offsets for y in headings]
+        offset_counts={};probe_limit=8 if force_escape else 6
+        for distance,lateral,yaw in candidates:
+            if time.monotonic()>deadline or probes>=probe_limit:break
+            if offset_counts.get((distance,lateral),0)>=2:continue
+            if not (distance or lateral) and abs(wrap(yaw-origin['yaw_rad']))<=.15:continue
+            for delta in turn_options(origin['yaw_rad'],yaw):
+                clear,points=self._cargo_clear(origin,distance,yaw,lateral=lateral,turn_delta=delta)
+                if not clear:continue
+                x,y,a=points[-1];probes+=1
+                offset_counts[(distance,lateral)]=offset_counts.get((distance,lateral),0)+1
+                try:await self._plan(p,endpoint_id,meta,start_override=dict(x_m=x,y_m=y,yaw_rad=a),probe=True)
+                except StepError as exc:
+                    if exc.code=='PATH_UNAVAILABLE':break
+                    raise
+                selected=(distance,lateral,yaw,delta);break
+            if selected is not None:break
+        if selected is None:raise StepError('NAV_RECOVERY_NO_CLEAR_MANEUVER' if force_escape else 'PATH_UNAVAILABLE')
         distance,lateral,yaw,delta=selected
         self.node.get_logger().info('CARGO_ESCAPE_SELECTED distance_m='+str(distance)+' lateral_m='+str(lateral)+' turn_rad='+str(delta))
         self.cargo_escape_used=True
