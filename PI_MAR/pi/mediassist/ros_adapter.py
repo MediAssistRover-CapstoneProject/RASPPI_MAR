@@ -475,13 +475,20 @@ class RosAdapter(CargoRecovery):
 
     def _report_plan(self,body):
         """Plan upload is observation; local Nav2/zone validation owns motion."""
+        def signature(value):
+            return (value['jobStepId'],value['endpointId'],value['initializationRevision'],
+                    tuple((round(p['xM'],3),round(p['yM'],3)) for p in value['points']))
+        if signature(body)==getattr(self,'navigation_plan_reported_signature',None):return
         self.navigation_plan_pending=body
         previous=getattr(self,'navigation_plan_upload',None)
         if previous and not previous.done():return
         async def report_latest():
             while self.navigation_plan_pending is not None:
                 value=self.navigation_plan_pending;self.navigation_plan_pending=None
-                try:await self._publish_plan(value)
+                if signature(value)==getattr(self,'navigation_plan_reported_signature',None):continue
+                try:
+                    await self._publish_plan(value)
+                    self.navigation_plan_reported_signature=signature(value)
                 except asyncio.CancelledError:raise
                 except Exception as exc:
                     import logging
@@ -853,15 +860,19 @@ class RosAdapter(CargoRecovery):
                 from .cargo_recovery import blocked_motion_reason
                 blocked=blocked_motion_reason(state)
                 if blocked:
-                    if gate_blocked_at is None:gate_blocked_at=time.monotonic()
-                    if time.monotonic()-gate_blocked_at>=1.:
+                    if gate_blocked_at is None:
+                        gate_blocked_at=time.monotonic()
+                        self.navigation_obstacle_wait=dict(since=gate_blocked_at,reason=blocked)
+                    if time.monotonic()-gate_blocked_at>=3.:
                         self.node.get_logger().warning('NAV_GATE_BLOCKED reason='+blocked+'; stop and choose another maneuver')
                         raise StepError('NAV_GATE_BLOCKED')
-                else:gate_blocked_at=None
+                else:
+                    if gate_blocked_at is not None:self.navigation_obstacle_wait=None
+                    gate_blocked_at=None
                 if getattr(self,'worker',{}).get('navigation_runtime') and not self.publish_navigation_velocity(p['max_speed_mps'],state=state):
                     self.lease_message(False)
                     if velocity_pause is None:velocity_pause=time.monotonic()
-                    if time.monotonic()-velocity_pause>3. and time.monotonic()-accepted_at>5.:raise StepError('NAV2_COMMAND_STALE')
+                    if not blocked and time.monotonic()-velocity_pause>3. and time.monotonic()-accepted_at>5.:raise StepError('NAV2_COMMAND_STALE')
                     await asyncio.sleep(.05);continue
                 velocity_pause=None
                 self.lease_message(True, p["max_speed_mps"])
@@ -898,6 +909,7 @@ class RosAdapter(CargoRecovery):
             self.lease_message(False)
             self.navigation_plan_receipt=None
             self.navigation_plan_pending=None
+            self.navigation_obstacle_wait=None
             upload=getattr(self,'navigation_plan_upload',None)
             if upload and not upload.done():
                 upload.cancel()
@@ -908,6 +920,8 @@ class RosAdapter(CargoRecovery):
     async def _move(self, p, meta):
         from .navigation import select_and_move
         self.cargo_escape_used=False
+        self.navigation_obstacle_wait=None
+        self.navigation_plan_reported_signature=None
         self.cargo_final_turn_sign=None
         # A workflow's requested ceiling must not raise the local MOVE limit.
         # Mapping and manual control use their independent speed profiles.

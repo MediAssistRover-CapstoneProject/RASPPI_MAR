@@ -62,6 +62,7 @@ def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profil
         arrival_mode=arrival_mode,controller='REGULATED_PURSUIT',
         footprint_planner=True,forward_only=True,preserve_path_on_replan=True,geometry=geometry,
         full_footprint_search=geometry['profile']=='cargo')
+    runtime['navigation_runtime'].update(obstacle_wait_sec=15.,obstacle_retry_interval_sec=1.)
     runtime['localization']=dict(enabled=True,mode='manual',map_id=map_id,map_asset_hash=meta['asset_hash'],status_file=str(root/'localization.json'))
     runtime['mapping']['enabled']=False
     runtime['enabled_step_types']=list(dict.fromkeys([*runtime['enabled_step_types'],'MOVE']))

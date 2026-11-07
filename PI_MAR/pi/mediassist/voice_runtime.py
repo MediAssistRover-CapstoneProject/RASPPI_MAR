@@ -13,13 +13,13 @@ from .contracts import StepError
 def configuration(worker):
     value=worker.setdefault('voice_chat',{})
     for key,default in dict(enabled=False,config_file='/home/ubuntu/mar-secrets/voice-ai.json',
-                            idle_settle_sec=2.,start_timeout_sec=12,max_turns=10).items():
+                            idle_settle_sec=2.,start_timeout_sec=12,confirmation_timeout_sec=20,max_turns=10).items():
         value.setdefault(key,default)
     if type(value['enabled']) is not bool:raise StepError('INVALID_VOICE_CHAT_CONFIG')
     if not isinstance(value['config_file'],str) or not (Path(value['config_file']).is_absolute()
                                                         or PurePosixPath(value['config_file']).is_absolute()):
         raise StepError('INVALID_VOICE_CHAT_CONFIG','absolute config_file required')
-    for key,low,high in (('idle_settle_sec',.5,5),('start_timeout_sec',5,30),('max_turns',1,20)):
+    for key,low,high in (('idle_settle_sec',.5,5),('start_timeout_sec',5,30),('confirmation_timeout_sec',10,30),('max_turns',1,20)):
         v=value[key]
         if type(v) not in (int,float) or not low<=v<=high or (key=='max_turns' and type(v) is not int):
             raise StepError('INVALID_VOICE_CHAT_CONFIG',key)

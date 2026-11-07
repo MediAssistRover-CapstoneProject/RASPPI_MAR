@@ -115,7 +115,8 @@ def volume_wav(raw, volume):
 
 
 async def download(cfg, data):
-    deadline = time.monotonic() + cfg.get('wait_timeout_sec', 45)
+    started = time.monotonic()
+    deadline = started + cfg.get('wait_timeout_sec', 45)
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -126,4 +127,7 @@ async def download(cfg, data):
             raise StepError('TTS_NOT_READY') from None
         if raw is not None:
             return raw
-        await asyncio.sleep(min(2, max(0, deadline - time.monotonic())))
+        # Short phrases often finish just after the first 202. Avoid adding a
+        # fixed two-second silence; long synthesis backs off to one poll/sec.
+        interval = .5 if time.monotonic()-started < 3 else 1.
+        await asyncio.sleep(min(interval, max(0, deadline - time.monotonic())))

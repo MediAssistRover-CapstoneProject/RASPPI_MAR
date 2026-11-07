@@ -15,7 +15,8 @@ STAFF_QR = re.compile(rb'MARSTAFF1\.[A-Za-z0-9_-]{64}')
 CAPABILITIES = ('staff-qr-scan-v1', 'secure-unlock-v1')
 
 
-def decode_staff_qr(sample):
+def inspect_staff_qr(sample):
+    started = time.perf_counter()
     import cv2
     import numpy as np
     from pyzbar.pyzbar import ZBarSymbol, decode
@@ -23,9 +24,18 @@ def decode_staff_qr(sample):
     image = frame_pixels(sample)
     gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     results = decode(np.ascontiguousarray(gray), symbols=[ZBarSymbol.QRCODE])
-    matches = {item.data for item in results if STAFF_QR.fullmatch(item.data)}
+    matched = [item for item in results if STAFF_QR.fullmatch(item.data)]
+    matches = {item.data for item in matched}
+    details = dict(decode_ms=round((time.perf_counter()-started)*1000,2), count=len(matches))
+    if len(matches) == 1:
+        rect = matched[0].rect
+        details['bbox'] = [int(rect.left),int(rect.top),int(rect.width),int(rect.height)]
     # Reject ambiguous frames. The camera never decides whether a proof is valid.
-    return matches.pop().decode('ascii') if len(matches) == 1 else None
+    return (matches.pop().decode('ascii') if len(matches) == 1 else None), details
+
+
+def decode_staff_qr(sample):
+    return inspect_staff_qr(sample)[0]
 
 
 class StaffQrScanner:
@@ -41,6 +51,17 @@ class StaffQrScanner:
             raise StepError('QR_CAMERA_DISABLED')
         self.client = SessionClient(worker.cfg)
         self.preview = None
+        self.last_status = None
+        self.next_status = 0.
+
+    def report(self, status, window, **metrics):
+        now = time.monotonic()
+        if status == self.last_status or now < self.next_status:
+            return
+        self.last_status = status
+        self.next_status = now + 2.
+        logging.info('STAFF_QR_STATUS job=%s step=%s status=%s metrics=%s',
+                     window[0],window[1],status,metrics)
 
     def window(self, session):
         if (not self.worker.connection_ready or self.worker.shutting_down or self.worker.session_fault
@@ -65,6 +86,8 @@ class StaffQrScanner:
     async def run(self, session):
         selected = verified = last_digest = None
         next_submit = last_submit = 0.
+        window_started = 0.
+        first_frame = False
         try:
             while True:
                 window = self.window(session)
@@ -72,6 +95,10 @@ class StaffQrScanner:
                     self.close_preview()
                     selected = window
                     last_digest = None
+                    window_started = time.monotonic()
+                    first_frame = False
+                    self.last_status = None
+                    self.next_status = 0.
                 if not window or window == verified:
                     await asyncio.sleep(.15)
                     continue
@@ -80,26 +107,43 @@ class StaffQrScanner:
                     logging.info('STAFF_QR_SCAN_READY job=%s step=%s', *window)
                 sample = self.preview.take_sample(.5)
                 if sample is None or time.monotonic() < next_submit:
+                    if sample is None:self.report('WAIT_CAMERA_FRAME',window)
                     await asyncio.sleep(.10)
                     continue
-                proof = await asyncio.to_thread(decode_staff_qr, sample)
+                frame_age_ms = round(max(0.,time.monotonic()-sample[6])*1000)
+                if not first_frame:
+                    first_frame = True
+                    logging.info('STAFF_QR_FRAME_READY job=%s step=%s frame_age_ms=%d window_elapsed_ms=%d',
+                                 *window,frame_age_ms,round((time.monotonic()-window_started)*1000))
+                try:
+                    proof, metrics = await asyncio.to_thread(inspect_staff_qr, sample)
+                except Exception as error:
+                    self.report('FRAME_DECODE_FAILED',window,error=type(error).__name__)
+                    await asyncio.sleep(.15)
+                    continue
+                self.report('QR_DETECTED' if proof else 'QR_AMBIGUOUS' if metrics['count']>1 else 'QR_NOT_VISIBLE',
+                            window,frame_age_ms=frame_age_ms,**metrics)
                 if proof and self.window(session) == window:
                     now = time.monotonic()
                     digest = hashlib.sha256(proof.encode('ascii')).digest()
                     if digest != last_digest or now - last_submit >= 2.:
                         next_submit = now + .75
                         last_digest, last_submit = digest, now
+                        submitted = time.monotonic()
                         try:
                             await asyncio.to_thread(self.client.request,
                                 f'/api/v1/pi/jobs/{window[0]}/staff-phone-qr/verify',
                                 {'authJobStepId': window[1], 'transportSessionId': session.id, 'proof': proof},
                                 1024)
                         except (StepError, OSError) as exc:
-                            logging.info('STAFF_QR_NOT_ACCEPTED code=%s', getattr(exc, 'code', type(exc).__name__))
+                            logging.info('STAFF_QR_NOT_ACCEPTED code=%s verify_ms=%d',
+                                getattr(exc, 'code', type(exc).__name__),round((time.monotonic()-submitted)*1000))
                         else:
                             verified = window
                             self.close_preview()
-                            logging.info('STAFF_QR_VERIFIED job=%s step=%s', *window)
+                            logging.info('STAFF_QR_VERIFIED job=%s step=%s decode_ms=%.2f verify_ms=%d window_elapsed_ms=%d',
+                                *window,metrics['decode_ms'],round((time.monotonic()-submitted)*1000),
+                                round((time.monotonic()-window_started)*1000))
                 await asyncio.sleep(.10)
         except asyncio.CancelledError:
             raise

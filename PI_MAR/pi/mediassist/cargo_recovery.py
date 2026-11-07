@@ -138,6 +138,42 @@ def padding_escape_clear(grid,points,extent,obstacles,zones=None):
 
 
 class CargoRecovery:
+    async def _wait_obstacle_path(self,p,endpoint_id,meta,blocked=False):
+        """Wait/replan on live RAM costmaps inside the original MOVE deadline."""
+        runtime=getattr(self,'worker',{}).get('navigation_runtime',{})
+        seconds=runtime.get('obstacle_wait_sec',15.)
+        interval=runtime.get('obstacle_retry_interval_sec',1.)
+        if (type(seconds) not in (int,float) or not math.isfinite(seconds) or not 0<=seconds<=30
+                or type(interval) not in (int,float) or not .1<=interval<=2):
+            raise StepError('INVALID_OBSTACLE_WAIT_CONFIG')
+        previous=getattr(self,'navigation_obstacle_wait',None)
+        deadline=None
+        if blocked:
+            deadline=time.monotonic()+seconds
+            self.navigation_obstacle_wait=dict(since=time.monotonic(),reason='WAITING_FOR_PATH')
+        try:
+            if blocked:await asyncio.sleep(min(.5,seconds))
+            while True:
+                try:
+                    if deadline is None:return await self._plan(p,endpoint_id,meta)
+                    remaining=deadline-time.monotonic()
+                    if remaining<=0:raise StepError('PATH_UNAVAILABLE')
+                    return await asyncio.wait_for(self._plan(p,endpoint_id,meta),remaining)
+                except asyncio.TimeoutError:
+                    raise StepError('PATH_UNAVAILABLE') from None
+                except StepError as error:
+                    if error.code!='PATH_UNAVAILABLE':raise
+                    if deadline is None:
+                        deadline=time.monotonic()+seconds
+                        self.navigation_obstacle_wait=dict(since=time.monotonic(),reason='WAITING_FOR_PATH')
+                        self.node.get_logger().warning('NAV_WAITING_FOR_PATH wait_sec='+str(seconds))
+                    remaining=deadline-time.monotonic()
+                    if remaining<=0:raise
+                    self.lease_message(False)
+                    await asyncio.sleep(min(interval,remaining))
+        finally:
+            self.navigation_obstacle_wait=previous
+
     async def _move_with_path_recovery(self,p,endpoint_id,meta):
         """Bounded local retries for obstacles and one small arrival correction.
 
@@ -149,7 +185,8 @@ class CargoRecovery:
         while True:
             try:return await self._move_one(p,endpoint_id)
             except StepError as exc:
-                if exc.code not in ('NAV_ABORTED','NAV_GATE_BLOCKED','ENDPOINT_POSITION_NOT_CONFIRMED'):raise
+                if exc.code not in ('NAV_ABORTED','NAV_GATE_BLOCKED','NAV2_COMMAND_STALE','ENDPOINT_POSITION_NOT_CONFIRMED'):raise
+                failure_code=exc.code
                 arrival_correction=exc.code=='ENDPOINT_POSITION_NOT_CONFIRMED'
                 if arrival_correction:
                     if arrival_corrected:raise
@@ -170,7 +207,7 @@ class CargoRecovery:
                 # endpoint successful merely because Nav2 returned success.
                 if error>.25:raise StepError('ENDPOINT_POSITION_NOT_CONFIRMED')
                 self.node.get_logger().warning('ARRIVAL_POSITION_REPLANNING endpoint='+endpoint_id+' error_m='+str(error)+' attempt=1')
-            else:self.node.get_logger().warning('NAVIGATION_BLOCKED_REPLANNING endpoint='+endpoint_id+' attempt='+str(obstacle_retries))
+            else:self.node.get_logger().warning('NAVIGATION_BLOCKED_REPLANNING endpoint='+endpoint_id+' attempt='+str(obstacle_retries)+' reason='+failure_code)
             await self._prerequisites(p)
             # RPP can reject a colliding arc before emitting any velocity: the
             # independent gate then correctly reports CLEAR, not BLOCKED. A
@@ -181,15 +218,21 @@ class CargoRecovery:
             escape=(not arrival_correction and runtime.get('map_yaml')
                     and runtime.get('geometry',{}).get('profile') in ('bare','cargo')
                     and not getattr(self,'cargo_escape_used',False))
-            if escape:
+            if arrival_correction:
+                await self._plan_with_cargo_recovery(p,endpoint_id,meta)
+            elif escape and obstacle_retries>=2:
                 try:await self._plan_with_cargo_recovery(p,endpoint_id,meta,force_escape=True)
                 except StepError as error:
                     if error.code!='NAV_RECOVERY_NO_CLEAR_MANEUVER':raise
                     # A passing person can disappear on the next costmap
                     # update. Never force a maneuver merely to avoid failure.
                     self.node.get_logger().warning('NAV_RECOVERY_NO_CLEAR_MANEUVER; replan without repositioning')
-                    await self._plan(p,endpoint_id,meta)
-            else:await self._plan_with_cargo_recovery(p,endpoint_id,meta)
+                    await self._wait_obstacle_path(p,endpoint_id,meta,blocked=True)
+            else:
+                try:await self._wait_obstacle_path(p,endpoint_id,meta,blocked=True)
+                except StepError as error:
+                    if error.code!='PATH_UNAVAILABLE' or not escape:raise
+                    await self._plan_with_cargo_recovery(p,endpoint_id,meta,force_escape=True)
 
     async def _cargo_prepare_final_heading(self,p,endpoint_id):
         runtime=getattr(self,'worker',{}).get('navigation_runtime',{})
@@ -343,7 +386,9 @@ class CargoRecovery:
     async def _plan_with_cargo_recovery(self,p,endpoint_id,meta,force_escape=False):
         runtime=getattr(self,'worker',{}).get('navigation_runtime',{})
         if not force_escape:
-            try:return await self._plan(p,endpoint_id,meta)
+            try:
+                if 'endpoint_group_id' in p:return await self._plan(p,endpoint_id,meta)
+                return await self._wait_obstacle_path(p,endpoint_id,meta)
             except StepError as exc:
                 if (exc.code!='PATH_UNAVAILABLE' or runtime.get('geometry',{}).get('profile')!='cargo'
                         or 'endpoint_group_id' in p):raise

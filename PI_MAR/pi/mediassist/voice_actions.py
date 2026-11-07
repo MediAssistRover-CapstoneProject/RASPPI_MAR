@@ -87,7 +87,8 @@ class VoiceActions:
         if command in ('huy','huy dan duong','khong','khong dong y','khong xac nhan','cancel','cancel navigation','no','do not proceed'):
             self.pending=None
             return 'Đã hủy yêu cầu dẫn đường. Tôi chưa tạo nhiệm vụ di chuyển.',None
-        if command not in ('xac nhan','dong y','dong y dan duong','xac nhan dan duong','confirm','yes','yes confirm','go ahead','proceed'):
+        if command not in ('xac nhan','dong y','dong y dan duong','xac nhan dan duong',
+                           'vang','da','dung roi','ok','okay','confirm','yes','yes confirm','go ahead','proceed'):
             self.pending=None
             return None
         self.pending=None
@@ -120,4 +121,4 @@ class VoiceActions:
         uuid.UUID(request_id)
         self.marker.unlink(missing_ok=True)
         print('VOICE_NAVIGATION_REQUEST',request_id,'JOBS',','.join(j['jobId'] for j in response.get('jobs',[]) if j.get('jobId')),flush=True)
-        return 'Hệ thống đã nhận yêu cầu tới điểm '+pending['point_name']+'. Robot sẽ báo khi di chuyển thành công.',request_id
+        return 'Đã nhận yêu cầu. Mời bạn đi theo tôi.',request_id

@@ -4,6 +4,7 @@ import array
 import io
 import functools
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -171,6 +172,42 @@ class History:
         self.marker.unlink(missing_ok=True);self.state=None
 
 
+class HistoryWriter:
+    """Ordered, bounded text-only uploads; never hold the microphone for a DB ACK."""
+    def __init__(self, history, capacity=20):
+        self.history = history
+        self.queue = asyncio.Queue(maxsize=capacity)
+        self.error = None
+        self.task = asyncio.create_task(self.run())
+
+    def record(self, *args):
+        if self.error:
+            raise StepError('VOICE_HISTORY_UNAVAILABLE') from self.error
+        try:
+            self.queue.put_nowait(args)
+        except asyncio.QueueFull:
+            raise StepError('VOICE_HISTORY_QUEUE_FULL') from None
+
+    async def run(self):
+        while True:
+            item = await self.queue.get()
+            if item is None:
+                return
+            if self.error is None:
+                try:
+                    await asyncio.to_thread(self.history.record, *item)
+                except Exception as error:
+                    self.error = error
+                    logging.warning('VOICE_HISTORY_UPLOAD_FAILED code=%s',
+                                    getattr(error, 'code', type(error).__name__))
+
+    async def finish(self):
+        await self.queue.put(None)
+        await self.task
+        if self.error:
+            raise self.error
+
+
 def rms(raw):
     samples=array.array('h',raw)
     if sys.byteorder!='little':samples.byteswap()
@@ -194,30 +231,44 @@ async def listen(player,start_timeout=8,max_seconds=15,threshold=.008):
     if not recorder or not output:raise StepError('VOICE_ALSA_TOOLS_MISSING')
     device=audio_device(player.cfg);block_bytes=960;rate=16000
     async with player.lock:
-        with tempfile.TemporaryDirectory(prefix='mar-voice-cue-') as folder:
-            cue=Path(folder)/'ready.wav';cue.write_bytes(recording_cue())
-            await player.process([output,'-q','-D',device,str(cue)])
-        await asyncio.sleep(.15)
         with tempfile.TemporaryFile() as diagnostic:
             proc=await asyncio.create_subprocess_exec(recorder,'-q','-D',device,'-t','raw','-f','S16_LE','-r',str(rate),'-c','1',
                 stdin=asyncio.subprocess.DEVNULL,stdout=asyncio.subprocess.PIPE,stderr=diagnostic)
-            blocks=[];lead=[];started=time.monotonic();speech_at=None;voiced=0;quiet=0
-            print('VOICE_LISTENING: nói sau tiếng bíp.',flush=True)
-            try:
+            armed=asyncio.Event()
+
+            async def capture():
+                blocks=[];lead=[];started=None;speech_at=None;voiced=0;quiet=0
                 while True:
                     try:block=await asyncio.wait_for(proc.stdout.readexactly(block_bytes),1.5)
                     except (asyncio.IncompleteReadError,asyncio.TimeoutError):raise StepError('VOICE_MIC_STREAM_FAILED') from None
+                    # ALSA is already open during the cue. Discard the robot's
+                    # own beep instead of opening the mic after the user starts.
+                    if not armed.is_set():continue
                     active=rms(block)>=threshold;now=time.monotonic()
+                    if started is None:started=now
                     if speech_at is None:
                         lead.append(block);lead=lead[-10:]
                         if active:speech_at=now;blocks=list(lead);voiced=1
                         elif now-started>=start_timeout:return None
                     else:
                         blocks.append(block);voiced+=int(active);quiet=0 if active else quiet+1
-                        if (quiet>=27 and voiced>=12) or now-speech_at>=max_seconds:break
-            finally:await stop_process(proc)
-    if voiced<12:return None
-    pcm=b''.join(blocks)[-rate*2*max_seconds:]
+                        if (quiet>=27 and voiced>=12) or now-speech_at>=max_seconds:
+                            return b''.join(blocks)[-rate*2*max_seconds:] if voiced>=12 else None
+
+            recording=asyncio.create_task(capture())
+            try:
+                with tempfile.TemporaryDirectory(prefix='mar-voice-cue-') as folder:
+                    cue=Path(folder)/'ready.wav';cue.write_bytes(recording_cue())
+                    await player.process([output,'-q','-D',device,str(cue)])
+                await asyncio.sleep(.10)
+                armed.set()
+                print('VOICE_LISTENING: nói sau tiếng bíp.',flush=True)
+                pcm=await recording
+            finally:
+                if not recording.done():recording.cancel()
+                await asyncio.gather(recording,return_exceptions=True)
+                await stop_process(proc)
+    if pcm is None:return None
     raw=io.BytesIO()
     with wave.open(raw,'wb') as w:w.setnchannels(1);w.setsampwidth(2);w.setframerate(rate);w.writeframes(pcm)
     return raw.getvalue()
@@ -286,14 +337,25 @@ async def conversation(worker,config_path,start_now=True,once=True,max_turns=10,
         actions.pending=None
         sid=await asyncio.to_thread(history.start);print('VOICE_SESSION:',sid,flush=True)
         status='COMPLETED';turns=[];dispatched=False;ended=False
+        writer=HistoryWriter(history,max_turns);confirmation_retries=0
         try:
             candidates=initial_catalog['endpoints'] if initial_catalog is not None else await asyncio.to_thread(actions.candidates)
             initial_catalog=None
             await say(player,INTRO,log_transcripts)
             for _ in range(max_turns):
-                raw=await listen(player,start_timeout=start_timeout)
-                if raw is None:break
+                confirming=actions.pending is not None
+                timeout=worker.get('voice_chat',{}).get('confirmation_timeout_sec',20) if confirming else start_timeout
+                raw=await listen(player,start_timeout=timeout)
+                if raw is None:
+                    if confirming and confirmation_retries<1:
+                        confirmation_retries+=1
+                        logging.info('VOICE_CONFIRMATION_RETRY: no speech captured')
+                        await say(player,'Tôi chưa nghe rõ xác nhận. Sau tiếng bíp, bạn nói xác nhận hoặc hủy.',log_transcripts)
+                        continue
+                    break
+                confirmation_retries=0
                 received=utcnow()
+                turn_started=time.monotonic()
                 try:text=await asyncio.to_thread(be.transcribe,raw,stt_language)
                 except StepError as error:
                     if error.code not in ('STT_NO_RELIABLE_SPEECH','STT_TRANSCRIPT_INVALID','VOICE_CAPTURE_IS_SILENT'):
@@ -302,6 +364,7 @@ async def conversation(worker,config_path,start_now=True,once=True,max_turns=10,
                     await say(player,'Tôi chưa nghe rõ. Bạn vui lòng nói lại sau tiếng bíp.',log_transcripts)
                     continue
                 finally:del raw
+                stt_done=time.monotonic()
                 if log_transcripts:print('USER:',text,flush=True)
                 request_id=None
                 ending=goodbye(text)
@@ -318,9 +381,13 @@ async def conversation(worker,config_path,start_now=True,once=True,max_turns=10,
                     reply=result['speech_text']
                     if result.get('action'):
                         reply=await asyncio.to_thread(actions.prepare,result['action'],sid)
+                answer_done=time.monotonic()
                 await say(player,reply,log_transcripts)
-                await asyncio.to_thread(history.record,text,reply,result,received,
+                writer.record(text,reply,result,received,
                     'RESOLVED' if result.get('action') or request_id else 'EXECUTED',request_id)
+                logging.info('VOICE_TURN_TIMING stt_ms=%d answer_ms=%d playback_ms=%d confirming=%s',
+                    round((stt_done-turn_started)*1000),round((answer_done-stt_done)*1000),
+                    round((time.monotonic()-answer_done)*1000),confirming)
                 turns.extend([dict(role='user',content=text[:1000]),dict(role='assistant',content=reply[:1000])]);turns=turns[-8:]
                 if result.get('end_session'):ended=True;break
             else:print('VOICE_SESSION_MAX_TURNS',flush=True)
@@ -330,7 +397,12 @@ async def conversation(worker,config_path,start_now=True,once=True,max_turns=10,
         except BaseException:
             status='FAILED';raise
         finally:
-            try:await asyncio.shield(asyncio.to_thread(history.close,status))
+            async def complete_history():
+                final_status=status
+                try:await writer.finish()
+                except Exception:final_status='FAILED'
+                await asyncio.to_thread(history.close,final_status)
+            try:await asyncio.shield(complete_history())
             except Exception as exc:print('VOICE_HISTORY_CLOSE_PENDING:',type(exc).__name__,flush=True)
             turns.clear();actions.pending=None
         # The independent BE job now owns MOVE and arrival SPEAK. Leave
