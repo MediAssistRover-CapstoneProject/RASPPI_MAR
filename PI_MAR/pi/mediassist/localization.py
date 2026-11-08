@@ -67,7 +67,10 @@ class QualityGate:
         established=self.tracking or self.had_lock
         for key,code in (('map_verified','MAP_NOT_VERIFIED'),('amcl_active','AMCL_NOT_ACTIVE'),('tf_fresh','TF_NOT_READY')):
             if sample.get(key) is not True:reasons.append(code)
-        if sample.get('body_clear') is not True:reasons.append('LOCALIZATION_FOOTPRINT_NOT_CLEAR')
+        if sample.get('body_clear') is not True:
+            reasons.append('LOCALIZATION_FOOTPRINT_UNAVAILABLE' if sample.get('body_clear') is None
+                           else 'LOCALIZATION_FOOTPRINT_NOT_CLEAR')
+        if sample.get('amcl_tf_ready') is False:reasons.append('AMCL_TF_NOT_READY')
         pose_limit=max(c['max_pose_age_sec'],c['tracking_max_pose_age_sec']) if established else c['max_pose_age_sec']
         for key,limit in (('scan_age_sec',c['max_sensor_age_sec']),('odom_age_sec',c['max_sensor_age_sec']),('pose_age_sec',pose_limit)):
             age=sample.get(key)
@@ -83,12 +86,16 @@ class QualityGate:
             aligned=sample.get('amcl_tf_pose',p)
             if any(not math.isfinite(p[k]) or not math.isfinite(a[k]) for k in ('x_m','y_m','yaw_rad')):raise ValueError()
             if any(not math.isfinite(aligned[k]) for k in ('x_m','y_m','yaw_rad')):raise ValueError()
-            if math.hypot(aligned['x_m']-a['x_m'],aligned['y_m']-a['y_m'])>c['max_tf_amcl_distance_m'] or abs(angle(aligned['yaw_rad']-a['yaw_rad']))>c['max_tf_amcl_yaw_rad']:reasons.append('TF_AMCL_DISAGREE')
+            if sample.get('amcl_tf_ready') is not False and (
+                    math.hypot(aligned['x_m']-a['x_m'],aligned['y_m']-a['y_m'])>c['max_tf_amcl_distance_m']
+                    or abs(angle(aligned['yaw_rad']-a['yaw_rad']))>c['max_tf_amcl_yaw_rad']):
+                reasons.append('TF_AMCL_DISAGREE')
             if self.previous_pose:
                 old,at=self.previous_pose;dt=max(0,now-at)
                 if math.hypot(p['x_m']-old['x_m'],p['y_m']-old['y_m'])>.3+.35*dt or abs(angle(p['yaw_rad']-old['yaw_rad']))>.4+.6*dt:reasons.append('POSE_JUMP')
             self.previous_pose=(dict(p),now)
-        except (KeyError,TypeError,ValueError):reasons.append('POSE_INVALID')
+        except KeyError:reasons.append('POSE_UNAVAILABLE')
+        except (TypeError,ValueError):reasons.append('POSE_INVALID')
         # AMCL publishes after motion thresholds, not at every controller tick.
         # Bridge an older correction with LIVE map TF, odom and stronger laser
         # agreement; never reuse a fixed robot pose or accept stale sensors.
@@ -102,7 +109,8 @@ class QualityGate:
             support=sample.get('particle_support',0.)
             if not math.isfinite(support) or support<c['min_particle_support']:reasons.append('PARTICLES_NOT_CONVERGED')
             metrics['particle_support']=support if math.isfinite(support) else None
-        for key in ('pose_age_sec','scan_age_sec','scan_tf_error','footprint_kind','footprint_cell'):
+        for key in ('pose_age_sec','scan_age_sec','tf_pose_age_sec','tf_error','amcl_tf_error',
+                    'scan_tf_error','footprint_kind','footprint_cell'):
             if key in sample:metrics[key]=sample[key]
         if sample.get('scan_tf_error') and 'scan_match' not in sample:
             reasons=[r for r in reasons if r not in ('SCAN_MATCH_LOW','KNOWN_FRACTION_LOW','VALID_BEAMS_LOW')]
@@ -125,7 +133,13 @@ class QualityGate:
                         stable_scans=self.count,metrics=metrics)
         if reasons:
             transient={'SCAN_AGE_SEC_STALE','ODOM_AGE_SEC_STALE','POSE_AGE_SEC_STALE',
-                       'SCAN_MATCH_LOW','KNOWN_FRACTION_LOW','VALID_BEAMS_LOW'}
+                       'SCAN_MATCH_LOW','KNOWN_FRACTION_LOW','VALID_BEAMS_LOW',
+                       'TF_NOT_READY','AMCL_TF_NOT_READY','SCAN_TF_UNAVAILABLE',
+                       'LOCALIZATION_FOOTPRINT_UNAVAILABLE','POSE_UNAVAILABLE'}
+            # A missing transform withholds READY and wheel authorization now,
+            # but does not prove that the established map hypothesis changed.
+            # Keep its bounded recovery memory so fresh evidence can resume in
+            # .5 s instead of repeating bootstrap until MOVE's 5 s hold expires.
             # A small covariance threshold crossing during a turn still holds
             # the wheels, but must not discard an established map hypothesis.
             # Otherwise stationary AMCL's slower correction cadence can keep

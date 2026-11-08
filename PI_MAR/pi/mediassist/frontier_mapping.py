@@ -221,6 +221,25 @@ def plan(snapshot,pose,cfg):
         elif not clusters and not uncovered:
             result.update(state='NO_FRONTIERS',reason='OBSERVED_AND_VISITED_REACHABLE_SPACE')
             return result
+    relocating=False
+    if best is None and clusters and nav2 and cfg.get('_excluded_goals'):
+        # A failed frontier does not require waiting at the same scan origin.
+        # Choose another known-free viewpoint; Nav2 still validates the actual
+        # oriented footprint and the entire route before authorizing motion.
+        excluded=cfg['_excluded_goals'];recent=excluded[-1]
+        failed_heading=math.atan2(recent[1]-pose['y_m'],recent[0]-pose['x_m'])
+        viewpoints=[]
+        for i in parents:
+            distance_m=cost[i]*cell
+            if not safe[i] or not .4<=distance_m<=1.2:continue
+            ux=(i%w+.5)*cell;uy=(i//w+.5)*cell
+            wx,wy=origin[0]+c*ux-s*uy,origin[1]+s*ux+c*uy
+            if excluded_goal(wx,wy,excluded):continue
+            bearing=math.atan2(wy-pose['y_m'],wx-pose['x_m'])
+            difference=abs(math.atan2(math.sin(bearing-failed_heading),math.cos(bearing-failed_heading)))
+            viewpoints.append((abs(distance_m-.7)-.2*difference,i))
+        if viewpoints:
+            _,goal=min(viewpoints);best=(cost[goal]*cell,goal,goal);visiting=relocating=True
     if best is None:
         result['reason']='FRONTIERS_UNREACHABLE' if cfg.get('_excluded_goals') else 'FRONTIERS_BLOCKED_BY_FOOTPRINT';return result
     _,goal,frontier=best
@@ -232,7 +251,7 @@ def plan(snapshot,pose,cfg):
     while i is not None:path.append(world(i));i=parents[i]
     path.reverse();gx,gy=world(goal);fx,fy=world(frontier)
     approach=math.atan2(gy-path[-2][1],gx-path[-2][0]) if len(path)>1 else pose['yaw_rad']
-    result.update(state='FRONTIERS_PRESENT',reason='VISIT_UNTRAVERSED_FREE_SPACE' if visiting else 'APPROACH_FRONTIER',path=path,
+    result.update(state='FRONTIERS_PRESENT',reason='REOBSERVE_FROM_NEW_VIEWPOINT' if relocating else 'VISIT_UNTRAVERSED_FREE_SPACE' if visiting else 'APPROACH_FRONTIER',path=path,
                   goal=dict(x_m=gx,y_m=gy,yaw_rad=approach if visiting else math.atan2(fy-gy,fx-gx)),
                   planning_grid=dict(width=w,height=h,cell=cell,origin=origin,
                       safe=safe))
@@ -294,10 +313,12 @@ class FrontierWorker:
 
     def no_progress(self,now,holding):
         signature=self.tracker.progress_signature
-        if not holding or self.hold_at is None or self.hold_signature!=signature:
+        if not holding or self.hold_at is None:
             self.hold_at=now if holding else None;self.hold_signature=signature
             return False
-        return now-self.hold_at>=self.cfg['frontier_no_progress_sec']
+        # Grid flicker is not physical progress and cannot restart this clock.
+        self.hold_signature=signature
+        return now-self.hold_at>=min(self.cfg['frontier_no_progress_sec'],self.cfg['blocked_timeout_sec'])
 
     def poll(self,snapshot,pose,revision,now,run,elapsed,travel):
         if self.run!=run:self.reset(run)

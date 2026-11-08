@@ -70,7 +70,7 @@ class ContinuityTests(unittest.TestCase):
             self.assertFalse(gate.update(7+i*.25,{**evidence(20+i),'pose_age_sec':.9})['ready'])
         self.assertTrue(gate.update(7.5,{**evidence(22),'pose_age_sec':1.1})['ready'])
     def test_recovery_memory_expires_and_never_bypasses_hard_loss(self):
-        for loss in ({'body_clear':False},{'tf_fresh':False},{'map_verified':False}):
+        for loss in ({'body_clear':False},{'map_verified':False},{'amcl_active':False}):
             gate=self.locked()
             self.assertFalse(gate.update(4,{**evidence(8),**loss})['ready'])
             self.assertFalse(gate.had_lock)
@@ -80,6 +80,25 @@ class ContinuityTests(unittest.TestCase):
             self.assertFalse(gate.update(4+i,{**evidence(8+i),'scan_match':.3})['ready'])
         self.assertFalse(gate.had_lock)
         self.assertFalse(gate.update(16,{**evidence(30),'pose_age_sec':1.1})['ready'])
+    def test_tf_dropout_holds_wheels_without_restarting_established_localization(self):
+        for loss in ({'tf_fresh':False},{'amcl_tf_ready':False},
+                     {'scan_match':.0,'scan_tf_error':'ExtrapolationException'}):
+            gate=self.locked();sample={**evidence(8),**loss}
+            if 'scan_tf_error' in loss:
+                for key in ('scan_match','known_fraction','valid_beams'):sample.pop(key)
+            self.assertFalse(gate.update(4.,sample)['ready'])
+            self.assertTrue(gate.had_lock)
+            for i in range(2):
+                self.assertFalse(gate.update(4.25+i*.25,{**evidence(9+i),'pose_age_sec':1.1})['ready'])
+            self.assertTrue(gate.update(4.75,{**evidence(11),'pose_age_sec':1.1})['ready'])
+    def test_missing_current_tf_cannot_publish_a_stale_pose_while_recovering(self):
+        gate=self.locked();sample=evidence(8);sample.update(tf_fresh=False,body_clear=None)
+        sample.pop('pose')
+        status=gate.update(4.,sample)
+        self.assertFalse(status['ready']);self.assertTrue(gate.had_lock)
+        self.assertIn('POSE_UNAVAILABLE',status['reasons'])
+        self.assertIn('LOCALIZATION_FOOTPRINT_UNAVAILABLE',status['reasons'])
+        self.assertFalse(tracking_pose(status,.1,4.1,'map-1','hash-1','map',{})['fresh'])
     def test_recovery_requests_amcl_update_without_reinitializing(self):
         helper=BootstrapTests();g=helper.fake_guard('global');g.initialized=True;g.ever_ready=True;g.last_nomotion=0;g.nomotion=Mock()
         g.pose=N(header=N(stamp=N(sec=9,nanosec=500000000)))
@@ -127,6 +146,16 @@ class ContinuityTests(unittest.TestCase):
         with patch.dict(sys.modules,{'rclpy.time':N(Time=Time)}):s=g.evidence(10)
         self.assertEqual(s['scan_sequence'],(9,800000000));self.assertAlmostEqual(s['scan_age_sec'],.2)
         self.assertEqual(s['scan_match'],.9);self.assertNotIn('scan_tf_error',s)
+        amcl_stamp=N(sec=9,nanosec=700000000)
+        g.pose=N(header=N(stamp=amcl_stamp),pose=N(pose=N(position=N(x=0.,y=0.),
+                 orientation=N(x=0.,y=0.,z=0.,w=1.)),covariance=evidence()['covariance']))
+        def historical_missing(target,source,stamp):
+            if stamp is amcl_stamp:raise RuntimeError('historical TF not received yet')
+            return lookup(target,source,stamp)
+        g.tf=N(lookup_transform=historical_missing)
+        with patch.dict(sys.modules,{'rclpy.time':N(Time=Time)}):s=g.evidence(10)
+        self.assertTrue(s['tf_fresh']);self.assertFalse(s['amcl_tf_ready'])
+        self.assertEqual(s['amcl_tf_error'],'RuntimeError')
         g.ros_now=lambda:11.
         with patch.dict(sys.modules,{'rclpy.time':N(Time=Time)}):s=g.evidence(11)
         self.assertNotIn('scan_match',s)

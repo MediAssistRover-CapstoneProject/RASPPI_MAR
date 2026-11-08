@@ -104,13 +104,19 @@ def main():
         state = {"cmd": (0.0, 0.0, 0.0), "command_at": 0.0, "lease_at": 0.0, "scan_at": 0.0,
                  "left": (None, 0.0), "right": (None, 0.0), "odom_at": 0.0, "max_speed": cfg["max_speed_mps"],
                  "rear_reason":"REAR_LIDAR_NOT_READY","rear_at":0.,'braking_view':None,'braking_at':0.,
-                 "imu_ready":False,"imu_at":0.}
+                 "imu_ready":False,"imu_at":0.,"media_hold":False}
         from .rear_scan import chassis_guard,rear_clearance
         from tf2_ros import Buffer,TransformListener
         from rclpy.time import Time
         rear_tf=Buffer();rear_listener=TransformListener(rear_tf,node)
         pub = node.create_publisher(Twist, cfg["ros"]["safe_cmd_vel"], 10)
         status = node.create_publisher(String, "/mediassist/safety_state", 10)
+        def media_hold(msg):
+            try:
+                value=json.loads(msg.data)
+                if type(value.get('active')) is bool:state['media_hold']=value['active']
+            except (ValueError,TypeError):pass
+        node.create_subscription(String,'/mediassist/media_hold',media_hold,10)
         def command(msg):
             state["cmd"] = (msg.linear.x, msg.linear.y, msg.angular.z)
             state["command_at"] = time.monotonic()
@@ -183,6 +189,7 @@ def main():
                 from .motion_braking import limit_velocity
                 cmd,braking_reason=limit_velocity(cmd,state['braking_view'],time.monotonic()-state['braking_at'],cfg['motion']['lidar_braking'])
                 if braking_reason:reason=braking_reason
+            if state['media_hold']:cmd,reason=(0.,0.,0.),'SOS_MEDIA_HOLD'
             msg = Twist()
             msg.linear.x, msg.linear.y, msg.angular.z = cmd
             pub.publish(msg)

@@ -6,13 +6,16 @@ from .contracts import StepError
 
 
 class AudioLock:
-    def __init__(self):
+    def __init__(self,priority=False):
         self.local=asyncio.Lock()
         self.fd=None
+        self.priority=priority
 
     async def __aenter__(self):
         await self.local.acquire()
         try:
+            from .media_runtime import audio_reserved
+            if not self.priority and audio_reserved():raise StepError('AUDIO_RESERVED_FOR_SOS')
             if os.name=='posix':
                 import fcntl
                 path='/tmp/mar-audio-'+str(os.getuid())+'.lock'
@@ -22,7 +25,9 @@ class AudioLock:
                     raise StepError('AUDIO_LOCK_OWNER_MISMATCH')
                 while True:
                     try:fcntl.flock(self.fd,fcntl.LOCK_EX|fcntl.LOCK_NB);break
-                    except BlockingIOError:await asyncio.sleep(.05)
+                    except BlockingIOError:
+                        if not self.priority and audio_reserved():raise StepError('AUDIO_RESERVED_FOR_SOS')
+                        await asyncio.sleep(.05)
             return self
         except BaseException:
             if self.fd is not None:os.close(self.fd);self.fd=None

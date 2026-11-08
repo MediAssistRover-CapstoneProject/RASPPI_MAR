@@ -157,6 +157,8 @@ class TrackingTests(unittest.TestCase):
         for name in ('local_costmap','global_costmap'):
             cm=out[name][name]['ros__parameters'];scan=cm['obstacle_layer']['scan']
             self.assertIn('obstacle_layer',cm['plugins']);self.assertTrue(scan['clearing']);self.assertTrue(scan['marking'])
+            self.assertEqual(scan['observation_persistence'],0.)
+            self.assertTrue(scan['inf_is_valid'])
             self.assertGreater(scan['raytrace_max_range'],scan['obstacle_max_range']);self.assertIn('footprint',cm)
         self.assertIn('vendor_plugin',out['bt_navigator']['ros__parameters']['plugin_lib_names'])
         follow=out['controller_server']['ros__parameters']['FollowPath']

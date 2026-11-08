@@ -60,7 +60,7 @@ def vendor_bringup(info):
 def conflict(info):
     a = info['argv']
     if any(Path(x).name=='voice_audio.py' for x in a) and any(x in a for x in ('chat','chat-daemon')):return True
-    if any(x in a for x in ('mediassist.worker_cli', 'mediassist.safety_node', 'mediassist.cli', 'mediassist.camera_stream','mediassist.vendor_camera','mediassist.slam_session','mediassist.localization_node')):
+    if any(x in a for x in ('mediassist.worker_cli', 'mediassist.safety_node', 'mediassist.cli', 'mediassist.camera_stream','mediassist.vendor_camera','mediassist.slam_session','mediassist.localization_node','mediassist.media_bridge')):
         return True
     if any(Path(x).name in ('us100_dual_ros2.py', 'manual_mapping.py', 'mediassist_demo_slam.launch.py',
                             'mediassist_demo_navigation.launch.py','mediassist_nav2_nodes.launch.py', 'slam.launch.py', 'navigation.launch.py') for x in a):
@@ -466,6 +466,9 @@ def main():
                     say('CAMERA_STREAM_REQUESTED: backend=' + camera['stream_backend'] + ' HTTP port=' + str(camera['stream_port']) + '; see camera.log')
                     say('CAMERA_URL: http://<PI_IP>:' + str(camera['stream_port']) + stream_path(camera))
                 supervisor.start('worker', [python, '-m', 'mediassist.worker_cli', 'run', '--config', str(config)])
+                if cfg.get('media',{}).get('enabled'):
+                    supervisor.start('media',[python,'-m','mediassist.media_bridge','--config',str(config)],required=False)
+                    say('MEDIA: managed WebRTC camera/SOS; see media.log')
                 from mediassist.voice_runtime import enabled as voice_enabled
                 if voice_enabled(cfg) and cfg['speech']['enabled']:
                     supervisor.start('voice',[python,str(ROOT/'tools/voice_audio.py'),'--config',str(config),'chat-daemon'],required=False)

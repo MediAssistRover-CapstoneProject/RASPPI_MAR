@@ -179,7 +179,7 @@ class LocalizationNode:
 
     def evidence(self,now):
         from rclpy.time import Time
-        s=dict(map_verified=self.map_ready(now),amcl_active=self.lifecycle_ready(now),tf_fresh=False,body_clear=False)
+        s=dict(map_verified=self.map_ready(now),amcl_active=self.lifecycle_ready(now),tf_fresh=False)
         ros=self.ros_now()
         if self.odom is not None:
             velocity=self.odom.twist.twist
@@ -211,9 +211,11 @@ class LocalizationNode:
                 aligned=self.tf.lookup_transform(self.hw['ros']['map_frame'],self.hw['ros']['base_frame'],Time.from_msg(self.pose.header.stamp))
                 a=aligned.transform.translation
                 s['amcl_tf_pose']=dict(x_m=a.x,y_m=a.y,yaw_rad=yaw(aligned.transform.rotation))
-            except Exception:
+                s['amcl_tf_ready']=True
+            except Exception as exc:
                 # Never substitute current TF for a missing historical alignment.
-                s['tf_fresh']=False
+                # Keep this distinct from losing the current map->base TF.
+                s['amcl_tf_ready']=False;s['amcl_tf_error']=type(exc).__name__
         s['particle_support']=particle_support(self.particles,s.get('amcl_pose',s.get('pose',{}))) if s.get('amcl_pose') else 0.
         # Latest scan often arrives before its matching odom TF. Use the newest
         # transformable scan in a bounded queue, never Time() for a past scan.

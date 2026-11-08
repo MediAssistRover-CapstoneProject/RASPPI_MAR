@@ -16,7 +16,9 @@ def stream_path(camera):
     if camera['stream_backend'] == 'web_video_server':
         params.update(type='mjpeg', width=camera['stream_max_width'],
                       height=camera['stream_max_height'], quality=camera['stream_jpeg_quality'])
-    return '/stream?' + urlencode(params)
+    # The installed Hiwonder HTTP parser keeps query values verbatim. Encoding
+    # topic slashes as %2F produces an empty MJPEG response instead of images.
+    return '/stream?' + urlencode(params, safe='/' if camera['stream_backend'] == 'web_video_server' else '')
 
 
 def vendor_executable(prefix=None):

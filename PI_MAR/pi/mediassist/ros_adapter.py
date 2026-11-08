@@ -920,6 +920,8 @@ class RosAdapter(CargoRecovery):
     async def _move(self, p, meta):
         from .navigation import select_and_move
         self.cargo_escape_used=False
+        self.localization_recovery_attempts=0
+        self.navigation_localization_wait=None
         self.navigation_obstacle_wait=None
         self.navigation_plan_reported_signature=None
         self.cargo_final_turn_sign=None

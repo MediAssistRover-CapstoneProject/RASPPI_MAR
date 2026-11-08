@@ -176,6 +176,8 @@ def load(path):
         raise StepError('LOCALIZATION_STATUS_PATH_REQUIRED')
     from .navigation_session import configuration as session_configuration
     session_configuration(cfg,hardware)
+    from .media_runtime import configuration as media_configuration
+    media_configuration(cfg)
     return cfg, hardware
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):

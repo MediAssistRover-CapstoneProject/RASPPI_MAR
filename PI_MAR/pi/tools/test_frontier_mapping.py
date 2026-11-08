@@ -8,7 +8,7 @@ import sys
 import unittest
 import tempfile
 from types import SimpleNamespace as NS
-from unittest.mock import patch
+from unittest.mock import patch,Mock,AsyncMock
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path[:0]=[str(ROOT/'pi'),str(ROOT/'pi/tools')]
@@ -36,6 +36,16 @@ POSE=dict(x_m=2.05,y_m=2.55,yaw_rad=0.)
 
 
 class FrontierTests(unittest.TestCase):
+    def test_excluded_frontiers_choose_a_different_known_free_viewpoint(self):
+        cfg=profile();cfg.update(frontier_controller='nav2',visit_known_space=False,
+            _excluded_goals=[(3.6,2.5,1.9)])
+        snapshot=room(True);result=plan(snapshot,POSE,cfg)
+        self.assertEqual(result['reason'],'REOBSERVE_FROM_NEW_VIEWPOINT')
+        self.assertGreater(result['frontier_count'],0)
+        goal=result['goal'];self.assertGreaterEqual(math.hypot(goal['x_m']-POSE['x_m'],goal['y_m']-POSE['y_m']),.3)
+        x,y=int(goal['x_m']/.1),int(goal['y_m']/.1)
+        self.assertEqual(snapshot['data'][y*snapshot['width']+x],0)
+
     def test_euclidean_field_matches_brute_force_distances_including_boundaries(self):
         import random
         generator=random.Random(42)
@@ -201,7 +211,8 @@ class FrontierTests(unittest.TestCase):
 
     def test_manual_assist_slows_stops_and_never_steers_without_input(self):
         c=profile();clear=fixtures.CLEAR
-        (x,z),_=manual_assist((.1,0.),{**clear,'front_m':.3},.01,c)
+        # At .1 m/s, 30 cm is outside the stopping-distance braking region.
+        (x,z),_=manual_assist((.1,0.),{**clear,'front_m':.12},.01,c)
         self.assertGreater(x,0);self.assertLess(x,.1);self.assertEqual(z,0)
         self.assertEqual(manual_assist((.1,0.),{**clear,'front_m':.05},.01,c)[0],(0.,0.))
         self.assertEqual(manual_assist((.1,0.),clear,2.,c)[0],(0.,0.))
@@ -278,14 +289,50 @@ class AsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(error);self.assertIsNone(result);self.assertIsNot(worker.task,pending)
         await worker.task
 
-    async def test_no_progress_timer_starts_at_goal_and_resets_on_new_information(self):
+    async def test_map_flicker_does_not_restart_the_stationary_wait_timer(self):
         worker=FrontierWorker(profile());worker.tracker.progress_signature='one'
         self.assertFalse(worker.no_progress(100.,True))
-        self.assertFalse(worker.no_progress(110.,True))
-        self.assertTrue(worker.no_progress(116.,True))
+        self.assertFalse(worker.no_progress(107.,True))
+        self.assertTrue(worker.no_progress(109.,True))
         worker.tracker.progress_signature='two'
-        self.assertFalse(worker.no_progress(117.,True))
+        self.assertTrue(worker.no_progress(117.,True))
         self.assertFalse(worker.no_progress(130.,False))
+        self.assertFalse(worker.no_progress(131.,True))
+
+    def navigator(self):
+        from mediassist.mapping_navigator import MappingNavigator
+        adapter=NS(stop=AsyncMock(return_value=True),navigation_velocity=Mock(return_value=((0.,0.,0.),True)))
+        exploration=NS(cfg=profile(),exclude_goal=Mock())
+        nav=MappingNavigator(adapter,exploration);nav.target=dict(x_m=3.,y_m=2.55,yaw_rad=0.)
+        nav.result=asyncio.get_running_loop().create_future();nav.started=nav.progress_at=0.
+        nav.progress_pose=dict(POSE);nav.best_distance=.95
+        return nav
+
+    async def test_stationary_nav2_goal_is_replaced_after_eight_seconds(self):
+        nav=self.navigator()
+        modules={'geometry_msgs.msg':NS(PoseStamped=Mock()),'nav2_msgs.action':NS(NavigateToPose=Mock())}
+        with patch.dict(sys.modules,modules):
+            _,reason=await nav.tick({},POSE,7.9)
+            self.assertTrue(nav.active)
+            velocity,reason=await nav.tick({},POSE,8.1)
+        self.assertEqual(reason,'REPLANNING_STALLED_FRONTIER');self.assertEqual(velocity,(0.,0.,0.))
+        self.assertFalse(nav.active);nav.adapter.stop.assert_awaited_once()
+        self.assertEqual(nav.exploration.exclude_goal.call_args.kwargs,dict(ttl=20.,radius=.25))
+
+    async def test_real_translation_retains_a_route_around_a_wall(self):
+        nav=self.navigator();pose={**POSE,'x_m':POSE['x_m']-.1}
+        modules={'geometry_msgs.msg':NS(PoseStamped=Mock()),'nav2_msgs.action':NS(NavigateToPose=Mock())}
+        with patch.dict(sys.modules,modules):
+            await nav.tick({},pose,4.)
+            await nav.tick({},pose,10.)
+        self.assertTrue(nav.active);nav.adapter.stop.assert_not_awaited()
+
+    async def test_total_goal_timeout_limits_endless_small_oscillation(self):
+        nav=self.navigator();pose={**POSE,'x_m':POSE['x_m']-.1};nav.progress_at=59.
+        modules={'geometry_msgs.msg':NS(PoseStamped=Mock()),'nav2_msgs.action':NS(NavigateToPose=Mock())}
+        with patch.dict(sys.modules,modules):
+            _,reason=await nav.tick({},pose,60.1)
+        self.assertEqual(reason,'REPLANNING_STALLED_FRONTIER');self.assertFalse(nav.active)
 
     async def test_planner_starts_in_background_then_returns_and_resets_run(self):
         worker=FrontierWorker(profile())

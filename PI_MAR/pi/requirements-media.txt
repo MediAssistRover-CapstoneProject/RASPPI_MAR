@@ -1,0 +1,5 @@
+# Optional, installed only when enabling camera/SOS WebRTC. ROS supplies OpenCV/NumPy.
+livekit==1.2.1
+sounddevice==0.5.3
+# ROS Humble cv_bridge/OpenCV use the NumPy 1.x ABI. Do not install NumPy 2.x here.
+numpy==1.26.4

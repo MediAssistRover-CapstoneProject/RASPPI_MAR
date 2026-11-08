@@ -73,7 +73,7 @@ async def capture_phrase(player,settings):
 
 
 async def wait_phrase(player,ai,settings):
-    phrase = settings.get('phrase', 'Chào cậu')
+    phrase = settings.get('phrase', 'M A')
     if not isinstance(phrase, str) or not 1 <= len(phrase.strip()) <= 80:
         raise StepError('VOICE_WAKE_CONFIG_INVALID')
     print(f'VOICE_WAKE_LISTENING: {phrase}', flush=True)

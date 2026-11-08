@@ -92,7 +92,7 @@ class AiClient:
         if len(raw)>4096:raise StepError('VOICE_AI_RESPONSE_TOO_LARGE')
         value=json.loads(raw)
         if not isinstance(value,dict) or type(value.get('detected')) is not bool:raise StepError('VOICE_WAKE_INVALID_RESPONSE')
-        if value.get('phrase')!=self.config.get('wake',{}).get('phrase','Chào cậu'):
+        if value.get('phrase')!=self.config.get('wake',{}).get('phrase','M A'):
             raise StepError('VOICE_WAKE_PHRASE_MISMATCH')
         return value['detected']
 

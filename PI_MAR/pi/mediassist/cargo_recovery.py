@@ -138,6 +138,56 @@ def padding_escape_clear(grid,points,extent,obstacles,zones=None):
 
 
 class CargoRecovery:
+    async def _wait_localization_recovery(self,endpoint_id,reason,seconds,attempt):
+        """Pause this accepted MOVE; keep its identity/deadline and never reset AMCL."""
+        if not await self.stop():raise StepError('GOAL_STOP_UNCONFIRMED')
+        started=time.monotonic();deadline=started+seconds
+        self.navigation_localization_wait=dict(since=started,reason=reason,attempt=attempt)
+        self.node.get_logger().warning('NAV_WAIT_LOCALIZATION endpoint='+endpoint_id+
+            ' reason='+reason+' attempt='+str(attempt)+' wait_sec='+str(seconds))
+        try:
+            while True:
+                self.hold_navigation_velocity();self._check_graph()
+                state=self.telemetry()
+                # Frozen map/session/profile/revision remain authoritative.
+                # A missing quality sample can recover; identity changes cannot.
+                ready=self._navigation_context(allow_localization_pause=True,state=state)
+                if (ready and state.get('map_pose',{}).get('fresh')
+                        and self.health().get('sensors_ready')):
+                    self.node.get_logger().info('NAV_LOCALIZATION_RECOVERED endpoint='+endpoint_id+
+                        ' elapsed_sec='+str(round(time.monotonic()-started,2)))
+                    return
+                self.navigation_diagnostic(state,'WAIT_LOCALIZATION')
+                if time.monotonic()>=deadline:raise StepError('LOCALIZATION_RECOVERY_TIMEOUT')
+                await asyncio.sleep(.1)
+        finally:self.navigation_localization_wait=None
+
+    async def _retry_localization(self,action,p,endpoint_id,meta,replan=False):
+        """No new BE command/ACK, step replay or hardware action during recovery."""
+        runtime=getattr(self,'worker',{}).get('navigation_runtime',{})
+        seconds=runtime.get('localization_wait_sec',30.)
+        limit=runtime.get('localization_retry_count',2)
+        if (type(seconds) not in (int,float) or not math.isfinite(seconds) or not .5<=seconds<=60
+                or type(limit) is not int or not 0<=limit<=3):
+            raise StepError('INVALID_LOCALIZATION_RECOVERY_CONFIG')
+        needs_plan=False
+        while True:
+            try:
+                if needs_plan:await self._plan_with_cargo_recovery_once(p,endpoint_id,meta)
+                return await action()
+            except StepError as exc:
+                if exc.code not in ('LOCALIZATION_LOST','LOCALIZATION_LOST_AT_GOAL',
+                                    'LOCALIZATION_NOT_READY','MAP_TF_NOT_READY'):raise
+                used=getattr(self,'localization_recovery_attempts',0)
+                if used>=limit:
+                    raise StepError('LOCALIZATION_RECOVERY_EXHAUSTED',
+                                    'LOCALIZATION_RECOVERY_EXHAUSTED: '+exc.code) from exc
+                self.localization_recovery_attempts=used+1
+                await self._wait_localization_recovery(endpoint_id,exc.code,seconds,used+1)
+                # The previous Nav2 goal was canceled with stop confirmation.
+                # Recompute from the current pose, not from an old motor command.
+                needs_plan=replan
+
     async def _wait_obstacle_path(self,p,endpoint_id,meta,blocked=False):
         """Wait/replan on live RAM costmaps inside the original MOVE deadline."""
         runtime=getattr(self,'worker',{}).get('navigation_runtime',{})
@@ -175,10 +225,15 @@ class CargoRecovery:
             self.navigation_obstacle_wait=previous
 
     async def _move_with_path_recovery(self,p,endpoint_id,meta):
+        return await self._retry_localization(
+            lambda:self._move_with_path_recovery_once(p,endpoint_id,meta),p,endpoint_id,meta,replan=True)
+
+    async def _move_with_path_recovery_once(self,p,endpoint_id,meta):
         """Bounded local retries for obstacles and one small arrival correction.
 
-        Cancellation, localization/sensor loss and an unconfirmed stop never
-        enter this branch. The same step deadline and endpoint remain in force;
+        Cancellation, sensor loss and an unconfirmed stop never enter the
+        obstacle branch. Localization has its own stopped retry above.
+        The same step deadline and endpoint remain in force;
         there is no new BE job, AMCL reset or replay of an earlier motor command.
         """
         obstacle_retries=0;arrival_corrected=False
@@ -220,7 +275,7 @@ class CargoRecovery:
                     and not getattr(self,'cargo_escape_used',False))
             if arrival_correction:
                 await self._plan_with_cargo_recovery(p,endpoint_id,meta)
-            elif escape and obstacle_retries>=2:
+            elif escape and (failure_code in ('NAV_GATE_BLOCKED','NAV_ABORTED') or obstacle_retries>=2):
                 try:await self._plan_with_cargo_recovery(p,endpoint_id,meta,force_escape=True)
                 except StepError as error:
                     if error.code!='NAV_RECOVERY_NO_CLEAR_MANEUVER':raise
@@ -384,6 +439,10 @@ class CargoRecovery:
             if not await self.stop():raise StepError('GOAL_STOP_UNCONFIRMED')
 
     async def _plan_with_cargo_recovery(self,p,endpoint_id,meta,force_escape=False):
+        return await self._retry_localization(
+            lambda:self._plan_with_cargo_recovery_once(p,endpoint_id,meta,force_escape),p,endpoint_id,meta)
+
+    async def _plan_with_cargo_recovery_once(self,p,endpoint_id,meta,force_escape=False):
         runtime=getattr(self,'worker',{}).get('navigation_runtime',{})
         if not force_escape:
             try:

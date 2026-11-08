@@ -1,4 +1,5 @@
 """Cargo escape and directional swept braking. No ROS nodes, network or motors."""
+import asyncio
 import math
 import sys
 import unittest
@@ -107,6 +108,9 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         a._wait_stationary=AsyncMock();a._cargo_pose=Mock(return_value=({},dict(x_m=0.,y_m=0.,yaw_rad=0.)))
         a._cargo_reverse=AsyncMock();a._cargo_translate=AsyncMock();a._cargo_rotate=AsyncMock();a.node=Mock()
         a._cargo_clear=lambda p,d,y,**kw:(True,maneuver_points(p,d,y,**kw))
+        # These cases exercise route/maneuver decisions, not a 15 s obstacle timer.
+        async def plan_without_wait(p,eid,meta,**kw):return await a._plan(p,eid,meta)
+        a._wait_obstacle_path=plan_without_wait
         return a
 
     async def test_controller_abort_repositions_once_inside_same_step_even_with_a_clear_gate(self):
@@ -158,10 +162,11 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(a._move_one.await_count,2)
 
     async def test_large_or_stale_arrival_error_never_starts_correction(self):
-        for fresh,y,error in ((True,.7,'ENDPOINT_POSITION_NOT_CONFIRMED'),(False,.84,'LOCALIZATION_LOST')):
+        for fresh,y,error in ((True,.7,'ENDPOINT_POSITION_NOT_CONFIRMED'),(False,.84,'LOCALIZATION_RECOVERY_TIMEOUT')):
             a=self.adapter();a._move_one=AsyncMock(side_effect=StepError('ENDPOINT_POSITION_NOT_CONFIRMED'))
             a.telemetry=Mock(return_value={'map_pose':{'fresh':fresh,'value':dict(x_m=0.,y_m=y)}})
             a._navigation_context=Mock(return_value=True);a._plan_with_cargo_recovery=AsyncMock()
+            a._wait_localization_recovery=AsyncMock(side_effect=StepError('LOCALIZATION_RECOVERY_TIMEOUT'))
             with self.assertRaisesRegex(StepError,error):await a._move_with_path_recovery({},'A',{})
             a._plan_with_cargo_recovery.assert_not_awaited()
 
@@ -211,22 +216,82 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         async def replan(*args,**kw):
             if kw.get('force_escape'):a.cargo_escape_used=True
         a._plan_with_cargo_recovery=AsyncMock(side_effect=replan)
+        a._wait_obstacle_path=AsyncMock()
         self.assertTrue((await a._move_with_path_recovery({},'A',{}))['reached'])
         self.assertEqual(a._plan_with_cargo_recovery.await_args_list[0].kwargs,{'force_escape':True})
-        self.assertEqual(a._plan_with_cargo_recovery.await_args_list[1].kwargs,{})
+        a._plan_with_cargo_recovery.assert_awaited_once_with({},'A',{},force_escape=True)
+        a._wait_obstacle_path.assert_awaited_once_with({},'A',{},blocked=True)
 
     async def test_cancel_sensor_loss_and_unconfirmed_stop_never_retry_motion(self):
-        for code in ('NAV_CANCELLED','LOCALIZATION_LOST','SAFETY_GATE_LOST','GOAL_STOP_UNCONFIRMED'):
+        for code in ('NAV_CANCELLED','SAFETY_GATE_LOST','GOAL_STOP_UNCONFIRMED'):
             a=self.adapter();a._move_one=AsyncMock(side_effect=StepError(code));a._plan_with_cargo_recovery=AsyncMock()
             with self.assertRaisesRegex(StepError,code):await a._move_with_path_recovery({},'A',{})
             a._plan_with_cargo_recovery.assert_not_awaited()
 
-    async def test_lost_pose_after_abort_prevents_retry(self):
+    async def test_lost_pose_after_abort_waits_without_a_blind_escape(self):
         a=self.adapter();a._move_one=AsyncMock(side_effect=StepError('NAV_ABORTED'))
         a.telemetry=Mock(return_value={});a._navigation_context=Mock(return_value=False)
         a._plan_with_cargo_recovery=AsyncMock()
-        with self.assertRaisesRegex(StepError,'LOCALIZATION_LOST'):await a._move_with_path_recovery({},'A',{})
+        a._wait_localization_recovery=AsyncMock(side_effect=StepError('LOCALIZATION_RECOVERY_TIMEOUT'))
+        with self.assertRaisesRegex(StepError,'LOCALIZATION_RECOVERY_TIMEOUT'):await a._move_with_path_recovery({},'A',{})
         a._plan_with_cargo_recovery.assert_not_awaited()
+
+    async def test_localization_loss_replans_inside_the_same_move_then_resumes(self):
+        a=self.adapter();a._move_one=AsyncMock(side_effect=[StepError('LOCALIZATION_LOST'),{'reached':True}])
+        a._wait_localization_recovery=AsyncMock();a._plan_with_cargo_recovery_once=AsyncMock()
+        params={'max_speed_mps':.2};meta={'job_id':'same-job','job_step_id':'same-step'}
+        self.assertTrue((await a._move_with_path_recovery(params,'A',meta))['reached'])
+        a._wait_localization_recovery.assert_awaited_once_with('A','LOCALIZATION_LOST',30.,1)
+        a._plan_with_cargo_recovery_once.assert_awaited_once_with(params,'A',meta)
+        self.assertEqual(a._move_one.await_count,2)
+
+    async def test_localization_retry_budget_is_bounded_across_a_move(self):
+        a=self.adapter();a._move_one=AsyncMock(side_effect=StepError('LOCALIZATION_LOST'))
+        a._wait_localization_recovery=AsyncMock();a._plan_with_cargo_recovery_once=AsyncMock()
+        with self.assertRaisesRegex(StepError,'LOCALIZATION_RECOVERY_EXHAUSTED'):
+            await a._move_with_path_recovery({},'A',{})
+        self.assertEqual(a._wait_localization_recovery.await_count,2)
+        self.assertEqual(a._move_one.await_count,3)
+
+    async def test_recovery_wait_stops_and_requires_live_pose_and_sensors(self):
+        a=self.adapter();a.stop=AsyncMock(return_value=True);a.hold_navigation_velocity=Mock()
+        a._check_graph=Mock();a._navigation_context=Mock(return_value=True);a.navigation_diagnostic=Mock()
+        a.telemetry=Mock(side_effect=[{'map_pose':{'fresh':False}},{'map_pose':{'fresh':True}},
+                                      {'map_pose':{'fresh':True}}])
+        a.health=Mock(side_effect=[{'sensors_ready':False},{'sensors_ready':True}])
+        with patch('mediassist.cargo_recovery.asyncio.sleep',new=AsyncMock()):
+            await a._wait_localization_recovery('A','LOCALIZATION_LOST',30.,1)
+        a.stop.assert_awaited_once();self.assertEqual(a.hold_navigation_velocity.call_count,3)
+        self.assertIsNone(a.navigation_localization_wait)
+
+    async def test_recovery_wait_timeout_cancels_no_other_step_and_clears_state(self):
+        a=self.adapter();a.stop=AsyncMock(return_value=True);a.hold_navigation_velocity=Mock()
+        a._check_graph=Mock();a._navigation_context=Mock(return_value=False);a.navigation_diagnostic=Mock()
+        a.telemetry=Mock(return_value={'map_pose':{'fresh':False}})
+        with patch('mediassist.cargo_recovery.time.monotonic',side_effect=[0.,1.]):
+            with self.assertRaisesRegex(StepError,'LOCALIZATION_RECOVERY_TIMEOUT'):
+                await a._wait_localization_recovery('A','LOCALIZATION_LOST',.5,1)
+        self.assertIsNone(a.navigation_localization_wait)
+
+    async def test_recovery_never_ignores_a_changed_session_or_unconfirmed_stop(self):
+        a=self.adapter();a.stop=AsyncMock(return_value=False)
+        with self.assertRaisesRegex(StepError,'GOAL_STOP_UNCONFIRMED'):
+            await a._wait_localization_recovery('A','LOCALIZATION_LOST',30.,1)
+        a.stop=AsyncMock(return_value=True);a.hold_navigation_velocity=Mock();a._check_graph=Mock()
+        a.telemetry=Mock(return_value={'map_pose':{'fresh':True}})
+        a._navigation_context=Mock(side_effect=StepError('NAVIGATION_SESSION_MISMATCH'))
+        with self.assertRaisesRegex(StepError,'NAVIGATION_SESSION_MISMATCH'):
+            await a._wait_localization_recovery('A','LOCALIZATION_LOST',30.,1)
+        self.assertIsNone(a.navigation_localization_wait)
+
+    async def test_cancelling_during_localization_wait_does_not_resume_move(self):
+        a=self.adapter();a.stop=AsyncMock(return_value=True);a.hold_navigation_velocity=Mock()
+        a._check_graph=Mock();a._navigation_context=Mock(return_value=False);a.navigation_diagnostic=Mock()
+        a.telemetry=Mock(return_value={'map_pose':{'fresh':False}})
+        with patch('mediassist.cargo_recovery.asyncio.sleep',new=AsyncMock(side_effect=asyncio.CancelledError)):
+            with self.assertRaises(asyncio.CancelledError):
+                await a._wait_localization_recovery('A','LOCALIZATION_LOST',30.,1)
+        self.assertIsNone(a.navigation_localization_wait)
 
     async def test_cargo_translation_uses_direct_bearing_without_overwriting_final_heading(self):
         from mediassist.ros_adapter import RosAdapter

@@ -91,6 +91,8 @@ class VoiceRuntime:
             logging.info('VOICE_STATE %s',state);self.last_state=state
 
     def available(self):
+        from .media_runtime import audio_reserved
+        if audio_reserved():return False
         value=self.reader.read()
         return bool(value.get('connected') and (value.get('status')=='IDLE'
                     or self.handoff and value.get('status')=='BUSY'))

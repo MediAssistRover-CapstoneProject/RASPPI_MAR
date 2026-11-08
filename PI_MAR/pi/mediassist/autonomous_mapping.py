@@ -12,7 +12,8 @@ def configuration(mapping):
                     scan_max_age_sec=.4, blocked_timeout_sec=8.,exploration_mode='reactive',
                     manual_lidar_assist=False,frontier_min_length_m=.20,coverage_stable_sec=15.,
                     coverage_min_duration_sec=30.,coverage_min_travel_m=0.,coverage_min_area_m2=.5,
-                    frontier_no_progress_sec=15.,lidar_stop_distance_m=.10,frontier_controller='nav2',
+                    frontier_no_progress_sec=15.,frontier_stall_sec=8.,frontier_goal_timeout_sec=60.,
+                    lidar_stop_distance_m=.10,frontier_controller='nav2',
                     visit_known_space=False,visit_radius_m=.6,reverse_enabled=False,max_reverse_mps=.1,control_pause_sec=0.)
     for key, value in defaults.items(): cfg.setdefault(key, value)
     if cfg['vehicle'] not in ('rigid','articulated'):raise StepError('INVALID_AUTONOMY_VEHICLE')
@@ -34,7 +35,8 @@ def configuration(mapping):
                           ('blocked_timeout_sec', 2, 20), ('min_turn_radius_m', .5, 2.),
                           ('frontier_min_length_m',.10,.5),('coverage_stable_sec',10,60),
                           ('coverage_min_duration_sec',20,120),('coverage_min_travel_m',0.,5.),
-                          ('coverage_min_area_m2',.3,10.),('frontier_no_progress_sec',10,60),('lidar_stop_distance_m',.05,.50),
+                          ('coverage_min_area_m2',.3,10.),('frontier_no_progress_sec',10,60),
+                          ('frontier_stall_sec',2,20),('frontier_goal_timeout_sec',15,180),('lidar_stop_distance_m',.05,.50),
                           ('visit_radius_m',.3,1.5),('max_reverse_mps',.02,.8),('control_pause_sec',0.,2.)):
         value = cfg[key]
         if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:

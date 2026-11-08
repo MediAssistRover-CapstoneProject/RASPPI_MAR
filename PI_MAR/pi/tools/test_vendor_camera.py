@@ -75,7 +75,10 @@ class VendorCameraTests(unittest.TestCase):
 
     def test_stream_url_uses_tested_mjpeg_parameters(self):
         c=camera_config({'camera':{'stream_backend':'web_video_server','stream_port':8080,'stream_max_width':640,'stream_max_height':480,'stream_jpeg_quality':60}})
-        query=parse_qs(urlsplit(vendor.stream_path(c)).query)
+        path=vendor.stream_path(c)
+        self.assertIn('topic=/ascamera/',path)
+        self.assertNotIn('%2F',path)
+        query=parse_qs(urlsplit(path).query)
         self.assertEqual(query,{'topic':[c['topic']],'type':['mjpeg'],'width':['640'],'height':['480'],'quality':['60']})
         self.assertIn('mediassist.vendor_camera',vendor.camera_argv('/python','/config',c))
 

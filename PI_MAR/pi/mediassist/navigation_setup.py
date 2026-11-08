@@ -46,6 +46,10 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
                 scan=layer.get(source,{})
                 # Rays must clear at least as far as they can mark, or moving objects leave ghosts.
                 scan['raytrace_max_range']=max(scan.get('raytrace_max_range',3.),scan.get('obstacle_max_range',2.5)+.5)
+                if not fast_mapping and scan.get('data_type','LaserScan')=='LaserScan':
+                    # Dynamic hits live in RAM; fresh no-return rays clear a
+                    # departed person without erasing the static saved map.
+                    scan.update(marking=True,clearing=True,observation_persistence=0.,inf_is_valid=True)
     ctl = result['controller_server']['ros__parameters']
     follow = ctl['FollowPath']
     if follow.get('plugin') != 'dwb_core::DWBLocalPlanner':
