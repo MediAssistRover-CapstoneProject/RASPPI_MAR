@@ -9,7 +9,7 @@ import sys
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'pi'),str(ROOT/'tools')]
 from mediassist.worker_config import load
-from mediassist.media_runtime import configuration
+from mediassist.media_runtime import configuration,use_media_packages
 from configure_mapping import stopped_configuration
 from configure_camera import atomic_write
 
@@ -27,6 +27,7 @@ def main():
                  audio_output=int(a.audio_output) if a.audio_output.isdigit() else a.audio_output,force_relay=a.force_relay)
     configuration(cfg)
     if a.enable:
+        use_media_packages()
         from livekit import rtc
         from livekit.rtc.media_devices import MediaDevices
         import sounddevice

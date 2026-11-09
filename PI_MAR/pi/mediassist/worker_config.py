@@ -122,6 +122,8 @@ def load(path):
         validate_cloud_config(speech)
     from .voice_runtime import configuration as voice_configuration
     voice_configuration(cfg)
+    from .staff_qr import guidance_configuration as qr_guidance_configuration
+    qr_guidance_configuration(cfg)
     ai = cfg.get("ai")
     if not isinstance(ai,dict) or type(ai.get("enabled")) is not bool or not isinstance(ai.get("topic"),str):
         raise StepError("INVALID_AI_CONFIG")

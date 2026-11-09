@@ -8,6 +8,14 @@ import time
 from contextlib import contextmanager
 
 
+def use_media_packages():
+    """Keep LiveKit's dependencies out of the vendor ROS Python environment."""
+    import sys
+    packages = Path(__file__).resolve().parents[1] / '.venv' / 'media-site-packages'
+    if packages.is_dir():
+        sys.path.insert(0, str(packages))
+
+
 def state_path():
     return Path('/dev/shm')/('mar-media-'+str(os.getuid())+'.json')
 

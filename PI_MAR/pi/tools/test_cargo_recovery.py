@@ -236,14 +236,35 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(StepError,'LOCALIZATION_RECOVERY_TIMEOUT'):await a._move_with_path_recovery({},'A',{})
         a._plan_with_cargo_recovery.assert_not_awaited()
 
-    async def test_localization_loss_replans_inside_the_same_move_then_resumes(self):
-        a=self.adapter();a._move_one=AsyncMock(side_effect=[StepError('LOCALIZATION_LOST'),{'reached':True}])
-        a._wait_localization_recovery=AsyncMock();a._plan_with_cargo_recovery_once=AsyncMock()
-        params={'max_speed_mps':.2};meta={'job_id':'same-job','job_step_id':'same-step'}
-        self.assertTrue((await a._move_with_path_recovery(params,'A',meta))['reached'])
-        a._wait_localization_recovery.assert_awaited_once_with('A','LOCALIZATION_LOST',30.,1)
-        a._plan_with_cargo_recovery_once.assert_awaited_once_with(params,'A',meta)
-        self.assertEqual(a._move_one.await_count,2)
+    async def test_transient_input_loss_replans_inside_the_same_move_then_resumes(self):
+        for code in ('LOCALIZATION_LOST','SENSORS_NOT_READY'):
+            with self.subTest(code=code):
+                a=self.adapter();a._move_one=AsyncMock(side_effect=[StepError(code),{'reached':True}])
+                a._wait_localization_recovery=AsyncMock();a._plan_with_cargo_recovery_once=AsyncMock()
+                params={'max_speed_mps':.2};meta={'job_id':'same-job','job_step_id':'same-step'}
+                self.assertTrue((await a._move_with_path_recovery(params,'A',meta))['reached'])
+                a._wait_localization_recovery.assert_awaited_once_with('A',code,30.,1)
+                a._plan_with_cargo_recovery_once.assert_awaited_once_with(params,'A',meta)
+                self.assertEqual(a._move_one.await_count,2)
+
+    async def test_missing_sensor_at_initial_plan_waits_before_planning_again(self):
+        a=self.adapter()
+        a._plan=AsyncMock(side_effect=[StepError('SENSORS_NOT_READY'),'new-path'])
+        a._wait_localization_recovery=AsyncMock()
+        self.assertEqual(await a._plan_with_cargo_recovery({},'A',{}),'new-path')
+        a._wait_localization_recovery.assert_awaited_once_with('A','SENSORS_NOT_READY',30.,1)
+        a._cargo_translate.assert_not_awaited()
+
+    async def test_blocked_cargo_adjustment_uses_a_normal_replan(self):
+        a=self.adapter()
+        a.cargo_escape_used=True
+        a._move_one=AsyncMock(side_effect=[StepError('CARGO_REVERSE_BLOCKED'),{'reached':True}])
+        a.telemetry=Mock(return_value={});a._navigation_context=Mock(return_value=True)
+        a._prerequisites=AsyncMock();a._wait_obstacle_path=AsyncMock()
+        self.assertTrue((await a._move_with_path_recovery({},'A',{}))['reached'])
+        a._wait_stationary.assert_awaited_once()
+        a._wait_obstacle_path.assert_awaited_once_with({},'A',{},blocked=True)
+        a._cargo_translate.assert_not_awaited()
 
     async def test_localization_retry_budget_is_bounded_across_a_move(self):
         a=self.adapter();a._move_one=AsyncMock(side_effect=StepError('LOCALIZATION_LOST'))

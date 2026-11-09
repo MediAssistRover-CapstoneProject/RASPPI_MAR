@@ -1,4 +1,6 @@
 # Optional, installed only when enabling camera/SOS WebRTC. ROS supplies OpenCV/NumPy.
+# Use pip install --target pi/.venv/media-site-packages -r pi/requirements-media.txt.
+# LiveKit needs a newer protobuf than the vendor MediaPipe environment.
 livekit==1.2.1
 sounddevice==0.5.3
 # ROS Humble cv_bridge/OpenCV use the NumPy 1.x ABI. Do not install NumPy 2.x here.

@@ -361,13 +361,13 @@ class RosAdapter(CargoRecovery):
         if p["max_speed_mps"] > self.cfg["max_speed_mps"]: raise StepError("SPEED_POLICY_EXCEEDED")
         self._check_graph()
         await self._check_map(p["map_id"])
-        if not self.health()["sensors_ready"]: raise StepError("SENSORS_NOT_READY")
         # Never start a goal on a stale pose. Give an already accepted operation
         # a bounded opportunity to recover a delayed sample without blocking MQTT.
         deadline=time.monotonic()+2.
         while True:
             state=self.telemetry()
             ready=self._navigation_context(allow_localization_pause=True,state=state)
+            if not self.health(state)["sensors_ready"]: raise StepError("SENSORS_NOT_READY")
             if ready and state["map_pose"]["fresh"]:break
             self.hold_navigation_velocity()
             if time.monotonic()>=deadline:
@@ -934,8 +934,8 @@ class RosAdapter(CargoRecovery):
         return await select_and_move(p, self.cfg,
             lambda eid: self._plan_with_cargo_recovery(p, eid, meta), lambda eid: self._move_with_path_recovery(p, eid, meta), report)
 
-    def health(self):
-        data = self.telemetry()
+    def health(self, data=None):
+        if data is None: data = self.telemetry()
         age = self.cfg["motion"]["sensor_max_age_sec"]
         def fresh(key): return key in data and data[key]["age_sec"] <= age
         def range_ok(key):

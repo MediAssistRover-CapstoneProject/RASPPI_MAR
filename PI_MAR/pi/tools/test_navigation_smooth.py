@@ -258,7 +258,7 @@ class MoveTests(unittest.IsolatedAsyncioTestCase):
         for recover in (True,False):
             clock=[0.];a=object.__new__(RosAdapter);a.motion_uncertain=False;a.localization_required=True
             a.cfg={'max_speed_mps':.25,'motion':dict(commissioned=True,cart_footprint_validated=True,watchdog_validated=True)}
-            a._check_graph=Mock();a._check_map=AsyncMock();a.health=lambda:{'sensors_ready':True}
+            a._check_graph=Mock();a._check_map=AsyncMock();a.health=Mock(return_value={'sensors_ready':True})
             a._navigation_context=Mock(return_value=True);a.hold_navigation_velocity=Mock()
             a.telemetry=lambda:{'map_pose':{'fresh':recover and clock[0]>=.3}}
             a.nav=Mock();a.planner=Mock()

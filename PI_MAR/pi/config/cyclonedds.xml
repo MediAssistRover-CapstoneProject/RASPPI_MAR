@@ -7,5 +7,9 @@
       <MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>
       <Peers><Peer Address="127.0.0.1"/></Peers>
     </Discovery>
+    <Internal>
+      <!-- A raw RGB frame is close to 1 MiB. Request headroom within the host limit. -->
+      <SocketReceiveBufferSize max="4MB"/>
+    </Internal>
   </Domain>
 </CycloneDDS>

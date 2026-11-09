@@ -153,7 +153,7 @@ class CargoRecovery:
                 # A missing quality sample can recover; identity changes cannot.
                 ready=self._navigation_context(allow_localization_pause=True,state=state)
                 if (ready and state.get('map_pose',{}).get('fresh')
-                        and self.health().get('sensors_ready')):
+                        and self.health(state).get('sensors_ready')):
                     self.node.get_logger().info('NAV_LOCALIZATION_RECOVERED endpoint='+endpoint_id+
                         ' elapsed_sec='+str(round(time.monotonic()-started,2)))
                     return
@@ -177,7 +177,7 @@ class CargoRecovery:
                 return await action()
             except StepError as exc:
                 if exc.code not in ('LOCALIZATION_LOST','LOCALIZATION_LOST_AT_GOAL',
-                                    'LOCALIZATION_NOT_READY','MAP_TF_NOT_READY'):raise
+                                    'LOCALIZATION_NOT_READY','MAP_TF_NOT_READY','SENSORS_NOT_READY'):raise
                 used=getattr(self,'localization_recovery_attempts',0)
                 if used>=limit:
                     raise StepError('LOCALIZATION_RECOVERY_EXHAUSTED',
@@ -240,7 +240,8 @@ class CargoRecovery:
         while True:
             try:return await self._move_one(p,endpoint_id)
             except StepError as exc:
-                if exc.code not in ('NAV_ABORTED','NAV_GATE_BLOCKED','NAV2_COMMAND_STALE','ENDPOINT_POSITION_NOT_CONFIRMED'):raise
+                if exc.code not in ('NAV_ABORTED','NAV_GATE_BLOCKED','NAV2_COMMAND_STALE',
+                                    'ENDPOINT_POSITION_NOT_CONFIRMED','CARGO_REVERSE_BLOCKED'):raise
                 failure_code=exc.code
                 arrival_correction=exc.code=='ENDPOINT_POSITION_NOT_CONFIRMED'
                 if arrival_correction:
@@ -275,13 +276,18 @@ class CargoRecovery:
                     and not getattr(self,'cargo_escape_used',False))
             if arrival_correction:
                 await self._plan_with_cargo_recovery(p,endpoint_id,meta)
+            elif failure_code=='CARGO_REVERSE_BLOCKED':
+                # The final reposition was already stopped. Retry the planned
+                # approach from the actual pose, without another escape.
+                await self._wait_obstacle_path(p,endpoint_id,meta,blocked=True)
             elif escape and (failure_code in ('NAV_GATE_BLOCKED','NAV_ABORTED') or obstacle_retries>=2):
                 try:await self._plan_with_cargo_recovery(p,endpoint_id,meta,force_escape=True)
                 except StepError as error:
-                    if error.code!='NAV_RECOVERY_NO_CLEAR_MANEUVER':raise
+                    if error.code not in ('NAV_RECOVERY_NO_CLEAR_MANEUVER','CARGO_REVERSE_BLOCKED'):raise
                     # A passing person can disappear on the next costmap
                     # update. Never force a maneuver merely to avoid failure.
-                    self.node.get_logger().warning('NAV_RECOVERY_NO_CLEAR_MANEUVER; replan without repositioning')
+                    self.node.get_logger().warning(error.code+'; replan without repositioning')
+                    if error.code=='CARGO_REVERSE_BLOCKED':await self._wait_stationary()
                     await self._wait_obstacle_path(p,endpoint_id,meta,blocked=True)
             else:
                 try:await self._wait_obstacle_path(p,endpoint_id,meta,blocked=True)

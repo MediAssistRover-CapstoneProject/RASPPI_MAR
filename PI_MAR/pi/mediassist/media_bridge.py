@@ -8,7 +8,7 @@ import signal
 import threading
 import time
 from uuid import UUID
-from .media_runtime import Reservation,configuration
+from .media_runtime import Reservation,configuration,use_media_packages
 from .media_client import MediaClient
 
 OPEN={'CONNECTING','ACTIVE','RECONNECTING'}
@@ -46,24 +46,51 @@ class CameraSource:
         from rclpy.executors import SingleThreadedExecutor,ExternalShutdownException
         from rclpy.qos import qos_profile_sensor_data
         from rclpy.signals import SignalHandlerOptions
-        from types import SimpleNamespace
         from std_msgs.msg import String
         from nav_msgs.msg import Odometry
-        from .camera_preview import CameraPreview
-        self.String=String;self.holding=False;self.video_active=False;self.safety={};self.safety_at=0.;self.odom=None;self.odom_at=0.
+        self.String=String;self.holding=False;self.safety={};self.safety_at=0.;self.odom=None;self.odom_at=0.
         rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
         self.node=rclpy.create_node('mediassist_media')
         self.publisher=self.node.create_publisher(String,'/mediassist/media_hold',10)
         self.node.create_subscription(String,'/mediassist/safety_state',self.safety_seen,10)
         self.node.create_subscription(Odometry,hardware['ros']['odom'],self.odom_seen,qos_profile_sensor_data)
-        settings=dict(worker['mapping']['camera'],sample_every_frame=True,source_max_age_sec=.75)
-        self.preview=CameraPreview(SimpleNamespace(node=self.node),settings,lambda:self.video_active)
+        self.camera_settings = dict(worker['mapping']['camera'], sample_every_frame=True, source_max_age_sec=.75)
+        self.preview = None
+        self.frame_ready = None
         self.executor=SingleThreadedExecutor();self.executor.add_node(self.node)
         def spin():
             try:self.executor.spin()
             except ExternalShutdownException:pass
             except Exception:logging.exception('MEDIA_ROS_RECEIVER_FAILED')
         self.thread=threading.Thread(target=spin,name='media_ros_latest',daemon=True);self.thread.start()
+
+    def start_video(self):
+        from .camera_preview import CameraPreview
+
+        loop = asyncio.get_running_loop()
+        ready = asyncio.Event()
+        self.frame_ready = ready
+        self.preview = CameraPreview(
+            self, self.camera_settings, lambda: True,
+            on_receive=lambda *_: loop.call_soon_threadsafe(ready.set),
+        )
+
+    def stop_video(self):
+        preview, self.preview = self.preview, None
+        self.frame_ready = None
+        if preview is not None:
+            self.node.destroy_subscription(preview.subscription)
+
+    async def next_sample(self):
+        self.frame_ready.clear()
+        sample = self.preview.take_sample(.5)
+        if sample is not None:
+            return sample
+        try:
+            await asyncio.wait_for(self.frame_ready.wait(), .25)
+        except asyncio.TimeoutError:
+            return None
+        return self.preview.take_sample(.5)
 
     def safety_seen(self,msg):
         try:self.safety=json.loads(msg.data);self.safety_at=time.monotonic()
@@ -148,6 +175,7 @@ class Bridge:
         sid=session['sessionId'];assist=session['mode']=='ASSIST'
         reservation=Reservation(sid) if assist else None
         room=rtc.Room();player=None;capture=None;video=None;pulse=None;audio_lock=None
+        report_task = None
         audio_tasks=set()
         def spawn_audio(coro):
             task=asyncio.create_task(coro);audio_tasks.add(task)
@@ -189,34 +217,52 @@ class Bridge:
                             if publication.track and publication.track.kind==rtc.TrackKind.KIND_AUDIO:await player.add_track(publication.track)
                 audio=rtc.LocalAudioTrack.create_audio_track('patient-microphone',capture.source)
                 await room.local_participant.publish_track(audio,rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE))
-            video=rtc.VideoSource(640,480)
+            width, height, fps = (credentials[key] for key in ('width', 'height', 'fps'))
+            video=rtc.VideoSource(width,height)
             track=rtc.LocalVideoTrack.create_video_track('robot-camera',video)
             await room.local_participant.publish_track(track,rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_CAMERA,
-                video_codec=rtc.VideoCodec.VP8,simulcast=False,video_encoding=rtc.VideoEncoding(max_bitrate=credentials['bitrate'],max_framerate=15)))
-            self.source.video_active=True
+                video_codec=rtc.VideoCodec.VP8,simulcast=False,video_encoding=rtc.VideoEncoding(max_bitrate=credentials['bitrate'],max_framerate=fps)))
+
+            def convert_frame(sample):
+                pixels = frame_pixels(sample)
+                if pixels.shape[:2] != (height, width):
+                    pixels = cv2.resize(pixels, (width, height))
+                if pixels.ndim == 2:
+                    pixels = cv2.cvtColor(pixels, cv2.COLOR_GRAY2BGR)
+                yuv = cv2.cvtColor(pixels, cv2.COLOR_BGR2YUV_I420)
+                return memoryview(yuv).cast('B')
+
+            self.source.start_video()
             logging.info('MEDIA_JOINED session=%s mode=%s',sid,session['mode'])
-            await self.client.report(sid,'CONNECTED')
-            report_at=time.monotonic()+10;last_frame=time.monotonic();camera_warned=False;staff_seen=time.monotonic()
+            report_at = 0.
+            next_frame_at = last_frame = staff_seen = time.monotonic()
+            frame_period = 1 / fps
+            camera_warned = False
             deadline=time.monotonic()+max(1.,min(1800.,(parse_time(credentials['expiresAt'])-time.time())))
             while time.monotonic()<deadline:
-                if 'staff-'+str(session['staffAccountId']) in room.remote_participants:staff_seen=time.monotonic()
-                elif time.monotonic()-staff_seen>30:raise RuntimeError('MEDIA_STAFF_DISCONNECTED')
-                if time.monotonic()>=report_at:
+                now = time.monotonic()
+                if 'staff-'+str(session['staffAccountId']) in room.remote_participants:staff_seen=now
+                elif now-staff_seen>30:raise RuntimeError('MEDIA_STAFF_DISCONNECTED')
+                if report_task is not None and report_task.done():
+                    value = report_task.result()
+                    report_task = None
+                    if value.get('state') not in OPEN:
+                        return
+                if report_task is None and now >= report_at:
                     state='CONNECTED' if room.connection_state==rtc.ConnectionState.CONN_CONNECTED else 'RECONNECTING'
-                    value=await self.client.report(sid,state)
-                    if value.get('state') not in OPEN:return
-                    report_at=time.monotonic()+10
-                sample=self.source.preview.take_sample(.5)
+                    report_task = asyncio.create_task(self.client.report(sid, state))
+                    report_at = now + 10
+                if now < next_frame_at:
+                    await asyncio.sleep(next_frame_at - now)
+                sample = await self.source.next_sample()
                 if sample:
-                    def send():
-                        pixels=frame_pixels(sample)
-                        if pixels.shape[:2]!=(480,640):pixels=cv2.resize(pixels,(640,480))
-                        rgb=cv2.cvtColor(pixels,cv2.COLOR_GRAY2RGB if pixels.ndim==2 else cv2.COLOR_BGR2RGB)
-                        video.capture_frame(rtc.VideoFrame(640,480,rtc.VideoBufferType.RGB24,rgb.tobytes()))
-                    await asyncio.to_thread(send);last_frame=time.monotonic();camera_warned=False
+                    next_frame_at = max(next_frame_at + frame_period, time.monotonic())
+                    buffer = await asyncio.to_thread(convert_frame, sample)
+                    video.capture_frame(rtc.VideoFrame(width, height, rtc.VideoBufferType.I420, buffer))
+                    last_frame = time.monotonic()
+                    camera_warned = False
                 elif time.monotonic()-last_frame>15 and not camera_warned:
                     logging.warning('MEDIA_CAMERA_NO_FRAMES session=%s; audio remains available',sid);camera_warned=True
-                await asyncio.sleep(1/15.)
         except asyncio.CancelledError:raise
         except Exception as e:
             code=str(e) if str(e).startswith('MEDIA_') and len(str(e))<96 else 'MEDIA_JOIN_FAILED'
@@ -224,8 +270,11 @@ class Bridge:
             try:await self.client.report(sid,'FAILED',code)
             except Exception:pass
         finally:
+            self.source.stop_video()
+            if report_task is not None:
+                report_task.cancel()
+                await asyncio.gather(report_task, return_exceptions=True)
             for task in list(audio_tasks):task.cancel()
-            self.source.video_active=False
             await asyncio.gather(*list(audio_tasks),return_exceptions=True)
             for resource in (capture,player,room,video):
                 if resource:
@@ -243,6 +292,7 @@ def parse_time(value):
 
 
 async def main_async(args):
+    use_media_packages()
     from .media_runtime import bridge_lock
     from .worker_config import load
     worker,hardware=load(args.config)

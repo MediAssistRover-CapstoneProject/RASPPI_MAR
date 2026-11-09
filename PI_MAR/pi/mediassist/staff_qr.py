@@ -13,9 +13,69 @@ from .navigation_session import SessionClient
 
 STAFF_QR = re.compile(rb'MARSTAFF1\.[A-Za-z0-9_-]{64}')
 CAPABILITIES = ('staff-qr-scan-v1', 'secure-unlock-v1')
+QR_HINTS = {
+    'vi': {
+        'CENTER': 'Vui lòng đưa mã QR vào giữa khung hình camera.',
+        'CLOSER': 'Vui lòng đưa điện thoại gần camera hơn một chút.',
+        'STEADY': 'Vui lòng giữ điện thoại thẳng và yên để tôi quét mã.',
+        'ONE_CODE': 'Vui lòng đưa một mã QR vào khung hình.',
+    },
+    'en': {
+        'CENTER': 'Please center the QR code in front of the camera.',
+        'CLOSER': 'Please bring the phone a little closer to the camera.',
+        'STEADY': 'Please hold the phone upright and steady so I can scan the code.',
+        'ONE_CODE': 'Please show one QR code at a time.',
+    },
+}
 
 
-def inspect_staff_qr(sample):
+def guidance_configuration(worker):
+    defaults = dict(enabled=True, language_code='vi', delay_sec=2.5, repeat_sec=7.,
+                    min_code_fraction=.15, edge_fraction=.05, volume=70, messages={})
+    raw = worker.get('staff_qr_guidance', {})
+    if not isinstance(raw, dict) or set(raw) - set(defaults):
+        raise StepError('INVALID_STAFF_QR_GUIDANCE')
+    cfg = {**defaults, **raw}
+    language = cfg['language_code']
+    if (type(cfg['enabled']) is not bool or not isinstance(language, str) or language not in QR_HINTS
+            or type(cfg['volume']) is not int or not 0 <= cfg['volume'] <= 100):
+        raise StepError('INVALID_STAFF_QR_GUIDANCE')
+    for key, low, high in (('delay_sec', 1, 15), ('repeat_sec', 4, 30),
+                           ('min_code_fraction', .05, .5), ('edge_fraction', .01, .2)):
+        if type(cfg[key]) not in (int, float) or not low <= cfg[key] <= high:
+            raise StepError('INVALID_STAFF_QR_GUIDANCE', key)
+    messages = cfg['messages']
+    if (not isinstance(messages, dict) or set(messages) - set(QR_HINTS[language])
+            or any(not isinstance(text, str) or not text.strip() or len(text) > 160 for text in messages.values())):
+        raise StepError('INVALID_STAFF_QR_GUIDANCE', 'messages')
+    return {**cfg, 'messages': {**QR_HINTS[language], **messages}}
+
+
+def framing_hint(gray, detector, guidance):
+    import cv2
+    import numpy as np
+    try:
+        detected, corners = detector.detect(gray)
+    except cv2.error:
+        return 'CENTER'
+    if not detected or corners is None:
+        return 'CENTER'
+    points = np.asarray(corners).reshape(-1, 2)
+    if len(points) != 4 or not np.isfinite(points).all():
+        return 'CENTER'
+    height, width = gray.shape
+    left, top = points.min(axis=0)
+    right, bottom = points.max(axis=0)
+    edge = guidance['edge_fraction']
+    if left < edge * width or right > (1 - edge) * width or top < edge * height or bottom > (1 - edge) * height:
+        return 'CENTER'
+    # Apparent size is a framing cue. The QR on a phone can be zoomed,
+    # so RGB bounds alone do not establish physical distance.
+    side = min(right - left, bottom - top)
+    return 'CLOSER' if side < guidance['min_code_fraction'] * min(width, height) else 'STEADY'
+
+
+def inspect_staff_qr(sample, detector=None, guidance=None):
     started = time.perf_counter()
     import cv2
     import numpy as np
@@ -30,6 +90,8 @@ def inspect_staff_qr(sample):
     if len(matches) == 1:
         rect = matched[0].rect
         details['bbox'] = [int(rect.left),int(rect.top),int(rect.width),int(rect.height)]
+    elif detector is not None:
+        details['hint'] = 'ONE_CODE' if len(matches) > 1 else framing_hint(gray, detector, guidance)
     # Reject ambiguous frames. The camera never decides whether a proof is valid.
     return (matches.pop().decode('ascii') if len(matches) == 1 else None), details
 
@@ -53,6 +115,10 @@ class StaffQrScanner:
         self.preview = None
         self.last_status = None
         self.next_status = 0.
+        self.guidance = guidance_configuration(worker.cfg)
+        self.detector = (cv2.QRCodeDetector() if self.guidance['enabled']
+                         and worker.cfg.get('speech', {}).get('enabled') else None)
+        self.hint_task = None
 
     def report(self, status, window, **metrics):
         now = time.monotonic()
@@ -83,22 +149,50 @@ class StaffQrScanner:
             preview, self.preview = self.preview, None
             self.worker.adapter.node.destroy_subscription(preview.subscription)
 
+    async def stop_hint(self):
+        if self.hint_task is not None:
+            task, self.hint_task = self.hint_task, None
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def play_hint(self, session, window, hint):
+        from .media_runtime import audio_reserved
+
+        def available():
+            return self.window(session) == window and not audio_reserved()
+
+        if not available():
+            return
+        data = dict(text=self.guidance['messages'][hint], language_code=self.guidance['language_code'],
+                    volume=self.guidance['volume'])
+        try:
+            await self.worker.adapter.speech.speak(
+                dict(action='SPEAK', prompt_key='STAFF_QR_' + hint, data=data), playback_guard=available)
+            logging.info('STAFF_QR_HINT kind=%s', hint)
+        except Exception as error:
+            logging.debug('STAFF_QR_HINT_UNAVAILABLE code=%s', getattr(error, 'code', type(error).__name__))
+
     async def run(self, session):
+        from .media_runtime import audio_reserved
         selected = verified = last_digest = None
         next_submit = last_submit = 0.
-        window_started = 0.
+        window_started = next_hint = 0.
         first_frame = False
         try:
             while True:
                 window = self.window(session)
                 if window != selected:
                     self.close_preview()
+                    await self.stop_hint()
                     selected = window
                     last_digest = None
                     window_started = time.monotonic()
+                    next_hint = window_started + self.guidance['delay_sec']
                     first_frame = False
                     self.last_status = None
                     self.next_status = 0.
+                if self.hint_task is not None and (self.hint_task.done() or audio_reserved()):
+                    await self.stop_hint()
                 if not window or window == verified:
                     await asyncio.sleep(.15)
                     continue
@@ -116,7 +210,9 @@ class StaffQrScanner:
                     logging.info('STAFF_QR_FRAME_READY job=%s step=%s frame_age_ms=%d window_elapsed_ms=%d',
                                  *window,frame_age_ms,round((time.monotonic()-window_started)*1000))
                 try:
-                    proof, metrics = await asyncio.to_thread(inspect_staff_qr, sample)
+                    detector = self.detector if (time.monotonic() >= next_hint
+                        and self.hint_task is None and not audio_reserved()) else None
+                    proof, metrics = await asyncio.to_thread(inspect_staff_qr, sample, detector, self.guidance)
                 except Exception as error:
                     self.report('FRAME_DECODE_FAILED',window,error=type(error).__name__)
                     await asyncio.sleep(.15)
@@ -124,6 +220,7 @@ class StaffQrScanner:
                 self.report('QR_DETECTED' if proof else 'QR_AMBIGUOUS' if metrics['count']>1 else 'QR_NOT_VISIBLE',
                             window,frame_age_ms=frame_age_ms,**metrics)
                 if proof and self.window(session) == window:
+                    await self.stop_hint()
                     now = time.monotonic()
                     digest = hashlib.sha256(proof.encode('ascii')).digest()
                     if digest != last_digest or now - last_submit >= 2.:
@@ -144,6 +241,9 @@ class StaffQrScanner:
                             logging.info('STAFF_QR_VERIFIED job=%s step=%s decode_ms=%.2f verify_ms=%d window_elapsed_ms=%d',
                                 *window,metrics['decode_ms'],round((time.monotonic()-submitted)*1000),
                                 round((time.monotonic()-window_started)*1000))
+                elif metrics.get('hint') and self.window(session) == window:
+                    next_hint = time.monotonic() + self.guidance['repeat_sec']
+                    self.hint_task = asyncio.create_task(self.play_hint(session, window, metrics['hint']))
                 await asyncio.sleep(.10)
         except asyncio.CancelledError:
             raise
@@ -151,3 +251,4 @@ class StaffQrScanner:
             logging.warning('STAFF_QR_SCAN_UNAVAILABLE %s', type(exc).__name__)
         finally:
             self.close_preview()
+            await self.stop_hint()
