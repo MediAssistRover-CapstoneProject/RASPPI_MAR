@@ -1,6 +1,7 @@
 """Resolve a voice destination against BE data; dispatch only after explicit consent."""
 import json
 import math
+import re
 import time
 import unicodedata
 import uuid
@@ -22,9 +23,9 @@ class VoiceActions:
         self.be=be;self.enabled=config.get('actions_enabled') is True
         self.before_dispatch=before_dispatch
         self.marker=Path(marker).with_name('voice-action-pending.json');self.pending=None
-        self.speed=config.get('navigation_speed_mps',.2)
-        if type(self.speed) not in (int,float) or not math.isfinite(self.speed) or not .1<=self.speed<=.3:
-            raise StepError('VOICE_NAVIGATION_SPEED_REQUIRES_0P10_TO_0P30')
+        self.speed=config.get('navigation_speed_mps', 0.35)
+        if type(self.speed) not in (int,float) or not math.isfinite(self.speed) or not 0.10 <= self.speed <= 0.35:
+            raise StepError('VOICE_NAVIGATION_SPEED_REQUIRES_0P10_TO_0P35')
 
     def get(self,path):
         _,_,raw=self.be.request(path,timeout=10)
@@ -36,10 +37,10 @@ class VoiceActions:
         if not isinstance(value.get('endpoints'),list):raise StepError('VOICE_CATALOG_INVALID')
         return value
 
-    def candidates(self):
-        if not self.enabled:return []
-        try:return self.catalog()['endpoints'][:100]
-        except (StepError,OSError):return []
+    def conversation_catalog(self):
+        if not self.enabled:return {}
+        try:return self.catalog()
+        except (StepError,OSError):return {}
 
     def prepare(self,action,interaction_id):
         self.pending=None
@@ -70,11 +71,15 @@ class VoiceActions:
             labels=', '.join(str(p.get('endpointCode')) for p in catalog['endpoints'][:10])
             return ('Tôi chưa xác định được một điểm đến duy nhất. Các điểm trên map là '+labels+'. Bạn hãy nói rõ điểm cần tới.')[:500]
         point=endpoints[0]
+        destination=point.get('spokenLabel') or point.get('roomName')
+        if not destination:
+            name=(point.get('endpointName') or point['endpointCode']).strip()
+            destination='điểm '+name.upper() if re.fullmatch(r'[A-Za-z]|[0-9]+',name) else name
         body=dict(navigationSessionId=session['sessionId'],endpointId=point['endpointId'],
                   maxSpeedMps=self.speed,voiceInteractionId=interaction_id)
         self.pending=dict(body=body,key=str(uuid.uuid4()),expires=time.monotonic()+60,
-                          session_id=session['sessionId'],point_name=point.get('endpointName') or point['endpointCode'])
-        return 'Bạn muốn tôi tới điểm '+self.pending['point_name']+'. Hãy nói xác nhận để bắt đầu, hoặc hủy.'
+                          session_id=session['sessionId'])
+        return f'Bạn muốn tôi dẫn đến {destination} phải không? Hãy nói xác nhận hoặc hủy nhé.'
 
     def consume(self,text):
         """Return None for a normal query; otherwise (spoken reply, request ID)."""

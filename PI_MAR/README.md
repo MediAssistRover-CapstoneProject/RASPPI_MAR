@@ -329,8 +329,8 @@ bộ đếm của phiên để đóng phiên bị gián đoạn, không giữ tr
 File bíp và WAV TTS là âm thanh hệ thống, được xóa khi phát xong/hủy.
 
 Để bật lệnh di chuyển, đặt `actions_enabled=true` trong file private
-`/home/ubuntu/mar-secrets/voice-ai.json`; `navigation_speed_mps` mặc định 0,2,
-được chọn trong 0,1..0,3 m/s cho lượt thử voice. Trên HTML bấm **Chuẩn bị
+`/home/ubuntu/mar-secrets/voice-ai.json`; `navigation_speed_mps` mặc định 0,35,
+được chọn trong 0,1..0,35 m/s cho lượt thử voice. Trên HTML bấm **Chuẩn bị
 workflow voice MOVE → báo đã tới nơi** một lần. Workflow chuẩn
 `WF_VOICE_ENDPOINT_V1` nhận endpoint/map/tốc độ qua tham số, không cố định a/b/c.
 

@@ -72,9 +72,11 @@ class AiClient:
         if not isinstance(result,dict):raise StepError('VOICE_AI_INVALID_RESPONSE')
         return result
 
-    def ask(self,session_id,text,history,destinations=None):
+    def ask(self,session_id,text,history,destinations=None,hospital_information_id=None):
         turn=str(uuid.uuid4())
-        result=self.request('/api/robot/chat',dict(session_id=session_id,turn_id=turn,text=text,language='vi',history=history[-8:],destinations=destinations or []))
+        body=dict(session_id=session_id,turn_id=turn,text=text,language='vi',history=history[-8:],destinations=destinations or [])
+        if hospital_information_id:body['hospital_information_id']=hospital_information_id
+        result=self.request('/api/robot/chat',body)
         if (result.get('session_id')!=session_id or result.get('turn_id')!=turn
                 or not isinstance(result.get('answer'),str) or not 1<=len(result['answer'])<=2000
                 or not isinstance(result.get('speech_text'),str) or not 1<=len(result['speech_text'])<=500):
@@ -339,8 +341,10 @@ async def conversation(worker,config_path,start_now=True,once=True,max_turns=10,
         status='COMPLETED';turns=[];dispatched=False;ended=False
         writer=HistoryWriter(history,max_turns);confirmation_retries=0
         try:
-            candidates=initial_catalog['endpoints'] if initial_catalog is not None else await asyncio.to_thread(actions.candidates)
+            catalog=initial_catalog if initial_catalog is not None else await asyncio.to_thread(actions.conversation_catalog)
             initial_catalog=None
+            candidates=catalog.get('endpoints',[])[:100]
+            hospital_information_id=catalog.get('navigationSession',{}).get('hospitalInformationId')
             await say(player,INTRO,log_transcripts)
             for _ in range(max_turns):
                 confirming=actions.pending is not None
@@ -377,7 +381,7 @@ async def conversation(worker,config_path,start_now=True,once=True,max_turns=10,
                     dispatched=bool(request_id)
                     result=dict(intent='ESCORT_CONFIRMATION',confidence=1.,sources=[],end_session=bool(request_id))
                 else:
-                    result=await asyncio.to_thread(ai.ask,sid,text,turns,candidates)
+                    result=await asyncio.to_thread(ai.ask,sid,text,turns,candidates,hospital_information_id)
                     reply=result['speech_text']
                     if result.get('action'):
                         reply=await asyncio.to_thread(actions.prepare,result['action'],sid)
