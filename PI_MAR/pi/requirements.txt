@@ -2,5 +2,6 @@ paho-mqtt==2.1.0
 jsonschema==4.23.0
 websockets==15.0.1
 PyYAML==6.0.2
+webrtcvad-wheels==2.0.14.post1
 setuptools>=68
 wheel>=0.41

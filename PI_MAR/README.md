@@ -376,11 +376,34 @@ Mở phiên map trên HTML rồi chạy đúng lệnh `navigation_session.zsh` c
 Có thể dùng `--voice-chat` hoặc `--no-voice-chat` để đổi riêng lượt chạy này.
 Không mở thêm `voice_audio.py chat` khi listener đã chạy; xem
 `pi/state/stack/voice.log`, trạng thái `VOICE_STATE WAIT_WAKE` là đang chờ gọi.
-Để dùng câu **“Chào cậu”**, đặt `"wake": {"mode": "local_ai", "phrase": "Chào cậu"}`
-trong `/home/ubuntu/mar-secrets/voice-ai.json`. Chạy `run_robot_api.ps1` trên máy AI
-với model Zipformer tiếng Việt và `AI_WAKE_ENABLED=true`. Pi chỉ gửi đoạn có
-tiếng nói tối đa 4 giây qua HTTPS đến máy AI, xử lý trong RAM. Cấu hình cũ không
-có `wake.mode` vẫn nhận sự kiện từ firmware WonderEcho qua `/dev/wonderecho`.
+Từ khóa hiện tại là **“M A”**, đọc “Mờ A” hoặc “Em A”. Đặt cấu hình trong
+`/home/ubuntu/mar-secrets/voice-ai.json` và dùng cùng `AI_WAKE_PHRASE` trên server AI:
+
+```json
+"wake": {
+  "mode": "local_ai",
+  "phrase": "M A",
+  "vad_mode": 2,
+  "vad_threshold": 0.004,
+  "noise_margin_db": 6,
+  "silence_sec": 0.65,
+  "max_seconds": 4
+}
+```
+
+Pi dùng WebRTC VAD trong `pi/requirements.txt` để loại tiếng không phải lời nói,
+ước lượng tiếng nền và ưu tiên lời nói nổi bật hơn nền (mặc định biên độ gấp
+khoảng 2 lần, tương ứng 6 dB). Có bộ đệm 300 ms trước câu gọi và chờ ngắt câu
+650 ms để giữ hai chữ cái trong cùng đoạn. Đây là phân đoạn tiếng nói, không
+tách riêng được người nói lớn nhất khi nhiều người nói chồng nhau, và không
+xóa mọi tiếng ồn trong đoạn gửi đi. Không tự tăng gain micro.
+
+Server AI cần `AI_WAKE_ENABLED=true`, `AI_WAKE_PHRASE=M A`,
+`AI_WAKE_ALIASES=em a,mờ a` và `AI_WAKE_IGNORE_TONE=true`. Pi chỉ gửi đoạn có
+tiếng nói tối đa 4 giây qua HTTPS, xử lý trong RAM. Log `VOICE_WAKE_AUDIO` chỉ ghi
+mức âm nền, ngưỡng, độ dài và dấu hiệu vỡ tiếng; không ghi audio hoặc lời người
+dùng. Cấu hình cũ không có `wake.mode` vẫn nhận sự kiện từ firmware WonderEcho
+qua `/dev/wonderecho`.
 
 Voice chỉ nhận khi robot IDLE. Khi có tín hiệu đánh thức, BE kiểm tra còn job
 đang chạy hay cần recovery không, kể cả bước chờ do server xử lý. Admin vẫn dùng
