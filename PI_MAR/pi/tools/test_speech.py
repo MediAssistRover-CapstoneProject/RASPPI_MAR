@@ -66,6 +66,31 @@ class SpeechTests(unittest.IsolatedAsyncioTestCase):
         proc.terminate.assert_called_once()
         proc.wait.assert_awaited_once()
 
+    async def test_playback_start_callback_follows_the_last_guard_and_precedes_alsa(self):
+        player=SpeechPlayer({'enabled':True,'device':'plughw:CARD=Device,DEV=0'})
+        events=[]
+        def guard():events.append('guard');return True
+        async def process(argv,content=None):
+            if '-w' in argv:
+                events.append('synthesis');Path(argv[argv.index('-w')+1]).write_bytes(b'W'*100)
+            else:events.append('playback')
+        player.process=process
+        with patch('mediassist.speech.shutil.which',side_effect=lambda name:'/usr/bin/'+name):
+            await player.speak(PARAMS,playback_guard=guard,on_playback_start=lambda:events.append('started'))
+        self.assertEqual(events,['guard','synthesis','guard','started','playback'])
+
+    async def test_revoked_speech_never_signals_playback_start(self):
+        player=SpeechPlayer({'enabled':True,'device':'plughw:CARD=Device,DEV=0'})
+        started=Mock()
+        async def process(argv,content=None):
+            self.assertIn('-w',argv)
+            Path(argv[argv.index('-w')+1]).write_bytes(b'W'*100)
+        player.process=process
+        with patch('mediassist.speech.shutil.which',side_effect=lambda name:'/usr/bin/'+name):
+            with self.assertRaisesRegex(StepError,'NAVIGATION_GUIDANCE_EXPIRED'):
+                await player.speak(PARAMS,playback_guard=Mock(side_effect=[True,False]),on_playback_start=started)
+        started.assert_not_called()
+
     async def test_process_failure_keeps_bounded_stage_diagnostics(self):
         player=SpeechPlayer({'enabled':True})
         with self.assertLogs(level='ERROR'):
@@ -83,6 +108,95 @@ class SpeechTests(unittest.IsolatedAsyncioTestCase):
         command.pop('transportSessionId')
         validate_command(command,command['robotId'],check_expiry=False)
         validate_step(command['step'],{'enabled_step_types':['INTERACT'],'speech':{'enabled':True}}, {})
+
+class NavigationGuidanceTests(unittest.IsolatedAsyncioTestCase):
+    def guidance(self):
+        from mediassist.navigation_guidance import NavigationGuidance
+        context = dict(session_id='session', map_id='map', map_asset_hash='a'*64)
+        step = dict(jobId='job', jobStepId='move', params={'max_speed_mps': .35})
+        state = {'localization': {'ready': True, 'reason': 'LOCALIZED'},
+                 'map_pose': {'fresh': True, 'age_sec': .1, 'value': {
+                     'x_m': .5, 'y_m': 0., 'yaw_rad': 0., 'map_id': 'map',
+                     'navigation_session_id': 'session', 'initialization_revision': 1}}}
+        path = dict(jobId='job', jobStepId='move', sessionId='session', mapId='map',
+                    mapAssetHash='a'*64, initializationRevision=1,
+                    points=[{'xM': x, 'yM': y} for x, y in ((0., 0.), (1., 0.), (1., 1.))])
+        adapter = N(active_navigation_context={'initialization_revision': 1}, motion_uncertain=False,
+                    navigation_guidance_path=path, navigation_guidance_tracking=True,
+                    telemetry=lambda: state, speech=N(play_wav=AsyncMock()))
+        worker = N(cfg={'navigation_session': context, 'speech': {'engine': 'be-tts'}},
+                   adapter=adapter, active=step, connection_ready=True, navigation_audio={'LEFT': b'cached'},
+                   shutting_down=False, session_fault=False,
+                   store=N(guidance_start=Mock(return_value=True), guidance_result=Mock()))
+        return NavigationGuidance(worker, step), state, path
+
+    def test_uses_live_motion_direction_and_suppresses_late_centimetres(self):
+        guidance, state, _ = self.guidance()
+        self.assertEqual('LEFT', guidance.current_cue().direction)
+        state['map_pose']['value'].update(x_m=1., y_m=.55, yaw_rad=1.57)
+        self.assertEqual('NEAR', guidance.current_cue().direction)
+        state['map_pose']['value'].update(y_m=.95)
+        self.assertIsNone(guidance.current_cue())
+
+    def test_only_started_phrase_can_finish_during_a_bounded_pose_gap(self):
+        guidance, state, path = self.guidance()
+        with patch('mediassist.navigation_guidance.time.monotonic', return_value=10.):
+            cue = guidance.current_cue()
+            self.assertTrue(guidance.can_play(cue, path))
+        state['localization'].update(ready=False, reason='TF_NOT_READY')
+        state['map_pose']['fresh'] = False
+        with patch('mediassist.navigation_guidance.time.monotonic', return_value=11.):
+            self.assertFalse(guidance.can_play(cue, path))
+            guidance.playback_started_at = 11.
+        with patch('mediassist.navigation_guidance.time.monotonic', return_value=13.):
+            self.assertTrue(guidance.can_play(cue, path))
+        with patch('mediassist.navigation_guidance.time.monotonic', return_value=16.1):
+            self.assertFalse(guidance.can_play(cue, path))
+
+    def test_stop_different_replan_pose_jump_and_media_revoke_voice(self):
+        for reason in ('stop', 'different_replan', 'finish', 'pose_jump', 'media'):
+            guidance, state, path = self.guidance()
+            with patch('mediassist.navigation_guidance.time.monotonic', return_value=10.):
+                cue = guidance.current_cue()
+            guidance.playback_started_at = 10.
+            if reason == 'stop':
+                guidance.worker.shutting_down = True
+            if reason == 'different_replan':
+                guidance.worker.adapter.navigation_guidance_path = {
+                    **path, 'points': [{'xM': x, 'yM': y} for x, y in ((0., 0.), (1., 0.), (1., -1.))]}
+            if reason == 'finish':
+                guidance.worker.adapter.navigation_guidance_tracking = False
+            if reason == 'pose_jump':
+                state['localization'].update(ready=False, reason='POSE_JUMP')
+                state['map_pose']['fresh'] = False
+            with patch('mediassist.navigation_guidance.time.monotonic', return_value=11.), \
+                 patch('mediassist.media_runtime.audio_reserved', return_value=reason == 'media'):
+                with self.subTest(reason=reason):
+                    self.assertFalse(guidance.can_play(cue, path))
+
+    async def test_replan_does_not_repeat_audio_already_started_near_same_corner(self):
+        guidance, _, path = self.guidance()
+        played = asyncio.Event()
+
+        async def play(*args, **kwargs):
+            self.assertTrue(kwargs['playback_guard']())
+            kwargs['on_playback_start']()
+            played.set()
+
+        guidance.worker.adapter.speech.play_wav.side_effect = play
+        task = asyncio.create_task(guidance.run())
+        try:
+            await asyncio.wait_for(played.wait(), 1.)
+            guidance.worker.adapter.navigation_guidance_path = {
+                **path, 'points': [{'xM': x, 'yM': y} for x, y in ((0., 0.), (1.15, 0.), (1.15, 1.))]}
+            await asyncio.sleep(.25)
+            guidance.worker.adapter.speech.play_wav.assert_awaited_once()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+
 
 class ManagedVoiceTests(unittest.IsolatedAsyncioTestCase):
     def test_cached_state_rejects_stale_foreign_or_reused_worker_identity(self):

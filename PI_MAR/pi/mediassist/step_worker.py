@@ -7,7 +7,8 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from .mqtt_transport import MqttSession
 from .contracts import StepError, canonical
-from .step_contract import CONTRACT, SUBPROTOCOL, VERSION, validate_command, validate_step, validate_result, expiry
+from .step_contract import (COMMISSIONING_UNLOCK_CAPABILITY, CONTRACT, SUBPROTOCOL, VERSION,
+                            validate_command, validate_step, validate_result, expiry)
 from .worker_config import device_token, tls
 
 class StepWorker:
@@ -23,6 +24,7 @@ class StepWorker:
         self.outbox_wakeup = asyncio.Event()
         self.ack_waiters = {}
         self.staff_qr = None
+        self.navigation_audio = {}
         self.voice_publisher=None
         from .voice_runtime import enabled,StatePublisher
         if enabled(cfg):
@@ -36,11 +38,16 @@ class StepWorker:
 
     def advertised_capabilities(self):
         from .staff_qr import CAPABILITIES
-        values=[value for value in self.hardware['capabilities'] if value not in CAPABILITIES]
+        values=[value for value in self.hardware['capabilities']
+                if value not in CAPABILITIES and value not in (COMMISSIONING_UNLOCK_CAPABILITY, 'PATROL_FALL')]
+        if self.cfg.get('allow_commissioning_unlock') is True:
+            values.append(COMMISSIONING_UNLOCK_CAPABILITY)
         if self.cfg.get('navigation_session') and 'MOVE' in self.cfg.get('enabled_step_types',[]) and 'move-start-commit-v1' not in values:
             values.append('move-start-commit-v1')
         if self.staff_qr is not None:
             values.extend(CAPABILITIES)
+        if getattr(self.adapter, 'patrol_fall_observer', None) is not None:
+            values.append('PATROL_FALL')
         return values
 
     def status(self):
@@ -49,8 +56,25 @@ class StepWorker:
         mapping=self.adapter.mapping
         if mapping and mapping.state.get("state")=="RECOVERY_REQUIRED":
             return "ERROR"
-        local_busy=bool(mapping and getattr(mapping,'manual_drive',None) and mapping.manual_drive.busy(mapping.gamepad))
+        manual = self.manual_context()
+        local_busy = bool(manual and manual.manual_drive.busy(manual.gamepad))
         return "BUSY" if self.active or (mapping and mapping.active) or local_busy else "IDLE"
+
+    def manual_context(self):
+        context = self.adapter.mapping or getattr(self.adapter, 'navigation_manual', None)
+        return context if context and getattr(context, 'manual_drive', None) else None
+
+    def inhibit_manual(self):
+        manual = self.manual_context()
+        if not manual or getattr(manual, 'manual_inhibited', False):
+            return
+        manual.manual_inhibited = True
+        manual.gamepad.stop('PROCESS_SHUTDOWN')
+        if manual.manual_drive.owned and self.active is None:
+            from geometry_msgs.msg import Twist
+            manual.velocity.publish(Twist())
+            self.adapter.lease_message(False)
+            manual.manual_drive.reset()
 
     async def acknowledged(self, mid):
         deadline=time.monotonic()+self.cfg["ack_timeout_sec"]
@@ -96,6 +120,8 @@ class StepWorker:
                          physicalStopConfirmed=result.get("physicalStopConfirmed",False))
             return
         step=command["step"]
+        if command.get("commissioningUnlock") is True:
+            step = {**step, "commissioningUnlock": True}
         previous=self.store.previous(step)
         if previous:
             self.receipt(command,True,step,replayed=True,**previous)
@@ -115,7 +141,8 @@ class StepWorker:
         # Scoped SAVE/STOP is an explicit end-of-drive intent. Accepting it
         # inhibits manual input below; SAVE/abort must still confirm zero odometry.
         # Other operations and foreign sessions cannot take over a held stick.
-        if not mapping_handoff and mapping and getattr(mapping,'manual_drive',None) and mapping.manual_drive.busy(mapping.gamepad):
+        manual = self.manual_context()
+        if not mapping_handoff and manual and manual.manual_drive.busy(manual.gamepad):
             self.receipt(command,False,step,errorCode="RETURN_GAMEPAD_TO_NEUTRAL")
             return
         if mapping and mapping.active:
@@ -144,8 +171,8 @@ class StepWorker:
                          **({'start':start} if combined else {}))
         self.active=step
         self.publish_voice_state('BUSY')
-        if mapping and getattr(mapping,'manual_drive',None):
-            mapping.gamepad.stop('WORKFLOW_HANDOFF_RETURN_NEUTRAL')
+        if manual:
+            manual.gamepad.stop('WORKFLOW_HANDOFF_RETURN_NEUTRAL')
         self.stop_reason="CANCELLED"
         self.task=asyncio.create_task(self.execute(step,command["correlationId"],ack["messageId"],command["expiresAt"],combined=combined))
 
@@ -251,6 +278,7 @@ class StepWorker:
     async def shutdown(self):
         """Stop once, persist the result, and drain it while MQTT is still alive."""
         self.shutting_down=True
+        self.inhibit_manual()
         self.publish_voice_state('STOPPING')
         self.stop_reason='PROCESS_SHUTDOWN'
         if self.task and not self.task.done():
@@ -285,8 +313,11 @@ class StepWorker:
             else:
                 # Active execution already performed its stop in execute()/abandoned().
                 # An idle connection failure before ROS startup must not invent a running action.
-                local=bool(self.adapter.mapping and getattr(self.adapter.mapping,'manual_drive',None)
-                           and not self.adapter.mapping.gamepad.cfg['session_required'] and reason!='PROCESS_SHUTDOWN')
+                manual = self.manual_context()
+                local = bool(manual and not getattr(manual, 'manual_inhibited', False)
+                             and not manual.gamepad.cfg['session_required']
+                             and manual.manual_drive.select(manual.gamepad)
+                             and reason != 'PROCESS_SHUTDOWN')
                 if not local:self.adapter.lease_message(False)
                 logging.info("Connection ended; no active worker goal")
         except Exception as exc:
@@ -467,12 +498,12 @@ class StepWorker:
             await asyncio.gather(outgoing,return_exceptions=True)
 
     async def mapping_loop(self, session):
-        mapping=self.adapter.mapping
-        if not mapping:
+        context = self.adapter.mapping or getattr(self.adapter, 'navigation_manual', None)
+        if not context:
             await asyncio.Future()
         next_tick=time.monotonic()
         while True:
-            await mapping.tick(self.connection_ready and not self.session_fault,
+            await context.tick(self.connection_ready and not self.session_fault and not self.shutting_down,
                                self.active is None and not self.store.blocked() and not self.session_fault)
             next_tick+=.05
             now=time.monotonic()
@@ -522,11 +553,13 @@ class StepWorker:
             await asyncio.sleep(.2 if self.active and self.active.get('stepType')=='MOVE' else .5)
 
     async def run(self):
+        from .navigation_guidance import prepare_navigation_audio
+        navigation_audio = asyncio.create_task(prepare_navigation_audio(self))
         delay=1
         # Local USB input keeps its 20 Hz loop across broker connect/backoff.
         # It does not depend on a BE mapping session or a transport lease.
-        local_mode=bool(self.adapter.mapping and getattr(self.adapter.mapping,'manual_drive',None)
-                        and not self.adapter.mapping.gamepad.cfg['session_required'])
+        manual = self.manual_context()
+        local_mode = bool(manual and not manual.gamepad.cfg['session_required'])
         local_mapping=asyncio.create_task(self.mapping_loop(None)) if local_mode else None
         try:
             while True:
@@ -562,8 +595,10 @@ class StepWorker:
                 await asyncio.sleep(delay)
                 delay=min(delay*2,30)
         finally:
+            navigation_audio.cancel()
+            await asyncio.gather(navigation_audio, return_exceptions=True)
             if local_mapping:
-                self.adapter.mapping.manual_inhibited=True
+                self.inhibit_manual()
                 local_mapping.cancel()
                 await asyncio.gather(local_mapping,return_exceptions=True)
             await self.disconnect("PROCESS_SHUTDOWN")

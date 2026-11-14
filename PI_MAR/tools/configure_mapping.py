@@ -64,7 +64,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--config',type=Path,default=ROOT/'pi/config/mqtt.worker.json')
     p.add_argument('--enable-mapping',action='store_true')
-    p.add_argument('--control-source',choices=['mqtt','local'],default='mqtt')
+    p.add_argument('--control-source',choices=['mqtt','local','gamepad','auto'],default='mqtt')
     p.add_argument('--preview-rate-hz',type=float,default=1.)
     p.add_argument('--enable-camera',action='store_true')
     p.add_argument('--camera-topic',default='/ascamera/camera_publisher/rgb0/image')

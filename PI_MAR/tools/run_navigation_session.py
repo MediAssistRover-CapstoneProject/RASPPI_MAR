@@ -13,7 +13,7 @@ from mediassist.worker_config import load
 from configure_mapping import stopped_configuration
 from configure_localization import nav_parameters
 
-def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profile=None,voice_chat=None):
+def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profile=None,voice_chat=None,patrol_fall=None):
     if arrival_mode not in ('POSITION_ONLY','POSITION_THEN_SPIN'):raise ValueError('Unsupported arrival mode')
     position_only=arrival_mode=='POSITION_ONLY'
     native=ROOT/'pi/native/navigation_bt/build'
@@ -22,6 +22,11 @@ def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profil
     os.environ['LD_LIBRARY_PATH']=str(native)+os.pathsep+os.environ.get('LD_LIBRARY_PATH','')
     cfg,hw=load(config)
     if voice_chat is not None:cfg['voice_chat']['enabled']=voice_chat
+    if patrol_fall is not None:
+        from mediassist.patrol_fall import configuration as fall_configuration
+        settings=cfg['ai'].setdefault('patrol_fall', {})
+        settings['enabled']=patrol_fall
+        fall_configuration(cfg['ai'], cfg['mapping']['camera'])
     cfg,hw,geometry=session_geometry(cfg,hw,load_profile)
     client=SessionClient(cfg);descriptor=client.get(session_id)
     session_id=descriptor['sessionId'];map_id=descriptor['mapId']
@@ -64,7 +69,9 @@ def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profil
         full_footprint_search=geometry['profile']=='cargo')
     runtime['navigation_runtime'].update(obstacle_wait_sec=15.,obstacle_retry_interval_sec=1.)
     runtime['navigation_runtime'].update(localization_wait_sec=30.,localization_retry_count=2)
-    runtime['localization']=dict(enabled=True,mode='manual',map_id=map_id,map_asset_hash=meta['asset_hash'],status_file=str(root/'localization.json'))
+    runtime['localization']={**runtime.get('localization',{}),
+        'enabled':True,'mode':'manual','map_id':map_id,
+        'map_asset_hash':meta['asset_hash'],'status_file':str(root/'localization.json')}
     runtime['mapping']['enabled']=False
     runtime['enabled_step_types']=list(dict.fromkeys([*runtime['enabled_step_types'],'MOVE']))
     # Reuse the durable operation journal; old operations must still be reconciled.
@@ -78,8 +85,10 @@ def main():
     p.add_argument('--load-profile',choices=['bare','cargo'],help='Override saved-map load geometry; mapping configuration is unchanged')
     p.add_argument('--voice-chat',action=argparse.BooleanOptionalAction,default=None,
                    help='Override the managed idle wake/chat listener for this session only')
+    p.add_argument('--patrol-fall',action=argparse.BooleanOptionalAction,default=None,
+                   help='Enable or disable stationary fall observation for patrol checkpoints in this session')
     a=p.parse_args()
-    with stopped_configuration(a.config):root,client,descriptor=prepare(a.config,a.session_id,a.arrival_mode,a.load_profile,a.voice_chat)
+    with stopped_configuration(a.config):root,client,descriptor=prepare(a.config,a.session_id,a.arrival_mode,a.load_profile,a.voice_chat,a.patrol_fall)
     print('NAVIGATION_SESSION:',descriptor['sessionId'],'MAP:',descriptor['mapId'])
     print('Base configuration preserved. Waiting for initial pose/global localization from the map UI; no goal sent.')
     print('ARRIVAL_MODE:',a.arrival_mode,'; forward RPP path tracking; at most one final Spin when heading is requested.')

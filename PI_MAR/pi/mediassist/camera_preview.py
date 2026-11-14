@@ -6,14 +6,21 @@ import threading
 import time
 from .store import utcnow
 
+PIXEL_CHANNELS = {'rgb8': 3, 'bgr8': 3, 'rgba8': 4, 'bgra8': 4,
+                  'mono8': 1, 'yuv422_yuy2': 2, 'yuv422': 2}
+YUV422_ENCODINGS = {'yuv422_yuy2', 'yuv422'}
+
+
 def frame_pixels(sample):
     import cv2
     import numpy as np
     data,width,height,step,encoding,_,_ = sample
-    channels={'rgb8':3,'bgr8':3,'rgba8':4,'bgra8':4,'mono8':1}[encoding]
+    channels = PIXEL_CHANNELS[encoding]
     pixels=np.frombuffer(data,dtype=np.uint8).reshape(height,step)[:,:width*channels]
     frame=pixels.reshape(height,width,channels) if channels>1 else pixels.reshape(height,width)
-    colors={'rgb8':cv2.COLOR_RGB2BGR,'rgba8':cv2.COLOR_RGBA2BGR,'bgra8':cv2.COLOR_BGRA2BGR}
+    colors = {'rgb8': cv2.COLOR_RGB2BGR, 'rgba8': cv2.COLOR_RGBA2BGR,
+              'bgra8': cv2.COLOR_BGRA2BGR, 'yuv422_yuy2': cv2.COLOR_YUV2BGR_YUY2,
+              'yuv422': cv2.COLOR_YUV2BGR_UYVY}
     if encoding in colors:frame=cv2.cvtColor(frame,colors[encoding])
     return frame
 
@@ -55,8 +62,11 @@ class CameraPreview:
         if not self.active():return
         if not self.cfg.get('sample_every_frame',False) and now-self.last_sample<1/self.cfg['rate_hz']:return
         self.last_sample=now
-        channels={'rgb8':3,'bgr8':3,'rgba8':4,'bgra8':4,'mono8':1}.get(msg.encoding)
-        if not channels or not 0<msg.width*msg.height<=4000000 or msg.step<msg.width*channels or len(msg.data)!=msg.step*msg.height or len(msg.data)>16000000:
+        channels = PIXEL_CHANNELS.get(msg.encoding)
+        if (not channels or not 0 < msg.width * msg.height <= 4000000
+                or msg.encoding in YUV422_ENCODINGS and msg.width % 2
+                or msg.step < msg.width * channels or len(msg.data) != msg.step * msg.height
+                or len(msg.data) > 16000000):
             if self.error!='CAMERA_FORMAT_UNSUPPORTED':logging.warning('Camera preview: unsupported color encoding or size: %s',msg.encoding)
             self.error='CAMERA_FORMAT_UNSUPPORTED';return
         captured=utcnow()

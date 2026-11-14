@@ -34,7 +34,7 @@ class ContinuityTests(unittest.TestCase):
         self.assertTrue(gate.update(4,s)['ready'])
         s['scan_age_sec']=.9
         self.assertFalse(gate.update(4.1,s)['ready'])
-        gate=self.locked();s=evidence(8);s['pose_age_sec']=2.1
+        gate=self.locked();s=evidence(8);s['pose_age_sec']=gate.cfg['tracking_max_pose_age_sec']+.1
         self.assertFalse(gate.update(4,s)['ready'])
         self.assertFalse(QualityGate(cfg()).update(0,{**evidence(),'pose_age_sec':1.2})['ready'])
     def test_scan_match_hysteresis_requires_an_established_lock(self):
@@ -69,6 +69,44 @@ class ContinuityTests(unittest.TestCase):
         for i in range(2):
             self.assertFalse(gate.update(7+i*.25,{**evidence(20+i),'pose_age_sec':.9})['ready'])
         self.assertTrue(gate.update(7.5,{**evidence(22),'pose_age_sec':1.1})['ready'])
+
+    def test_turn_covariance_recovers_without_restarting_sparse_amcl_bootstrap(self):
+        gate=self.locked();sample=evidence(8)
+        sample['covariance'][0]=sample['covariance'][7]=.191777**2
+        sample['covariance'][35]=.292431**2
+        sample.update(amcl_tf_ready=True,scan_match=.872,known_fraction=.95)
+        result=gate.update(4.,sample)
+        self.assertFalse(result['ready']);self.assertEqual(result['reason'],'AMCL_UNCERTAIN')
+        self.assertTrue(gate.had_lock);self.assertTrue(gate.recovering)
+        for i,age in enumerate((.829,.45,.84)):
+            current=evidence(9+i)
+            current['covariance'][0]=current['covariance'][7]=.132**2
+            current['covariance'][35]=.162**2
+            current.update(amcl_tf_ready=True,scan_match=.977,pose_age_sec=age)
+            result=gate.update(4.25+i*.25,current)
+            self.assertEqual(result['ready'],i==2)
+        self.assertEqual(result['reason'],'LOCALIZED')
+
+    def test_moderate_covariance_memory_requires_strong_geometry_and_no_hard_faults(self):
+        for changed in ({'scan_match':.7},{'known_fraction':.49},{'tf_fresh':False},
+                        {'amcl_tf_ready':False},{'body_clear':False},{'map_verified':False},
+                        {'pose':dict(x_m=1.,y_m=0.,yaw_rad=0.)}):
+            with self.subTest(changed=changed):
+                gate=self.locked();sample=evidence(8)
+                sample['covariance'][0]=sample['covariance'][7]=.191777**2
+                sample['covariance'][35]=.292431**2
+                sample.update(amcl_tf_ready=True,scan_match=.872,known_fraction=.95)
+                sample.update(changed)
+                self.assertFalse(gate.update(4.,sample)['ready'])
+                self.assertFalse(gate.had_lock)
+        for xy,yaw in ((.226,.29),(.19,.301),(math.nan,.29)):
+            with self.subTest(xy=xy,yaw=yaw):
+                gate=self.locked();sample=evidence(8)
+                sample['covariance'][0]=sample['covariance'][7]=xy**2
+                sample['covariance'][35]=yaw**2
+                sample.update(amcl_tf_ready=True,scan_match=.9)
+                self.assertFalse(gate.update(4.,sample)['ready'])
+                self.assertFalse(gate.had_lock)
     def test_recovery_memory_expires_and_never_bypasses_hard_loss(self):
         for loss in ({'body_clear':False},{'map_verified':False},{'amcl_active':False}):
             gate=self.locked()

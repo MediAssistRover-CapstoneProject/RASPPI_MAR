@@ -1,5 +1,6 @@
 """Enable camera QR delivery after validating the existing MentorPi PWM readback driver."""
 import argparse
+from importlib.util import find_spec
 import json
 import os
 from pathlib import Path
@@ -84,8 +85,15 @@ NEW_SDK = '''    def pwm_servo_read_and_unpack(self, servo_id, cmd, unpack):
 def driver_changes(workspace):
     source = workspace / 'src/driver/ros_robot_controller/ros_robot_controller'
     installed = list((workspace / 'install/ros_robot_controller/lib').glob('python*/site-packages/ros_robot_controller'))
+    if not installed:
+        # Hiwonder's editable installation imports the package from build/.
+        spec = find_spec('ros_robot_controller')
+        locations = list(spec.submodule_search_locations or ()) if spec else []
+        expected_build = workspace / 'build/ros_robot_controller/ros_robot_controller'
+        if len(locations) == 1 and Path(locations[0]).resolve() == expected_build.resolve():
+            installed = [expected_build]
     if len(installed) != 1:
-        raise RuntimeError('Expected one installed MentorPi controller package')
+        raise RuntimeError('Expected one installed MentorPi controller package; source the vendor ROS environment')
     changes = {}
     for package in (source, installed[0]):
         for name, original, replacement in (
@@ -122,7 +130,7 @@ def replace_bytes(path, data):
         Path(name).unlink(missing_ok=True)
 
 
-def prepare_changes(config, workspace):
+def prepare_changes(config, workspace, allow_commissioning_unlock=None):
     cfg, hardware = load(config)
     if (cfg['compartments'].get('CART_MAIN') != 'cargo_lock' or not hardware['servo']['commissioned']
             or 'CONTROL_HARDWARE' not in cfg['enabled_step_types'] or not cfg['mapping']['camera']['enabled']):
@@ -133,9 +141,11 @@ def prepare_changes(config, workspace):
     changes = driver_changes(workspace)
     raw = config.read_bytes()
     document = json.loads(raw)
-    if document.get('unlock_policy') != 'STAFF_VERIFIED':
-        document['unlock_policy'] = 'STAFF_VERIFIED'
-        changes[config] = (raw, (json.dumps(document, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
+    configured = {**document, 'unlock_policy': 'STAFF_VERIFIED'}
+    if allow_commissioning_unlock is not None:
+        configured['allow_commissioning_unlock'] = allow_commissioning_unlock
+    if configured != document:
+        changes[config] = (raw, (json.dumps(configured, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
     return changes
 
 
@@ -143,6 +153,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, default=ROOT / 'pi/config/mqtt.worker.json')
     parser.add_argument('--vendor-workspace', type=Path, default=Path('/home/ubuntu/ros2_ws'))
+    parser.add_argument('--allow-commissioning-unlock', action=argparse.BooleanOptionalAction,
+                        help='Permit BE-authorized administrator servo tests alongside staff QR')
     parser.add_argument('--apply', action='store_true', help='Apply after stopping the robot stack')
     args = parser.parse_args()
     config = args.config.resolve(strict=True)
@@ -150,11 +162,11 @@ def main():
 
     if not args.apply:
         print('Staff delivery preflight passed. Files to update:')
-        for path in prepare_changes(config, workspace):
+        for path in prepare_changes(config, workspace, args.allow_commissioning_unlock):
             print(path)
         return
     with stopped_configuration(config):
-        changes = prepare_changes(config, workspace)
+        changes = prepare_changes(config, workspace, args.allow_commissioning_unlock)
         written = []
         try:
             for path, (original, candidate) in changes.items():

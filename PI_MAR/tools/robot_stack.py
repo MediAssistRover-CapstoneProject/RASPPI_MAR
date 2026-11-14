@@ -9,10 +9,12 @@ import ctypes
 import json
 import os
 from pathlib import Path
+import select
 import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from contextlib import contextmanager
 
@@ -66,6 +68,12 @@ def conflict(info):
                             'mediassist_demo_navigation.launch.py','mediassist_nav2_nodes.launch.py', 'slam.launch.py', 'navigation.launch.py') for x in a):
         return True
     return False
+
+
+def hardware_process(info):
+    executables = {'ascamera_node', 'web_video_server', 'oradar_scan', 'sclidar',
+                   'ldlidar_stl_ros2_node', 'ydlidar_ros2_driver_node', 'ros_robot_controller'}
+    return any(Path(arg).name in executables for arg in info['argv'][:2])
 
 
 def descendants(root, table):
@@ -176,8 +184,8 @@ def validate_mode(mode, cfg, hardware, runtime_mode='mapping'):
             raise RuntimeError('MAPPING_DISABLED: configure_mapping.py --enable-mapping first')
         if cfg['mapping']['launch_argv']:
             raise RuntimeError('SLAM_DOUBLE_LAUNCH: supervisor owns SLAM; set mapping.launch_argv=[]')
-        if cfg['mapping']['control_source'] not in ('mqtt','gamepad'):
-            raise RuntimeError('MAPPING_CONTROL_MUST_BE_MQTT_OR_GAMEPAD')
+        if cfg['mapping']['control_source'] not in ('mqtt','gamepad','auto'):
+            raise RuntimeError('MAPPING_CONTROL_MUST_BE_MQTT_GAMEPAD_OR_AUTO')
 
 
 def check_journals(cfg):
@@ -217,6 +225,137 @@ def locked(state_dir, config):
             record.unlink(missing_ok=True)
 
 
+COMPONENT_LOGS = (
+    'watchdog', 'gate', 'us100', 'slam', 'navigation', 'localization',
+    'gamepad', 'camera', 'worker', 'media', 'voice',
+)
+LOG_RETENTION_SEC = 12 * 3600
+LOG_SEGMENT_SEC = 15 * 60
+LOG_SEGMENT_BYTES = 4 * 1024 * 1024
+LOG_ARCHIVE_BYTES = 28 * 1024 * 1024
+LOG_ARCHIVE_COUNT = 48
+LOG_SWEEP_SEC = 30
+
+
+class ComponentLog:
+    """Drain one child pipe and retain bounded, recent text logs."""
+
+    def __init__(self, path):
+        self.path = path
+        self.stream = None
+        self.opened_at = 0.
+        self.size = 0
+        self.reported_error = False
+
+    def warn(self, error):
+        if not self.reported_error:
+            self.reported_error = True
+            try:
+                say(f'COMPONENT_LOG_ERROR {self.path.name}: {error}')
+            except OSError:
+                pass
+
+    def prune(self, include_current=False):
+        """Remove only this component's closed segments and inactive log."""
+        now = time.time()
+        archives = []
+        for path in self.path.parent.glob(self.path.name + '.*'):
+            if path.name.removeprefix(self.path.name + '.').isdigit():
+                archives.append(path)
+        if include_current:
+            archives.append(self.path)
+        retained = []
+        for path in archives:
+            if path.is_symlink() or not path.is_file():
+                continue
+            try:
+                info = path.stat()
+                if now - info.st_mtime >= LOG_RETENTION_SEC:
+                    path.unlink(missing_ok=True)
+                else:
+                    retained.append((info.st_mtime, path, info.st_size))
+            except FileNotFoundError:
+                continue
+        size = sum(item[2] for item in retained)
+        count = len(retained)
+        for _, path, length in sorted(retained):
+            if size <= LOG_ARCHIVE_BYTES and count <= LOG_ARCHIVE_COUNT:
+                break
+            path.unlink(missing_ok=True)
+            size -= length
+            count -= 1
+
+    def close(self):
+        if self.stream is not None:
+            stream, self.stream = self.stream, None
+            stream.close()
+
+    def rotate(self):
+        self.close()
+        self.size = 0
+        if not self.path.is_symlink() and self.path.is_file():
+            if self.path.stat().st_size:
+                self.path.replace(self.path.with_name(f'{self.path.name}.{time.time_ns()}'))
+        self.prune()
+
+    def open(self):
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, 'O_NOFOLLOW', 0)
+        self.stream = os.fdopen(os.open(self.path, flags, 0o600), 'wb', buffering=0)
+        self.opened_at = time.monotonic()
+        self.size = os.fstat(self.stream.fileno()).st_size
+
+    def write(self, data):
+        if self.stream is not None and self.size + len(data) > LOG_SEGMENT_BYTES:
+            self.rotate()
+        if self.stream is None:
+            self.open()
+        remaining = memoryview(data)
+        while remaining:
+            written = self.stream.write(remaining)
+            if not written:
+                raise OSError('Log write made no progress')
+            self.size += written
+            remaining = remaining[written:]
+
+    def drain(self, source):
+        """A full disk must not stop draining the child's stdout/stderr."""
+        next_sweep = 0.
+        try:
+            self.rotate()
+            self.write(('\n=== ' + time.strftime('%Y-%m-%d %H:%M:%S') + ' ===\n').encode())
+        except OSError as error:
+            self.warn(error)
+        try:
+            with source:
+                while True:
+                    now = time.monotonic()
+                    if now >= next_sweep:
+                        try:
+                            if self.stream is not None and now - self.opened_at >= LOG_SEGMENT_SEC:
+                                self.rotate()
+                                self.open()
+                            else:
+                                self.prune()
+                        except OSError as error:
+                            self.warn(error)
+                        next_sweep = now + LOG_SWEEP_SEC
+                    readable, _, _ = select.select([source], [], [], max(0., next_sweep - now))
+                    if not readable:
+                        continue
+                    data = os.read(source.fileno(), 16 * 1024)
+                    if not data:
+                        break
+                    try:
+                        self.write(data)
+                    except OSError as error:
+                        self.warn(error)
+        finally:
+            try:
+                self.close()
+            except OSError as error:
+                self.warn(error)
+
+
 class Supervisor:
     def __init__(self, directory):
         self.children = []
@@ -226,18 +365,33 @@ class Supervisor:
         self.optional = set()
         self.reported_optional = set()
         self.next_process_scan = 0.
+        self.logs = {name: ComponentLog(directory / (name + '.log')) for name in COMPONENT_LOGS}
+        self.log_readers = {}
+        self.next_log_sweep = 0.
+
+    def prune_inactive_logs(self, now):
+        if now < self.next_log_sweep:
+            return
+        self.next_log_sweep = now + LOG_SWEEP_SEC
+        for name, log in self.logs.items():
+            reader = self.log_readers.get(name)
+            if reader is None or not reader.is_alive():
+                try:
+                    log.prune(include_current=True)
+                except OSError as error:
+                    log.warn(error)
 
     def start(self, name, argv, required=True):
-        log = (self.directory / (name + '.log')).open('ab', buffering=0)
-        log.write(('\n=== ' + time.strftime('%Y-%m-%d %H:%M:%S') + ' ===\n').encode())
+        log = self.logs[name]
         env = dict(os.environ)
         env['PYTHONUNBUFFERED'] = '1'
         env['PYTHONPATH'] = str(ROOT / 'pi') + (os.pathsep + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
-        try:
-            child = subprocess.Popen(argv, cwd=ROOT / 'pi', env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-        finally:
-            log.close()
+        child = subprocess.Popen(argv, cwd=ROOT / 'pi', env=env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, start_new_session=True)
         self.children.append((name, child, proc(child.pid)))
+        reader = threading.Thread(target=log.drain, args=(child.stdout,), name=f'log-{name}', daemon=True)
+        reader.start()
+        self.log_readers[name] = reader
         if not required:
             self.optional.add(name)
         say('START ' + name + ': ' + str(self.directory / (name + '.log')))
@@ -246,6 +400,7 @@ class Supervisor:
         # DDS can wake spin_once hundreds of times/second. Poll child exits every
         # call, but enumerate /proc only twice/second to avoid consuming a CPU core.
         now=time.monotonic()
+        self.prune_inactive_logs(now)
         table = processes() if now >= self.next_process_scan else None
         if table is not None:self.next_process_scan=now+.5
         for name, child, identity in self.children:
@@ -288,6 +443,9 @@ class Supervisor:
                 count += 1
             if count:
                 say('REAPED_ROS_CHILDREN ' + str(count))
+        deadline = time.monotonic() + 1.
+        for reader in self.log_readers.values():
+            reader.join(timeout=max(0., deadline - time.monotonic()))
 
 
 def main():
@@ -357,6 +515,7 @@ def main():
             'slam_session': {key:cfg['mapping'][key] for key in ('fresh_session','reset_service','slam_resolution_m',
                 'slam_min_travel_m','slam_min_heading_rad','slam_map_interval_sec')},
             'slam_launch_argv': cfg['mapping']['launch_argv'], 'vendor_bringup_pids': [p['pid'] for p in vendor],
+            'hardware_process_pids': [p['pid'] for p in table.values() if hardware_process(p)],
             'existing_components': existing}, indent=2))
         return
     if args.mode=='navigation' and args.action!='run':raise RuntimeError('NAVIGATION_MODE_REQUIRES_RUN')
@@ -396,8 +555,18 @@ def main():
                 return
             # A supervising vendor service may respawn bringup. Do not fight it.
             time.sleep(1)
-            if any(vendor_bringup(p) for p in processes().values()):
+            remaining = processes()
+            if any(vendor_bringup(p) for p in remaining.values()):
                 raise RuntimeError('VENDOR_BRINGUP_RESPAWNED: inspect service owner; no second driver started')
+            occupied = [p['pid'] for p in remaining.values() if hardware_process(p)]
+            if occupied:
+                raise RuntimeError('EXISTING_HARDWARE_DRIVERS: stop their owning launch first; PIDs='
+                                   + ','.join(map(str, occupied)))
+            camera = cfg['mapping']['camera']
+            if (args.action == 'run' and camera['enabled'] and camera['stream_enabled']
+                    and camera['stream_backend'] == 'web_video_server'):
+                from mediassist.vendor_camera import check_port_available
+                check_port_available()
             python = str(ROOT / 'pi/.venv/bin/python')
             supervisor.start('watchdog', [python, '-m', 'mediassist.safety_node', '--config', hw, '--motor-watchdog'])
             supervisor.start('gate', [python, '-m', 'mediassist.safety_node', '--config', hw] + (['--bench-pause'] if bench else []))
@@ -447,7 +616,7 @@ def main():
             if supervisor.stopping:
                 return
             if args.action == 'run':
-                if args.mode == 'mapping' and cfg['mapping']['control_source'] == 'gamepad':
+                if cfg['mapping']['control_source'] in ('gamepad','auto'):
                     readers = [p['pid'] for p in processes().values()
                                if any(Path(word).name in ('joy_node', 'joystick_control', 'joystick_control.py',
                                                           'joystick_control.launch.py') for word in p['argv'])]
@@ -456,9 +625,12 @@ def main():
                     from mediassist.gamepad import driver_argv
                     supervisor.start('gamepad', driver_argv(cfg['mapping']), required=False)
                     pad=cfg['mapping']['gamepad']
-                    say('GAMEPAD: left XY / right yaw; local manual without mapping job; neutral to arm; see gamepad/status'
-                        if pad.get('layout')=='vendor_mecanum' and not pad.get('session_required',True)
-                        else 'GAMEPAD: session-scoped input; neutral to arm; see gamepad/status')
+                    if cfg['mapping']['control_source'] == 'auto':
+                        say('GAMEPAD: USB manual priority with MQTT fallback; hotplug input listener; neutral to arm; see gamepad/status')
+                    else:
+                        say('GAMEPAD: left XY / right yaw; local manual without mapping job; neutral to arm; see gamepad/status'
+                            if pad.get('layout')=='vendor_mecanum' and not pad.get('session_required',True)
+                            else 'GAMEPAD: session-scoped input; neutral to arm; see gamepad/status')
                 camera = cfg['mapping']['camera']
                 if camera['enabled'] and camera['stream_enabled']:
                     from mediassist.vendor_camera import camera_argv, stream_path

@@ -295,13 +295,32 @@ class CargoRecovery:
                     if error.code!='PATH_UNAVAILABLE' or not escape:raise
                     await self._plan_with_cargo_recovery(p,endpoint_id,meta,force_escape=True)
 
-    async def _cargo_prepare_final_heading(self,p,endpoint_id):
+    async def _align_arrival_heading(self,p,endpoint_id):
+        await self._cargo_prepare_final_heading(p,endpoint_id)
+        try:
+            return await self._finish_heading(p,endpoint_id)
+        except StepError as exc:
+            runtime=getattr(self,'worker',{}).get('navigation_runtime',{})
+            if (exc.code!='FINAL_ALIGNMENT_BLOCKED' or runtime.get('geometry',{}).get('profile')!='cargo'
+                    or getattr(self,'cargo_arrival_reposition_used',False)):
+                raise
+        # Nav2 has stopped the previous Spin. Confirm a fresh arrival pose
+        # before looking for a short translation and one alternate turn.
+        await self._wait_stationary()
+        await self._wait_arrival_pose(endpoint_id)
+        self.node.get_logger().warning('CARGO_FINAL_ALIGNMENT_REPOSITION endpoint='+endpoint_id)
+        await self._cargo_prepare_final_heading(p,endpoint_id,require_reposition=True)
+        return await self._finish_heading(p,endpoint_id)
+
+    async def _cargo_prepare_final_heading(self,p,endpoint_id,require_reposition=False):
         runtime=getattr(self,'worker',{}).get('navigation_runtime',{})
         if runtime.get('geometry',{}).get('profile')!='cargo':return
+        self.cargo_final_turn_sign=None
         _,origin=self._cargo_pose();target=self.cfg['endpoints'][endpoint_id]
         if abs(wrap(target['yaw_rad']-origin['yaw_rad']))<=.10:return
         for distance,lateral in self._cargo_offsets():
-            if (distance or lateral) and getattr(self,'cargo_escape_used',False):continue
+            if require_reposition and not (distance or lateral):continue
+            if (distance or lateral) and getattr(self,'cargo_arrival_reposition_used',False):continue
             for delta in turn_options(origin['yaw_rad'],target['yaw_rad']):
                 points=maneuver_points(origin,distance,target['yaw_rad'],lateral,delta)
                 if math.hypot(points[-1][0]-target['x_m'],points[-1][1]-target['y_m'])>.10:continue
@@ -309,23 +328,37 @@ class CargoRecovery:
                 if not clear:continue
                 self.cargo_final_turn_sign=math.copysign(1.,delta)
                 if distance or lateral:
-                    self.cargo_escape_used=True
-                    self.node.get_logger().info('CARGO_FINAL_REPOSITION reverse_m='+str(distance)+' lateral_m='+str(lateral))
+                    self.cargo_arrival_reposition_used=True
+                    self.node.get_logger().info('CARGO_FINAL_REPOSITION distance_m='+str(distance)+' lateral_m='+str(lateral))
                     await self._cargo_reposition(distance,lateral,p)
                     await self._wait_stationary()
+                    _,actual=self._cargo_pose()
+                    if abs(wrap(target['yaw_rad']-actual['yaw_rad']))<=.10:return
+                    # The real stopped pose can differ from the simulated escape.
+                    for actual_delta in turn_options(actual['yaw_rad'],target['yaw_rad']):
+                        clear,_=self._cargo_clear(actual,0.,target['yaw_rad'],lateral=0.,turn_delta=actual_delta)
+                        if clear:
+                            self.cargo_final_turn_sign=math.copysign(1.,actual_delta)
+                            return
+                    raise StepError('FINAL_ALIGNMENT_BLOCKED')
                 return
         raise StepError('FINAL_ALIGNMENT_BLOCKED')
 
     def _cargo_offsets(self):
-        result=[(0.,0.),(-.06,0.)] # moving forward often releases the longer tail
-        if self.cfg['motion'].get('allow_strafe') and self.cfg['motion'].get('chassis_model')=='MENTORPI_M1_MECANUM':
-            result.extend([(0.,.06),(0.,-.06)])
-        if self.cfg['motion'].get('allow_reverse'):result.append((.06,0.))
-        result.append((-.10,0.))
-        if self.cfg['motion'].get('allow_strafe') and self.cfg['motion'].get('chassis_model')=='MENTORPI_M1_MECANUM':
-            result.extend([(0.,.10),(0.,-.10)])
-        if self.cfg['motion'].get('allow_reverse'):result.append((.10,0.))
-        return result
+        motion=self.cfg['motion']
+        mecanum=motion.get('chassis_model')=='MENTORPI_M1_MECANUM'
+        strafe=mecanum and motion.get('allow_strafe')
+        reverse=mecanum and motion.get('allow_reverse')
+        directions=[(0.,1.),(0.,-1.)] if strafe else []
+        if reverse:directions.append((1.,0.))
+        directions.append((-1.,0.))
+        if strafe:
+            diagonal=math.sqrt(.5)
+            for longitudinal in ((-diagonal,diagonal) if reverse else (-diagonal,)):
+                directions.extend([(longitudinal,diagonal),(longitudinal,-diagonal)])
+        # Visit every allowed direction at 6 cm before trying 10 cm. Both
+        # diagonal components share the same distance budget as axial moves.
+        return [(0.,0.)]+[(r*x,r*y) for r in (.06,.10) for x,y in directions]
 
     def _cargo_pose(self):
         state=self.telemetry();self._check_graph()
@@ -334,9 +367,25 @@ class CargoRecovery:
         if state.get('gate',{}).get('age_sec',99.)>.6:raise StepError('SAFETY_GATE_LOST')
         return state,state['map_pose']['value']
 
-    def _cargo_clear(self,origin,distance,yaw,lateral=0.,turn_delta=None):
+    def _cargo_saved_grid(self):
         from pathlib import Path
         from .map_tools import load_trinary_grid
+        path=self.worker['navigation_runtime']['map_yaml'];key=(path,Path(path).stat().st_mtime_ns)
+        cached=getattr(self,'cargo_grid',None)
+        if cached is None or cached[0]!=key:
+            cached=(key,load_trinary_grid(path))
+            self.cargo_grid=cached
+        return cached[1]
+
+    def _cargo_map_allows_turn(self,pose,yaw_rate):
+        # Match the rotational stopping horizon used by the braking gate.
+        # This checks static cells that the live scan may not currently see.
+        horizon=.35+abs(yaw_rate)/2.4
+        sweep=maneuver_points(pose,0.,pose['yaw_rad'],turn_delta=yaw_rate*horizon)
+        extent=self.worker['mapping']['autonomy']['footprint']
+        return maneuver_clear(self._cargo_saved_grid(),sweep,extent,())
+
+    def _cargo_clear(self,origin,distance,yaw,lateral=0.,turn_delta=None):
         from .autonomous_mapping import scan_view
         from .geometry_diagnostics import planar_transform
         from rclpy.time import Time
@@ -344,7 +393,7 @@ class CargoRecovery:
         if sample is None:raise StepError('CARGO_ESCAPE_SCAN_NOT_READY')
         scan=sample[0]
         age=(self.node.get_clock().now().nanoseconds-(scan.header.stamp.sec*1000000000+scan.header.stamp.nanosec))/1e9
-        profile=self.cfg['motion']['lidar_braking']
+        motion=self.cfg['motion'];profile=motion['lidar_braking']
         if not 0<=age<=profile['scan_max_age_sec']:raise StepError('CARGO_ESCAPE_SCAN_NOT_READY')
         try:
             transform=(0.,0.,0.,1) if scan.header.frame_id==self.cfg['ros']['base_frame'] else planar_transform(
@@ -352,6 +401,11 @@ class CargoRecovery:
             view=scan_view(scan,transform,profile)
         except Exception as exc:raise StepError('CARGO_ESCAPE_SCAN_NOT_READY') from exc
         if not view.get('valid') or 'obstacle_points' not in view:raise StepError('CARGO_ESCAPE_SCAN_NOT_READY')
+        points=maneuver_points(origin,distance,yaw,lateral,turn_delta)
+        if distance>0:
+            from .rear_scan import rear_clearance
+            if rear_clearance(scan,transform[:3],motion.get('rear_stop_distance_m',.3))!='CLEAR':
+                return False,points
         if distance or lateral:
             # Do not select a geometrically clear maneuver that the independent
             # braking gate cannot begin. Search another direction instead.
@@ -359,17 +413,14 @@ class CargoRecovery:
             length=math.hypot(distance,lateral)
             initial=(-.05*distance/length,.05*lateral/length,0.)
             limited,_=limit_velocity(initial,view,age,profile)
-            if math.hypot(limited[0],limited[1])<.005:return False,maneuver_points(origin,distance,yaw,lateral,turn_delta)
+            if math.hypot(limited[0],limited[1])<.005:return False,points
         c,s=math.cos(origin['yaw_rad']),math.sin(origin['yaw_rad'])
         obstacles=[(origin['x_m']+c*x-s*y,origin['y_m']+s*x+c*y) for x,y in view['obstacle_points']]
-        path=self.worker['navigation_runtime']['map_yaml'];key=(path,Path(path).stat().st_mtime_ns)
-        previous=getattr(self,'cargo_grid',None)
-        if previous is None or previous[0]!=key:self.cargo_grid=(key,load_trinary_grid(path))
-        points=maneuver_points(origin,distance,yaw,lateral,turn_delta)
+        grid=self._cargo_saved_grid()
         extent=self.worker['mapping']['autonomy']['footprint'];zones=getattr(self,'zones',None)
-        clear=maneuver_clear(self.cargo_grid[1],points,extent,obstacles,zones)
+        clear=maneuver_clear(grid,points,extent,obstacles,zones)
         if not clear and (distance or lateral):
-            clear=padding_escape_clear(self.cargo_grid[1],points,extent,obstacles,zones)
+            clear=padding_escape_clear(grid,points,extent,obstacles,zones)
         return clear,points
 
     async def _cargo_reverse(self,distance,p):
@@ -390,6 +441,7 @@ class CargoRecovery:
         _,origin=self._cargo_pose();sample=getattr(self,'odom_pose_sample',None)
         if sample is None or len(sample[0])<3 or time.monotonic()-sample[1]>.5:raise StepError('STALE_ODOM')
         odom_origin=sample[0];started=time.monotonic();speed=min(.05,p['max_speed_mps'])
+        if ux<0:speed=min(speed,self.cfg['motion'].get('max_reverse_speed_mps',.1)/(-ux))
         self.clear_navigation_velocity()
         try:
             while True:
@@ -409,9 +461,11 @@ class CargoRecovery:
                 cap=speed
                 if getattr(self,'zones',None) is not None:cap=self.zones.directional_cap(state['map_pose'],speed,(ux*speed,uy*speed,0.))
                 if cap<=0.:raise StepError('CARGO_REVERSE_BLOCKED_BY_ZONE')
-                msg=Twist();msg.linear.x=ux*min(speed,cap);msg.linear.y=uy*min(speed,cap)
+                speed_now=min(speed,cap)
+                if ux and abs(ux*speed_now)<.005:raise StepError('CARGO_REVERSE_BLOCKED')
+                msg=Twist();msg.linear.x=ux*speed_now;msg.linear.y=uy*speed_now
                 self.navigation_velocity_output.publish(msg)
-                self.lease_message(True,min(speed,cap));await asyncio.sleep(.05)
+                self.lease_message(True,speed_now);await asyncio.sleep(.05)
         finally:
             if not await self.stop():raise StepError('GOAL_STOP_UNCONFIRMED')
 
@@ -467,18 +521,20 @@ class CargoRecovery:
             if not any(abs(wrap(a-b))<.1 for b in headings):headings.append(a)
         selected=None;deadline=time.monotonic()+5.;probes=0
         offsets=self._cargo_offsets()
-        if force_escape:
-            # Leave the blocked arc with the body heading unchanged first.
-            # Prefer a small side step, then reverse, then forward; every
-            # direction still needs the full cargo/scan/keepout sweep below.
-            offsets=sorted((v for v in offsets if any(v)),key=lambda v:
-                           (max(abs(v[0]),abs(v[1])),0 if v[1] else 1 if v[0]>0 else 2))
-            candidates=[(d,l,origin['yaw_rad']) for d,l in offsets]
-            candidates.extend((d,l,y) for d,l in offsets for y in headings
-                              if abs(wrap(y-origin['yaw_rad']))>.10)
-        else:
-            candidates=[(d,l,y) for d,l in offsets for y in headings]
-        offset_counts={};probe_limit=8 if force_escape else 6
+        moving_offsets=offsets[1:]
+        near=moving_offsets[:len(moving_offsets)//2]
+        far=moving_offsets[len(near):]
+        heading=origin['yaw_rad']
+        turns=[y for y in headings if abs(wrap(y-heading))>.10]
+        candidates=[(d,l,heading) for d,l in near]
+        if not force_escape:candidates.extend((0.,0.,y) for y in turns)
+        # Try a longer translation and a turned start together, after the
+        # short translation probes have covered all allowed directions.
+        for (d,l),(short_d,short_l) in zip(far,near):
+            candidates.append((d,l,heading))
+            candidates.extend((short_d,short_l,y) for y in turns)
+        candidates.extend((d,l,y) for d,l in far for y in turns)
+        offset_counts={};probe_limit=len(near)+4
         for distance,lateral,yaw in candidates:
             if time.monotonic()>deadline or probes>=probe_limit:break
             if offset_counts.get((distance,lateral),0)>=2:continue
@@ -486,11 +542,16 @@ class CargoRecovery:
             for delta in turn_options(origin['yaw_rad'],yaw):
                 clear,points=self._cargo_clear(origin,distance,yaw,lateral=lateral,turn_delta=delta)
                 if not clear:continue
+                remaining=deadline-time.monotonic()
+                if remaining<=0.:break
                 x,y,a=points[-1];probes+=1
                 offset_counts[(distance,lateral)]=offset_counts.get((distance,lateral),0)+1
-                try:await self._plan(p,endpoint_id,meta,start_override=dict(x_m=x,y_m=y,yaw_rad=a),probe=True)
+                try:
+                    await asyncio.wait_for(self._plan(p,endpoint_id,meta,
+                        start_override=dict(x_m=x,y_m=y,yaw_rad=a),probe=True),remaining)
+                except asyncio.TimeoutError:break
                 except StepError as exc:
-                    if exc.code=='PATH_UNAVAILABLE':break
+                    if exc.code in ('PATH_UNAVAILABLE','NAVIGATION_PATH_INTERSECTS_KEEPOUT'):break
                     raise
                 selected=(distance,lateral,yaw,delta);break
             if selected is not None:break

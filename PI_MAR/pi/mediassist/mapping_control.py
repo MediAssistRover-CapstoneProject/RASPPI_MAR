@@ -79,8 +79,9 @@ class VelocityRamp:
         self.at = now
         def approach(previous, desired, limit):
             return previous + max(-limit, min(limit, desired - previous))
-        self.value = (approach(self.value[0], target[0], self.linear_accel * dt),
-                      approach(self.value[1], target[1], self.angular_accel * dt))
+        # Explicitly releasing one axis must not retain a prior turn or travel.
+        self.value = (approach(self.value[0], target[0], self.linear_accel * dt) if target[0] else 0.,
+                      approach(self.value[1], target[1], self.angular_accel * dt) if target[1] else 0.)
         return self.value
 
 

@@ -14,8 +14,10 @@ from configure_mapping import stopped_configuration,write_configuration
 def nav_parameters(base,hardware):
     output=copy.deepcopy(base)
     amcl=output.setdefault('amcl',{}).setdefault('ros__parameters',{})
+    # Cover observed map->odom publication lag without lengthening controller
+    # lookup waits. Current scan, odom and localization freshness still gate MOVE.
     amcl.update(robot_model_type='nav2_amcl::OmniMotionModel',set_initial_pose=False,save_pose_rate=-1.,always_reset_initial_pose=True,
-                tf_broadcast=True,transform_tolerance=.3,scan_topic=hardware['ros']['scan'],
+                tf_broadcast=True,transform_tolerance=.5,scan_topic=hardware['ros']['scan'],
                 base_frame_id=hardware['ros']['base_frame'],global_frame_id=hardware['ros']['map_frame'],
                 odom_frame_id='odom',update_min_d=.05,update_min_a=.05)
     ros=hardware['ros']

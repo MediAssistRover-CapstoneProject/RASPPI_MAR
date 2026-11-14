@@ -58,6 +58,8 @@ class RosAdapter(CargoRecovery):
         self.lock = threading.Lock()
         self.samples, self.goal, self.lease_speed, self.goal_feedback = {}, None, None, None
         self.latest_navigation_path=None
+        self.navigation_guidance_path = None
+        self.navigation_guidance_tracking = False
         def navigation_path(message):
             with self.lock:
                 self.latest_navigation_path=(message,time.monotonic())
@@ -133,7 +135,8 @@ class RosAdapter(CargoRecovery):
                 # A brief, bounded quality dip slows the same Nav2 goal before
                 # holding it. Do not reset AMCL or race ahead at full speed.
                 speed=min(speed,.15)
-        pursuit=getattr(self,'worker',{}).get('navigation_runtime',{}).get('controller')=='REGULATED_PURSUIT'
+        runtime=getattr(self,'worker',{}).get('navigation_runtime',{})
+        pursuit=runtime.get('controller')=='REGULATED_PURSUIT'
         (x,y,z),fresh=self.navigation_velocity();msg=Twist()
         requested_input=(x,y,z)
         if fresh:
@@ -152,7 +155,7 @@ class RosAdapter(CargoRecovery):
                     'zone_count':len(self.zones.zones),'profile_hash':getattr(self,'navigation_profile_hash',None)}
             # The norm, not each component, is capped for diagonal Mecanum travel.
             if x<0.:
-                forward_only=getattr(self,'worker',{}).get('navigation_runtime',{}).get('forward_only',False)
+                forward_only=runtime.get('forward_only',False)
                 x=max(x,-self.cfg['motion'].get('max_reverse_speed_mps',0.)) if not forward_only and self.cfg['motion'].get('allow_reverse') is True else 0.
             if self.cfg['motion'].get('allow_strafe') is not True:y=0.
             scale=min(1.,min(speed,self.cfg['max_speed_mps'])/max(math.hypot(x,y),1e-9))
@@ -197,8 +200,14 @@ class RosAdapter(CargoRecovery):
         if rotation_only:msg.linear.x=0.
         # A resume ramp may retain a previous higher output while decelerating.
         # A zone cap must also bound the final command after that ramp.
-        lower=0. if getattr(self,'worker',{}).get('navigation_runtime',{}).get('forward_only',False) else -speed
+        lower=0. if runtime.get('forward_only',False) else -speed
         msg.linear.x=max(lower,min(msg.linear.x,speed))
+        if (not rotation_only and runtime.get('geometry',{}).get('profile')=='cargo'
+                and abs(msg.linear.x)<=.01 and msg.angular.z):
+            pose=(state or {}).get('map_pose',{})
+            if pose.get('fresh') and not self._cargo_map_allows_turn(pose['value'],msg.angular.z):
+                self.node.get_logger().warning('CARGO_TURN_BLOCKED_BY_MAP; stop and select another approach')
+                raise StepError('NAV_GATE_BLOCKED')
         self.navigation_velocity_output.publish(msg)
         self.last_navigation_output=(msg.linear.x,msg.linear.y,msg.angular.z)
         self.last_navigation_input=requested_input
@@ -475,6 +484,8 @@ class RosAdapter(CargoRecovery):
 
     def _report_plan(self,body):
         """Plan upload is observation; local Nav2/zone validation owns motion."""
+        if body != getattr(self, 'navigation_guidance_path', None):
+            self.navigation_guidance_path = body
         def signature(value):
             return (value['jobStepId'],value['endpointId'],value['initializationRevision'],
                     tuple((round(p['xM'],3),round(p['yM'],3)) for p in value['points']))
@@ -735,7 +746,7 @@ class RosAdapter(CargoRecovery):
             self.lease_message(False);await asyncio.sleep(.05)
 
     async def _finish_heading(self,p,endpoint_id):
-        """At most one Spin goal per MOVE; never restart the arrival phase."""
+        """Run one collision-checked Spin attempt after reaching the endpoint."""
         from nav2_msgs.action import Spin
         target=self.cfg['endpoints'][endpoint_id]
         current=self.telemetry().get('map_pose',{})
@@ -825,6 +836,7 @@ class RosAdapter(CargoRecovery):
             self.goal = await self.future(sent)
             received = True
             if not self.goal.accepted: raise StepError("NAV_GOAL_REJECTED")
+            self.navigation_guidance_tracking = True
             result_future = self.goal.get_result_async()
             accepted_at=time.monotonic()
             localization_pause=None;velocity_pause=None;gate_blocked_at=None
@@ -839,6 +851,7 @@ class RosAdapter(CargoRecovery):
                         try:
                             self._report_plan(self._plan_body(sample[0],endpoint_id,receipt))
                         except StepError as exc:
+                            self.navigation_guidance_path = None
                             self.node.get_logger().warning('NAV_PLAN_DISPLAY_REJECTED '+exc.code)
                     path_reported_at=time.monotonic()
                 state = self.telemetry()
@@ -878,6 +891,7 @@ class RosAdapter(CargoRecovery):
                 self.lease_message(True, p["max_speed_mps"])
                 await asyncio.sleep(0.05)
             status = result_future.result().status
+            self.navigation_guidance_tracking = False
             self.goal = None
             if status != 4: raise StepError("NAV_CANCELLED" if status == 5 else "NAV_ABORTED")
             mode=getattr(self,'worker',{}).get('navigation_runtime',{}).get('arrival_mode')
@@ -887,9 +901,8 @@ class RosAdapter(CargoRecovery):
                 if not await self.stop():raise StepError('GOAL_STOP_UNCONFIRMED')
                 await self._wait_stationary()
                 await self._wait_arrival_pose(endpoint_id)
-                if mode=='POSITION_THEN_SPIN':
-                    await self._cargo_prepare_final_heading(p,endpoint_id)
-                    await self._finish_heading(p,endpoint_id)
+                if mode=='POSITION_THEN_SPIN' or p.get('mode')=='PATROL':
+                    await self._align_arrival_heading(p,endpoint_id)
                     heading_completed=True
                     await self._wait_stationary()
                     await self._settle_final_pose(endpoint_id)
@@ -907,6 +920,8 @@ class RosAdapter(CargoRecovery):
             return output
         finally:
             self.lease_message(False)
+            self.navigation_guidance_tracking = False
+            self.navigation_guidance_path = None
             self.navigation_plan_receipt=None
             self.navigation_plan_pending=None
             self.navigation_obstacle_wait=None
@@ -919,7 +934,10 @@ class RosAdapter(CargoRecovery):
 
     async def _move(self, p, meta):
         from .navigation import select_and_move
+        self.navigation_guidance_path = None
+        self.navigation_guidance_tracking = False
         self.cargo_escape_used=False
+        self.cargo_arrival_reposition_used=False
         self.localization_recovery_attempts=0
         self.navigation_localization_wait=None
         self.navigation_obstacle_wait=None

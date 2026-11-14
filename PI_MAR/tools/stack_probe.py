@@ -60,6 +60,11 @@ class Probe:
     def graph(self):
         from mediassist.velocity_graph import check_velocity_graph
         check_velocity_graph(self.node, self.hardware['ros'])
+        if self.node.count_publishers(self.hardware['ros']['scan']) > 1:
+            raise RuntimeError('DUPLICATE_LIDAR_PUBLISHERS')
+        camera = self.mapping.get('camera', {})
+        if camera.get('enabled') and self.node.count_publishers(camera['topic']) > 1:
+            raise RuntimeError('DUPLICATE_CAMERA_PUBLISHERS')
 
     def missing(self):
         now = time.monotonic()

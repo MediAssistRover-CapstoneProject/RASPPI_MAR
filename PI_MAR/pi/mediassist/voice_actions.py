@@ -1,4 +1,5 @@
 """Resolve a voice destination against BE data; dispatch only after explicit consent."""
+import asyncio
 import json
 import math
 import re
@@ -9,6 +10,9 @@ from pathlib import Path
 from .be_token import write_private
 from .contracts import StepError
 from .navigation_session import validate_descriptor
+
+
+INVITATION = 'Mời bạn di chuyển theo tôi.'
 
 
 def words(text):
@@ -81,7 +85,7 @@ class VoiceActions:
                           session_id=session['sessionId'])
         return f'Bạn muốn tôi dẫn đến {destination} phải không? Hãy nói xác nhận hoặc hủy nhé.'
 
-    def consume(self,text):
+    async def consume(self,text,invite):
         """Return None for a normal query; otherwise (spoken reply, request ID)."""
         if self.pending is None:return None
         pending=self.pending
@@ -97,19 +101,25 @@ class VoiceActions:
             self.pending=None
             return None
         self.pending=None
-        catalog=self.catalog();session=catalog['navigationSession']
+        catalog=await asyncio.to_thread(self.catalog);session=catalog['navigationSession']
         if catalog.get('robotAvailable') is False:
             return 'Robot vừa nhận một nhiệm vụ khác. Tôi chưa gửi yêu cầu dẫn đường mới.',None
         if session.get('state')!='READY' or session.get('sessionId')!=pending['session_id']:
             return 'Phiên bản đồ đã thay đổi. Tôi chưa gửi nhiệm vụ; bạn vui lòng nhờ nhân viên kiểm tra.',None
         if not any(p.get('endpointId')==pending['body']['endpointId'] and p.get('mapId')==session['mapId'] for p in catalog['endpoints']):
             return 'Điểm đến đã bị xóa hoặc ngưng sử dụng. Tôi chưa gửi nhiệm vụ di chuyển.',None
+        body = pending['body']
+        workflow_owns_invite = catalog.get('workflowOwnsInvite') is True
+        if 'workflowOwnsInvite' in catalog:
+            body = {**body, 'workflowOwnsInvite': workflow_owns_invite}
+        if not workflow_owns_invite:
+            await invite(INVITATION)
         # Persist only IDs and request parameters before dispatch. An ambiguous
         # response must not cause a second job with a new idempotency key.
-        write_private(self.marker,json.dumps(dict(idempotency_key=pending['key'],body=pending['body'])))
+        write_private(self.marker,json.dumps(dict(idempotency_key=pending['key'],body=body)))
         try:
             if self.before_dispatch:self.before_dispatch()
-            _,_,raw=self.be.request('/api/v1/pi/voice/navigation-requests',json.dumps(pending['body']).encode(),
+            _,_,raw=await asyncio.to_thread(self.be.request,'/api/v1/pi/voice/navigation-requests',json.dumps(body).encode(),
                 'application/json',timeout=15,idempotency_key=pending['key'])
         except StepError as error:
             # Only definite request rejection clears the receipt guard.
@@ -126,4 +136,4 @@ class VoiceActions:
         uuid.UUID(request_id)
         self.marker.unlink(missing_ok=True)
         print('VOICE_NAVIGATION_REQUEST',request_id,'JOBS',','.join(j['jobId'] for j in response.get('jobs',[]) if j.get('jobId')),flush=True)
-        return 'Đã nhận yêu cầu. Mời bạn đi theo tôi.',request_id
+        return 'Đã nhận yêu cầu dẫn đường.' if workflow_owns_invite else INVITATION,request_id

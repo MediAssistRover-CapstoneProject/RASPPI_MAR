@@ -26,6 +26,10 @@ class MappingManager:
         self.root.mkdir(parents=True, exist_ok=True)
         self.state_file = self.root/'session.json'
         self.state = json.loads(self.state_file.read_text()) if self.state_file.exists() else {}
+        if self.state == {}:
+            # Fresh installations have no mapping job. Make this explicit before
+            # adding diagnostics, which would otherwise look like an open session.
+            self.state = {'session_open': False}
         if self.state.get('session_open'):
             self.state['state'] = 'RECOVERY_REQUIRED'
             self.persist()
@@ -73,16 +77,12 @@ class MappingManager:
         self.gamepad = None
         self.manual_drive = None
         self.manual_inhibited = False
-        if cfg.get('control_source') == 'gamepad':
-            from .gamepad import GamepadInput, configuration
-            from sensor_msgs.msg import Joy
-            self.gamepad = GamepadInput(configuration(cfg))
-            if self.gamepad.cfg['layout']=='vendor_mecanum':
-                from .manual_drive import ManualDrive
-                self.manual_drive=ManualDrive(self.gamepad.cfg)
-            self.gamepad_status = adapter.node.create_publisher(String, '/mediassist/gamepad/status', 1)
-            self.gamepad_report_at, self.gamepad_report = 0., None
-            adapter.node.create_subscription(Joy, cfg['gamepad']['topic'], self.on_gamepad, qos)
+        source = cfg.get('control_source')
+        if source in ('gamepad', 'auto'):
+            from .manual_drive import ManualDrive, attach_gamepad
+            attach_gamepad(self, cfg, self.on_gamepad)
+            if source == 'auto' or self.gamepad.cfg['layout'] == 'vendor_mecanum':
+                self.manual_drive = ManualDrive(self.gamepad.cfg, source)
         if cfg.get('camera',{}).get('enabled') and cfg['camera'].get('mqtt_preview_enabled',cfg['camera'].get('stream_backend')!='web_video_server'):
             from .camera_preview import CameraPreview
             self.camera = CameraPreview(adapter,cfg['camera'],lambda:self.state.get('state')=='MAPPING')
@@ -91,12 +91,15 @@ class MappingManager:
         status={**self.auto.status(time.monotonic()), 'control_selected':self.auto_selected,
                 'manual_assist_reason':getattr(self,'manual_assist_reason','IDLE'),
                 'profile_max_duration_sec':self.auto.cfg['max_duration_sec']}
-        pad=self.cfg.get('gamepad',{})
+        gamepad = getattr(self, 'gamepad', None)
+        pad = gamepad.cfg if gamepad else self.cfg.get('gamepad', {})
         status['manual_control']={'source':self.cfg.get('control_source','local'),
             'layout':pad.get('layout','legacy'),'session_required':pad.get('session_required',True),
             'forward_mps':pad.get('forward_mps',.10),'angular_rps':pad.get('angular_rps',.35),
             'continuous':pad.get('max_run_sec',3.)==0}
-        if self.cfg.get('control_source')=='mqtt':
+        if self.cfg.get('control_source') == 'auto' and getattr(self, 'manual_drive', None):
+            status['manual_control']['source'] = self.manual_drive.source_name
+        if status['manual_control']['source'] == 'mqtt':
             from .mapping_control import MAX_LINEAR,MAX_ANGULAR
             status['manual_control'].update(layout='legacy',session_required=True,
                 forward_mps=MAX_LINEAR,angular_rps=MAX_ANGULAR,continuous=False)
@@ -138,13 +141,8 @@ class MappingManager:
             self.revision += 1
 
     def on_gamepad(self, msg):
-        # Driver and worker share the container clock. Do not refresh delayed DDS samples.
-        stamp = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
-        age = (self.adapter.node.get_clock().now().nanoseconds - stamp) / 1e9
-        if not -.1 <= age <= self.gamepad.cfg['timeout_sec']:
-            self.gamepad.reject('JOY_SOURCE_STALE')
-            return
-        self.gamepad.feed(msg.axes, time.monotonic(), stamp)
+        from .manual_drive import receive_gamepad
+        receive_gamepad(self, msg)
 
     def on_auto_scan(self, msg):
         from .autonomous_mapping import scan_view
@@ -241,8 +239,14 @@ class MappingManager:
                 if not sample.get('fresh'):raise StepError('MAPPING_POSE_NOT_READY')
                 self.adapter._check_graph()
                 if self.gamepad:
-                    with self.gamepad.lock:
-                        if any(abs(v)>.02 for v in self.gamepad.axes):raise StepError('RETURN_GAMEPAD_TO_NEUTRAL')
+                    drive = getattr(self, 'manual_drive', None)
+                    if drive:
+                        if drive.busy(self.gamepad):
+                            raise StepError('RETURN_GAMEPAD_TO_NEUTRAL')
+                    else:
+                        with self.gamepad.lock:
+                            if any(abs(v)>.02 for v in self.gamepad.axes):
+                                raise StepError('RETURN_GAMEPAD_TO_NEUTRAL')
                 view,at=self.auto_scan
                 if not view or not view.get('valid') or time.monotonic()-at>auto.cfg['scan_max_age_sec']:
                     raise StepError('AUTONOMY_LIDAR_NOT_READY')
@@ -270,7 +274,15 @@ class MappingManager:
             self.remote_control.accept(message,self.adapter.worker['robot_id'],transport_id,self.state)
             self.gamepad.stop()
             return
-        if self.cfg.get('control_source','local') != 'mqtt':raise StepError('MAPPING_CONTROL_SOURCE_LOCAL')
+        if self.cfg.get('control_source') == 'auto':
+            if self.manual_drive.select(self.gamepad) or self.manual_drive.handoff_pending:
+                raise StepError('MAPPING_CONTROL_SOURCE_GAMEPAD')
+            from .contracts import parse_timestamp
+            resumed = self.manual_drive.mqtt_resumed_at
+            if resumed is not None and parse_timestamp(message['issuedAt']) <= resumed:
+                raise StepError('MAPPING_CONTROL_BEFORE_HANDOFF')
+        elif self.cfg.get('control_source','local') != 'mqtt':
+            raise StepError('MAPPING_CONTROL_SOURCE_LOCAL')
         moving = bool(message.get('linearX') or message.get('angularZ'))
         if moving:
             if not ready or not idle or self.adapter.motion_uncertain:raise StepError('MAPPING_ROBOT_BUSY')
@@ -296,9 +308,10 @@ class MappingManager:
         if navigator and navigator.active and (not self.active or not self.auto_selected or self.auto.phase!='RUNNING'):
             await navigator.stop()
         if getattr(self,'manual_drive',None) and not getattr(self,'auto_selected',False):
-            self.manual_drive.tick(self,ready,idle)
+            handled = self.manual_drive.tick(self, ready, idle)
             self.state['autonomy']=self.auto_status()
-            return
+            if handled:
+                return
         gamepad_velocity = self.gamepad_velocity(ready, idle) if self.cfg.get('control_source') == 'gamepad' and not getattr(self,'auto_selected',False) else None
         if not self.active:
             return
@@ -309,7 +322,7 @@ class MappingManager:
         elif gamepad_velocity is not None:
             x,z = gamepad_velocity
             fresh = True
-        elif self.cfg.get('control_source','local') == 'mqtt':
+        elif self.cfg.get('control_source','local') in ('mqtt', 'auto'):
             x,z = self.remote_control.current()
             fresh = True
         else:
@@ -332,9 +345,17 @@ class MappingManager:
             with self.lock:grid=self.grid;map_revision=self.revision
             if not grid or time.monotonic()-grid[1]>min(2.,self.cfg['max_map_age_sec']):auto.stop('MAPPING_MAP_STALE')
             if self.gamepad:
-                with self.gamepad.lock:override=any(abs(v)>.15 for v in self.gamepad.axes)
+                drive = getattr(self, 'manual_drive', None)
+                with self.gamepad.lock:
+                    override = any(abs(v) > .15 for v in self.gamepad.axes)
+                if drive:
+                    override = override and drive.busy(self.gamepad)
                 if override:
                     auto.stop('GAMEPAD_OVERRIDE');self.gamepad.stop('RETURN_NEUTRAL')
+                    if self.cfg.get('control_source') == 'auto':
+                        self.auto_selected = False
+                        self.remote_control.stop()
+                        self.ramp.reset()
             gate=telemetry.get('gate',{}).get('value')
             if isinstance(gate,str):
                 try:gate=json.loads(gate)

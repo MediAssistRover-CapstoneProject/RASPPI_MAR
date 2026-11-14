@@ -1,13 +1,159 @@
-"""Scoped speech alongside MOVE; brief telemetry gaps do not clip a valid phrase."""
+"""Plan navigation speech on the Pi from the accepted Nav2 path and live pose."""
 import asyncio
-import json
+from dataclasses import dataclass
 import logging
 import math
 import time
-from datetime import datetime, timezone
 
-from .navigation_session import SessionClient
-from .contracts import parse_timestamp
+from .contracts import StepError
+from .store import utcnow
+
+
+PHRASES = {
+    'STRAIGHT': 'Tiếp tục đi thẳng.',
+    'LEFT': 'Chuẩn bị rẽ trái.',
+    'RIGHT': 'Chuẩn bị rẽ phải.',
+    'UTURN': 'Chuẩn bị quay lại.',
+    'NEAR': 'Sắp tới nơi.',
+    'WAITING': 'Tôi đang tìm lại đường đi. Bạn vui lòng chờ.',
+}
+TRANSIENT_LOCALIZATION = {
+    'VERIFYING', 'AMCL_UNCERTAIN', 'POSE_AGE_SEC_STALE', 'LOCALIZED',
+    'SCAN_AGE_SEC_STALE', 'ODOM_AGE_SEC_STALE', 'TF_NOT_READY',
+    'AMCL_TF_NOT_READY', 'SCAN_TF_UNAVAILABLE', 'SCAN_MATCH_LOW',
+}
+
+
+@dataclass(frozen=True)
+class Cue:
+    direction: str
+    anchor: tuple[float, float] | None
+    distance: float | None = None
+
+    def identifier(self, step):
+        anchor = '' if self.anchor is None else ':' + ':'.join(str(round(x * 10)) for x in self.anchor)
+        return step['jobStepId'] + ':' + self.direction + anchor
+
+    def matches(self, other):
+        if other is None or self.direction != other.direction:
+            return False
+        if self.anchor is None or other.anchor is None:
+            return self.anchor == other.anchor
+        return math.dist(self.anchor, other.anchor) < .30
+
+
+def speech_params(direction, speed_wpm):
+    return {'action': 'SPEAK', 'prompt_key': 'NAVIGATION_' + direction,
+            'data': {'text': PHRASES[direction], 'language_code': 'vi',
+                     'speed_wpm': speed_wpm, 'volume': 70}}
+
+
+async def prepare_navigation_audio(worker):
+    """Warm a bounded in-memory cache without touching ALSA or startup readiness."""
+    config = worker.cfg.get('speech', {})
+    if (not config.get('enabled') or config.get('engine') != 'be-tts'
+            or not worker.cfg.get('navigation_session')
+            or 'INTERACT' not in worker.cfg.get('enabled_step_types', [])):
+        return
+    from .cloud_speech import download
+    cache = worker.navigation_audio
+    for direction in ('LEFT', 'RIGHT', 'STRAIGHT', 'NEAR', 'UTURN', 'WAITING'):
+        if direction in cache:
+            continue
+        try:
+            raw = await asyncio.wait_for(download(config, speech_params(direction, 150)['data']), 12.)
+        except Exception as exc:
+            logging.debug('NAVIGATION_GUIDANCE_PREPARE kind=%s error=%s', direction, type(exc).__name__)
+        else:
+            if len(raw) <= 256 * 1024:
+                cache[direction] = raw
+
+
+def angle_difference(a, b):
+    return math.atan2(math.sin(a - b), math.cos(a - b))
+
+
+class GuidancePath:
+    """Simplified speech corners, measured along the original plan."""
+    def __init__(self, source):
+        self.points = []
+        self.lengths = []
+        for value in source:
+            point = (value['xM'], value['yM'])
+            distance = math.dist(self.points[-1], point) if self.points else 0.
+            if self.points and distance < .001:
+                continue
+            self.points.append(point)
+            self.lengths.append((self.lengths[-1] if self.lengths else 0.) + distance)
+        self.corners = []
+        if len(self.points) >= 2:
+            self._find_corners()
+
+    @staticmethod
+    def projection(a, b, point):
+        dx, dy = (b[0] - a[0], b[1] - a[1])
+        squared = dx * dx + dy * dy
+        fraction = max(0., min(1., ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / squared)) if squared else 0.
+        return fraction, math.dist(point, (a[0] + fraction * dx, a[1] + fraction * dy))
+
+    def _find_corners(self):
+        last = len(self.points) - 1
+        keep, pending = {0, last}, [(0, last)]
+        while pending:
+            lo, hi = pending.pop()
+            if hi - lo < 2:
+                continue
+            index = max(range(lo + 1, hi), key=lambda i:
+                        self.projection(self.points[lo], self.points[hi], self.points[i])[1])
+            if self.projection(self.points[lo], self.points[hi], self.points[index])[1] > .035:
+                keep.add(index)
+                pending.extend(((lo, index), (index, hi)))
+        indices = sorted(keep)
+        for a, b, c in zip(indices, indices[1:], indices[2:]):
+            incoming = self.heading(self.points[a], self.points[b])
+            outgoing = self.heading(self.points[b], self.points[c])
+            angle = math.degrees(angle_difference(outgoing, incoming))
+            if abs(angle) >= 35:
+                direction = 'UTURN' if abs(angle) >= 150 else 'LEFT' if angle > 0 else 'RIGHT'
+                self.corners.append((b, direction))
+
+    @staticmethod
+    def heading(a, b):
+        return math.atan2(b[1] - a[1], b[0] - a[0])
+
+    def cue(self, pose, speed):
+        if len(self.points) < 2:
+            return None
+        point = (pose['x_m'], pose['y_m'])
+        yaw = pose['yaw_rad']
+        best = (math.inf, 0., 0., 0.)
+        for index, (a, b) in enumerate(zip(self.points, self.points[1:])):
+            fraction, offset = self.projection(a, b, point)
+            heading = angle_difference(self.heading(a, b), yaw)
+            # Nearby segments can intersect on a tight replan. Break ties by heading.
+            score = offset + .02 * (1 - math.cos(heading))
+            if score < best[0]:
+                along = self.lengths[index] + fraction * (self.lengths[index + 1] - self.lengths[index])
+                best = (score, offset, along, heading)
+        _, offset, along, heading = best
+        if offset > .25:
+            return None
+        turn_lead = max(.35, min(.90, speed * 2.4))
+        for index, direction in self.corners:
+            distance = self.lengths[index] - along
+            if distance <= .06:
+                continue
+            if distance <= turn_lead:
+                return Cue(direction, self.points[index], distance)
+            if distance >= .55 and abs(heading) <= math.pi / 4:
+                return Cue('STRAIGHT', self.points[index], distance)
+            return None
+        remaining = self.lengths[-1] - along
+        if .25 <= remaining <= .55:
+            return Cue('NEAR', None, remaining)
+        if remaining > .55 and abs(heading) <= math.pi / 4:
+            return Cue('STRAIGHT', self.points[-1], remaining)
+        return None
 
 
 async def run_navigation_guidance(worker, step):
@@ -20,183 +166,157 @@ async def run_navigation_guidance(worker, step):
 
 
 class NavigationGuidance:
-    MAX_REPLY_AGE = 2.5
-    WAIT_TEXT = 'Tôi đang tìm lại đường đi. Bạn vui lòng chờ.'
+    MAX_PHRASE_FINISH_SEC = 5.
 
     def __init__(self, worker, step):
         self.worker = worker
         self.step = step
-        self.client = SessionClient(worker.cfg)
         self.context = dict(worker.cfg['navigation_session'])
-        self.latest = None
-        self.speech = None
-        self.request = None
-        self.current_cue = None
-        self.last_attempt = None
-        self.attempted = set()
-        self.received_at = 0
-        self.current_plan = None
-        self.current_local = False
-        self.last_pose_good = -math.inf
-        self.cancel_reason = 'STEP_ENDED'
         self.initialization_revision = None
         self.last_localization_reason = None
-
-    async def prepare_audio(self):
-        config = self.worker.cfg.get('speech', {})
-        if config.get('engine') != 'be-tts':
-            return
-        from .cloud_speech import download
-        async def prepare(text):
-            try:
-                await download(config, {'text': text, 'language_code': 'vi', 'speed_wpm': 150})
-            except Exception as exc:
-                logging.debug('NAVIGATION_GUIDANCE_PREPARE %s', type(exc).__name__)
-        texts = ['Phía trước '+turn for turn in ('rẽ trái', 'rẽ phải', 'quay lại')]
-        await asyncio.gather(*(prepare(text) for text in texts + ['Mời bạn đi thẳng theo tôi.', self.WAIT_TEXT]))
+        self.last_pose_good = -math.inf
+        self.playback_started_at = None
+        self.path_source = self.path = None
+        self.announced = []
+        self.attempted = set()
 
     def context_valid(self):
-        active = self.worker.adapter.active_navigation_context or {}
+        adapter = self.worker.adapter
+        active = adapter.active_navigation_context or {}
         return (self.worker.connection_ready and self.worker.active is self.step
-                and all(self.worker.cfg.get('navigation_session',{}).get(key) == self.context[key]
-                        for key in ('session_id','map_id','map_asset_hash'))
+                and not getattr(self.worker, 'shutting_down', False)
+                and not getattr(self.worker, 'session_fault', False)
+                and not getattr(adapter, 'motion_uncertain', False)
+                and all(self.worker.cfg.get('navigation_session', {}).get(key) == self.context[key]
+                        for key in ('session_id', 'map_id', 'map_asset_hash'))
                 and active.get('initialization_revision') is not None
                 and (self.initialization_revision is None
                      or active['initialization_revision'] == self.initialization_revision))
 
-    def fresh(self):
-        if not self.context_valid():
-            return False
-        context = self.worker.cfg['navigation_session']
-        state = self.worker.adapter.telemetry()
-        self.last_localization_reason = state.get('localization',{}).get('reason')
+    def current_cue(self):
+        adapter = self.worker.adapter
+        waiting = getattr(adapter, 'navigation_obstacle_wait', None)
+        if waiting:
+            return Cue('WAITING', None) if time.monotonic() - waiting['since'] >= 1. else None
+        if not getattr(adapter, 'navigation_guidance_tracking', False):
+            return None
+        source = getattr(adapter, 'navigation_guidance_path', None)
+        revision = adapter.active_navigation_context['initialization_revision']
+        if source is None or any(source.get(key) != value for key, value in (
+                ('jobId', self.step['jobId']), ('jobStepId', self.step['jobStepId']),
+                ('sessionId', self.context['session_id']), ('mapId', self.context['map_id']),
+                ('mapAssetHash', self.context['map_asset_hash']), ('initializationRevision', revision))):
+            return None
+        state = adapter.telemetry()
+        self.last_localization_reason = state.get('localization', {}).get('reason')
         pose = state.get('map_pose', {})
         value = pose.get('value') or {}
-        valid = (pose.get('fresh') and pose.get('age_sec', 99) <= 1.5
-                and state.get('localization', {}).get('ready')
-                and value.get('navigation_session_id') == context['session_id']
-                and value.get('initialization_revision') == (self.worker.adapter.active_navigation_context or {}).get('initialization_revision'))
-        if valid:
-            self.initialization_revision = self.worker.adapter.active_navigation_context['initialization_revision']
-            self.last_pose_good = time.monotonic()
-        return bool(valid)
+        if not (pose.get('fresh') and pose['age_sec'] <= 1.5 and state.get('localization', {}).get('ready')
+                and value.get('map_id') == self.context['map_id']
+                and value.get('navigation_session_id') == self.context['session_id']
+                and value.get('initialization_revision') == revision):
+            return None
+        if self.path_source is not source:
+            self.path = GuidancePath(source['points'])
+            self.path_source = source
+        self.initialization_revision = revision
+        self.last_pose_good = time.monotonic()
+        sample = getattr(adapter, 'odom_twist_sample', None)
+        limit = self.step['params']['max_speed_mps']
+        speed = min(limit, max(.12, math.hypot(*sample[0][:2]))) if sample and self.last_pose_good - sample[1] <= .5 else limit
+        return self.path.cue(value, speed)
 
-    def valid_reply(self, value):
-        plan = value.get('plan', {})
-        context = self.worker.cfg['navigation_session']
-        try:age = (datetime.now(timezone.utc) - parse_timestamp(value['capturedAt'])).total_seconds()
-        except (KeyError, TypeError, ValueError):return False
-        return (value.get('state') == 'TRACKING' and -1 <= age <= self.MAX_REPLY_AGE
-                and plan.get('jobId') == self.step['jobId']
-                and plan.get('jobStepId') == self.step['jobStepId']
-                and plan.get('sessionId') == context['session_id']
-                and plan.get('mapId') == context['map_id']
-                and plan.get('mapAssetHash') == context['map_asset_hash']
-                and plan.get('initializationRevision') == (self.worker.adapter.active_navigation_context or {}).get('initialization_revision'))
+    def can_play(self, cue, source):
+        from .media_runtime import audio_reserved
+        if audio_reserved() or not self.context_valid():
+            return False
+        latest = self.current_cue()
+        if self.playback_started_at is None:
+            return cue.matches(latest)
+        now = time.monotonic()
+        if now - self.playback_started_at > self.MAX_PHRASE_FINISH_SEC:
+            return False
+        if cue.matches(latest):
+            return True
+        adapter = self.worker.adapter
+        if (cue.direction == 'WAITING' or getattr(adapter, 'navigation_obstacle_wait', None)
+                or not getattr(adapter, 'navigation_guidance_tracking', False)
+                or source is not getattr(adapter, 'navigation_guidance_path', None)):
+            return False
+        # The same path can advance to the next cue during a short phrase.
+        return (now - self.last_pose_good <= .1
+                or (self.last_localization_reason in TRANSIENT_LOCALIZATION
+                    and now - self.last_pose_good <= self.MAX_PHRASE_FINISH_SEC))
 
-    @staticmethod
-    def revision(value):
-        return value.get('planRevision') or value.get('plan', {}).get('plannedAt')
-
-    def can_play(self, cue):
-        if not self.context_valid():return False
-        if self.current_local:
-            return bool(getattr(self.worker.adapter, 'navigation_obstacle_wait', None))
-        # The next cue on the SAME path must not cut the current short phrase.
-        # A changed route, initialization or step still revokes it immediately.
-        if (self.latest is None or time.monotonic()-self.received_at > self.MAX_REPLY_AGE
-                or self.revision(self.latest) != self.current_plan):return False
-        if self.fresh():return True
-        benign = self.last_localization_reason in ('VERIFYING','AMCL_UNCERTAIN','POSE_AGE_SEC_STALE','LOCALIZED')
-        return benign and time.monotonic()-self.last_pose_good <= 2.
-
-    def waiting_command(self):
-        waiting = getattr(self.worker.adapter, 'navigation_obstacle_wait', None)
-        if not waiting or time.monotonic()-waiting['since'] < 1.:return None
-        return dict(cueId=self.step['jobStepId']+':WAITING_FOR_PATH', stepType='INTERACT',
-                    parentJobStepId=self.step['jobStepId'], direction='WAITING',
-                    params=dict(action='SPEAK', prompt_key='NAVIGATION_WAIT', data=dict(
-                        text=self.WAIT_TEXT, language_code='vi', speed_wpm=150, volume=70)))
-
-    async def play(self, command):
-        cue = command['cueId']
+    async def play(self, cue, cue_id, source):
+        config = self.worker.cfg['speech']
+        player = self.worker.adapter.speech
+        self.playback_started_at = None
         started = time.monotonic()
+
+        def playback_started():
+            self.playback_started_at = time.monotonic()
+            self.announced.append((cue, source, self.playback_started_at))
+            latest = self.current_cue()
+            remaining_cm = round(latest.distance * 100) if latest and latest.distance is not None else None
+            logging.info('NAVIGATION_GUIDANCE_STARTED kind=%s delay_ms=%d ahead_cm=%s', cue.direction,
+                         round((self.playback_started_at - started) * 1000), remaining_cm)
+
+        def guard():
+            return self.can_play(cue, source)
+
         try:
-            result = await self.worker.adapter.speech.speak(command['params'],
-                    playback_guard=lambda: self.can_play(cue))
-            self.worker.store.guidance_result(self.step, cue, 'COMPLETED', result)
-            logging.info('NAVIGATION_GUIDANCE_COMPLETED kind=%s elapsed_ms=%d',
-                         command.get('direction','TURN'),round((time.monotonic()-started)*1000))
+            raw = self.worker.navigation_audio.get(cue.direction)
+            if raw is not None:
+                await player.play_wav(raw, volume=70, playback_guard=guard, on_playback_start=playback_started)
+                result = {'completed': True, 'action': 'SPEAK',
+                          'prompt_key': 'NAVIGATION_' + cue.direction, 'source': 'AUDIO_CLIENT',
+                          'actor_account_id': None, 'completed_at': utcnow(),
+                          'values': {'playback_completed': True, 'audible_verified': False, 'engine': 'be-tts',
+                                     'language_code': 'vi'}}
+            else:
+                if config.get('engine') == 'be-tts':
+                    from .speech import SpeechPlayer
+                    player = SpeechPlayer({**config, 'engine': 'espeak-ng'})
+                result = await player.speak(speech_params(cue.direction, 180),
+                                            playback_guard=guard, on_playback_start=playback_started)
+            self.worker.store.guidance_result(self.step, cue_id, 'COMPLETED', result)
         except asyncio.CancelledError:
-            self.worker.store.guidance_result(self.step, cue, 'CANCELLED', {'reason': self.cancel_reason})
-            logging.info('NAVIGATION_GUIDANCE_CANCELLED reason=%s',self.cancel_reason)
+            self.worker.store.guidance_result(self.step, cue_id, 'CANCELLED', {'reason': 'GUIDANCE_NO_LONGER_CURRENT'})
             raise
+        except StepError as exc:
+            status = 'CANCELLED' if exc.code == 'NAVIGATION_GUIDANCE_EXPIRED' else 'FAILED'
+            self.worker.store.guidance_result(self.step, cue_id, status, {'errorCode': exc.code})
+            if status == 'FAILED':
+                logging.warning('NAVIGATION_GUIDANCE_AUDIO_FAILED %s', exc.code)
         except Exception as exc:
-            self.worker.store.guidance_result(self.step, cue, 'FAILED', {'errorCode': str(getattr(exc, 'code', type(exc).__name__))})
+            self.worker.store.guidance_result(self.step, cue_id, 'FAILED', {'errorCode': type(exc).__name__})
             logging.warning('NAVIGATION_GUIDANCE_AUDIO_FAILED %s', type(exc).__name__)
 
     async def run(self):
-        next_request = 0
-        preparation = asyncio.create_task(self.prepare_audio())
+        from .media_runtime import audio_reserved
+        speech = None
+        cue = source = None
         try:
             while True:
-                now = time.monotonic()
-                if self.request is not None and self.request.done():
-                    try:
-                        value = json.loads(self.request.result())
-                        if self.valid_reply(value):
-                            self.latest = value
-                            self.received_at = now
-                        elif value.get('state') in ('IDLE','STOPPED','ARRIVED'):
-                            self.latest = None
-                        elif self.latest and value.get('plan') and (
-                                value['plan'].get('sessionId') != self.context['session_id']
-                                or value['plan'].get('jobId') != self.step['jobId']
-                                or value['plan'].get('jobStepId') != self.step['jobStepId']
-                                or value['plan'].get('mapAssetHash') != self.context['map_asset_hash']
-                                or value['plan'].get('initializationRevision') != self.latest['plan'].get('initializationRevision')
-                                or self.revision(value) != self.revision(self.latest)):
-                            self.latest = None
-                    except Exception:
-                        pass  # One failed poll never renews or instantly revokes the last valid snapshot.
-                    self.request = None
-                    next_request = now + .5
-                if self.request is None and now >= next_request:
-                    self.request = asyncio.create_task(asyncio.to_thread(self.client.request,
-                        '/api/v1/pi/navigation-session/guidance', {'jobStepId': self.step['jobStepId']}))
-                if self.speech and not self.speech.done() and not self.can_play(self.current_cue):
-                    self.cancel_reason = ('PATH_CHANGED' if self.latest and self.revision(self.latest) != self.current_plan
-                                          else 'GUIDANCE_NO_LONGER_CURRENT')
-                    self.speech.cancel()
-                    await asyncio.gather(self.speech, return_exceptions=True)
-                command = self.waiting_command()
-                local = command is not None
-                if command is None and self.latest and self.valid_reply(self.latest) and self.fresh():
-                    command = self.latest.get('interaction')
-                if command and (self.speech is None or self.speech.done()):
-                    cue = command.get('cueId')
-                    params = command.get('params', {})
-                    if (self.context_valid() and command.get('stepType') == 'INTERACT' and params.get('action') == 'SPEAK'
-                            and command.get('parentJobStepId') == self.step['jobStepId']
-                            and isinstance(params.get('data', {}).get('text'), str)
-                            and 0 < len(params['data']['text']) <= 500
-                            and cue not in self.attempted):
-                        turn = command.get('anchor') or (self.latest or {}).get('turn')
-                        direction = command.get('direction') or (self.latest or {}).get('direction')
-                        # Replans can nudge the same corner into an adjacent 5 cm bucket.
-                        duplicate = (turn and self.last_attempt and self.last_attempt[0] == direction
-                            and math.hypot(turn['xM']-self.last_attempt[1], turn['yM']-self.last_attempt[2]) < .15)
-                        self.attempted.add(cue)
-                        if not duplicate and self.worker.store.guidance_start(self.step, cue):
-                            if turn:self.last_attempt = (direction, turn['xM'], turn['yM'])
-                            self.current_cue = cue
-                            self.current_plan = self.revision(self.latest or {})
-                            self.current_local = local
-                            self.speech = asyncio.create_task(self.play(command))
+                if speech is not None and not speech.done():
+                    if not self.can_play(cue, source):
+                        speech.cancel()
+                        await asyncio.gather(speech, return_exceptions=True)
+                elif self.context_valid() and not audio_reserved():
+                    cue = self.current_cue()
+                    if cue:
+                        source = getattr(self.worker.adapter, 'navigation_guidance_path', None)
+                        cue_id = cue.identifier(self.step)
+                        now = time.monotonic()
+                        duplicate = any(old.matches(cue) and old_source is not source and now - when <= 12.
+                                        for old, old_source, when in self.announced)
+                        if cue_id not in self.attempted and not duplicate:
+                            self.attempted.add(cue_id)
+                            if self.worker.store.guidance_start(self.step, cue_id):
+                                speech = asyncio.create_task(self.play(cue, cue_id, source))
                 await asyncio.sleep(.1)
         finally:
-            self.cancel_reason = 'STEP_ENDED'
-            pending = [task for task in (self.speech, self.request, preparation) if task is not None]
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+            if speech is not None and not speech.done():
+                speech.cancel()
+                await asyncio.gather(speech, return_exceptions=True)

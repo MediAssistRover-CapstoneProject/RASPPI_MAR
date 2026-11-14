@@ -51,6 +51,9 @@
         "commandType": {
           "const": "EXECUTE_STEP"
         },
+        "commissioningUnlock": {
+          "const": true
+        },
         "step": {
           "type": "object",
           "properties": {

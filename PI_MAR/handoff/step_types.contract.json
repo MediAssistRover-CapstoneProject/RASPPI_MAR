@@ -401,7 +401,8 @@
                   "ROBOT_HEALTH",
                   "SIDE_CLEARANCE",
                   "CROWD_DENSITY",
-                  "RESTRICTED_ZONE"
+                  "RESTRICTED_ZONE",
+                  "PATROL_FALL"
                 ]
               },
               "zone_id": {
@@ -412,6 +413,9 @@
                 "type": "number",
                 "minimum": 0,
                 "maximum": 30
+              },
+              "fall_detection": {
+                "type": "boolean"
               }
             },
             "required": [

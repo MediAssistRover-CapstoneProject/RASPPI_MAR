@@ -179,7 +179,10 @@ class MotionLossTests(unittest.IsolatedAsyncioTestCase):
     async def test_localization_loss_during_move_uses_the_stop_path(self):
         from unittest.mock import AsyncMock
         import asyncio
+        import threading
         adapter=object.__new__(RosAdapter);adapter.localization_required=True
+        adapter.lock=threading.Lock();adapter.latest_navigation_path=None
+        adapter._navigation_context=Mock(return_value=False)
         adapter.clear_navigation_velocity=Mock();adapter.navigation_speed_limit=Mock();adapter.hold_navigation_velocity=Mock()
         adapter.navigation_diagnostic=Mock()
         adapter._prerequisites=AsyncMock();adapter._pose=Mock(return_value=N());adapter._check_graph=Mock()
@@ -193,5 +196,6 @@ class MotionLossTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(StepError,'LOCALIZATION_LOST'):
                 await adapter._move_one({'max_speed_mps':.05},'endpoint')
         adapter.stop.assert_awaited_once();adapter.lease_message.assert_called_once_with(False)
+        adapter.hold_navigation_velocity.assert_called()
 
 if __name__=='__main__':unittest.main()

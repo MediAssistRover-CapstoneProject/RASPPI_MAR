@@ -26,7 +26,7 @@ from .contracts import StepError
 from .speech import SpeechPlayer,audio_device
 from .store import utcnow
 from .voice_capture import recording_cue
-from .voice_client import VoiceClient
+from .voice_client import MAX_WAV, VoiceClient
 from .voice_actions import VoiceActions,words
 
 INTRO='Xin chào, bạn cần MAR giúp gì không?'
@@ -82,6 +82,42 @@ class AiClient:
                 or not isinstance(result.get('speech_text'),str) or not 1<=len(result['speech_text'])<=500):
             raise StepError('VOICE_AI_INVALID_RESPONSE')
         return result
+
+    def speech_request(self, path, body, content_type, limit):
+        req = urllib.request.Request(self.base+path, data=body, headers={
+            'Authorization': 'Bearer '+self.token, 'Content-Type': content_type})
+        try:
+            with self.opener.open(req, timeout=12) as response:
+                raw = response.read(limit+1)
+                mime = response.headers.get_content_type()
+        except urllib.error.HTTPError as error:
+            raise StepError('VOICE_AI_SPEECH_HTTP_'+str(error.code)) from None
+        except OSError:
+            raise StepError('VOICE_AI_SPEECH_UNREACHABLE') from None
+        if not raw or len(raw)>limit:
+            raise StepError('VOICE_AI_INVALID_SPEECH')
+        return raw, mime
+
+    def transcribe(self, raw, language):
+        response, mime = self.speech_request('/api/robot/speech/transcribe?language='+language,
+                                            raw, 'audio/wav', 8192)
+        try:
+            value = json.loads(response)
+            text = value['text'].strip()
+        except (ValueError, AttributeError, KeyError, TypeError):
+            raise StepError('VOICE_AI_INVALID_SPEECH') from None
+        if mime!='application/json' or len(text)>4000:
+            raise StepError('VOICE_AI_INVALID_SPEECH')
+        if not text:
+            raise StepError('STT_NO_RELIABLE_SPEECH')
+        return text
+
+    def synthesize(self, text):
+        body = json.dumps({'text': text, 'language': 'vi'}, ensure_ascii=False).encode()
+        raw, mime = self.speech_request('/api/robot/speech/synthesize', body, 'application/json', MAX_WAV)
+        if mime not in ('audio/wav', 'audio/x-wav') or not raw.startswith(b'RIFF'):
+            raise StepError('VOICE_AI_INVALID_SPEECH')
+        return raw
 
     def detect_wake(self,pcm):
         req=urllib.request.Request(self.base+'/api/robot/wake',data=pcm,headers={
@@ -276,9 +312,29 @@ async def listen(player,start_timeout=8,max_seconds=15,threshold=.008):
     return raw.getvalue()
 
 
-async def say(player,text,log_transcripts=True):
+async def say(player,text,log_transcripts=True,ai=None):
     if log_transcripts:print('MAR:',text,flush=True)
-    await player.speak(dict(action='SPEAK',prompt_key='VOICE_CHAT',data=dict(text=text[:500],language_code='vi',volume=70,speed_wpm=150)))
+    text = text[:500]
+    if ai is not None:
+        try:
+            audio = await asyncio.to_thread(ai.synthesize,text)
+        except StepError as error:
+            logging.info('VOICE_TTS_FALLBACK code=%s',error.code)
+        else:
+            await player.play_wav(audio,volume=70)
+            return
+    await player.speak(dict(action='SPEAK',prompt_key='VOICE_CHAT',data=dict(text=text,language_code='vi',volume=70,speed_wpm=150)))
+
+
+async def transcribe(be,ai,raw,language):
+    if ai is not None:
+        try:
+            return await asyncio.to_thread(ai.transcribe,raw,language)
+        except StepError as error:
+            if error.code == 'STT_NO_RELIABLE_SPEECH':
+                raise
+            logging.info('VOICE_STT_FALLBACK code=%s',error.code)
+    return await asyncio.to_thread(be.transcribe,raw,language)
 
 
 async def wait_wake(port):
@@ -332,6 +388,9 @@ async def conversation(worker,config_path,start_now=True,once=True,max_turns=10,
     # History is independent of MQTT and motor execution.
     health=await asyncio.to_thread(ai.request,'/health')
     if health.get('state')!='READY':raise StepError('VOICE_AI_NOT_READY')
+    speech_ai = ai if health.get('direct_speech') is True else None
+    async def speak(text):
+        await say(player,text,log_transcripts,speech_ai)
     await asyncio.to_thread(history.recover)
     while True:
         if not start_now:await wait_for_wake(worker,ai)
@@ -345,7 +404,7 @@ async def conversation(worker,config_path,start_now=True,once=True,max_turns=10,
             initial_catalog=None
             candidates=catalog.get('endpoints',[])[:100]
             hospital_information_id=catalog.get('navigationSession',{}).get('hospitalInformationId')
-            await say(player,INTRO,log_transcripts)
+            await speak(INTRO)
             for _ in range(max_turns):
                 confirming=actions.pending is not None
                 timeout=worker.get('voice_chat',{}).get('confirmation_timeout_sec',20) if confirming else start_timeout
@@ -354,25 +413,25 @@ async def conversation(worker,config_path,start_now=True,once=True,max_turns=10,
                     if confirming and confirmation_retries<1:
                         confirmation_retries+=1
                         logging.info('VOICE_CONFIRMATION_RETRY: no speech captured')
-                        await say(player,'Tôi chưa nghe rõ xác nhận. Sau tiếng bíp, bạn nói xác nhận hoặc hủy.',log_transcripts)
+                        await speak('Tôi chưa nghe rõ xác nhận. Sau tiếng bíp, bạn nói xác nhận hoặc hủy.')
                         continue
                     break
                 confirmation_retries=0
                 received=utcnow()
                 turn_started=time.monotonic()
-                try:text=await asyncio.to_thread(be.transcribe,raw,stt_language)
+                try:text=await transcribe(be,speech_ai,raw,stt_language)
                 except StepError as error:
                     if error.code not in ('STT_NO_RELIABLE_SPEECH','STT_TRANSCRIPT_INVALID','VOICE_CAPTURE_IS_SILENT'):
                         raise
                     print('VOICE_RETRY:',error.code,flush=True)
-                    await say(player,'Tôi chưa nghe rõ. Bạn vui lòng nói lại sau tiếng bíp.',log_transcripts)
+                    await speak('Tôi chưa nghe rõ. Bạn vui lòng nói lại sau tiếng bíp.')
                     continue
                 finally:del raw
                 stt_done=time.monotonic()
                 if log_transcripts:print('USER:',text,flush=True)
                 request_id=None
                 ending=goodbye(text)
-                handled=None if ending else await asyncio.to_thread(actions.consume,text)
+                handled=None if ending else await actions.consume(text,speak)
                 if ending:
                     actions.pending=None;reply=GOODBYE
                     result=dict(intent='FAREWELL',confidence=1.,sources=[],end_session=True)
@@ -386,7 +445,8 @@ async def conversation(worker,config_path,start_now=True,once=True,max_turns=10,
                     if result.get('action'):
                         reply=await asyncio.to_thread(actions.prepare,result['action'],sid)
                 answer_done=time.monotonic()
-                await say(player,reply,log_transcripts)
+                if not dispatched:
+                    await speak(reply)
                 writer.record(text,reply,result,received,
                     'RESOLVED' if result.get('action') or request_id else 'EXECUTED',request_id)
                 logging.info('VOICE_TURN_TIMING stt_ms=%d answer_ms=%d playback_ms=%d confirming=%s',
@@ -395,7 +455,7 @@ async def conversation(worker,config_path,start_now=True,once=True,max_turns=10,
                 turns.extend([dict(role='user',content=text[:1000]),dict(role='assistant',content=reply[:1000])]);turns=turns[-8:]
                 if result.get('end_session'):ended=True;break
             else:print('VOICE_SESSION_MAX_TURNS',flush=True)
-            if not dispatched and not ended:await say(player,GOODBYE,log_transcripts)
+            if not dispatched and not ended:await speak(GOODBYE)
         except asyncio.CancelledError:
             status='CANCELLED';raise
         except BaseException:

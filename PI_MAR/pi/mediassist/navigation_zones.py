@@ -23,17 +23,21 @@ def rules(raw):
         limit=zone.get('speed_limit_mps')
         if kind=='SPEED' and (type(limit) not in (float,int) or not math.isfinite(limit) or limit<=0):
             raise StepError('INVALID_NAV_ZONE_SPEED')
-        result.append(dict(kind=kind,points=points,speed=limit))
+        result.append(dict(kind=kind,points=points,speed=limit,zone_id=zone.get('zone_id')))
     return result
 
 
-def distance(point, polygon):
+def signed_distance(point, polygon):
     x,y=point;inside=False;nearest=math.inf
     for (ax,ay),(bx,by) in zip(polygon,polygon[1:]+polygon[:1]):
         dx,dy=bx-ax,by-ay;t=max(0.,min(1.,((x-ax)*dx+(y-ay)*dy)/max(dx*dx+dy*dy,1e-20)))
         nearest=min(nearest,math.hypot(x-ax-t*dx,y-ay-t*dy))
         if (ay>y)!=(by>y) and x<(bx-ax)*(y-ay)/(by-ay)+ax:inside=not inside
-    return 0. if inside else nearest
+    return -nearest if inside else nearest
+
+
+def distance(point, polygon):
+    return max(0., signed_distance(point, polygon))
 
 
 def body_gap(pose,extent,polygon):

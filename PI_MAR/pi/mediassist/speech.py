@@ -64,7 +64,23 @@ class SpeechPlayer:
                             pass
                         await process.wait()
 
-    async def speak(self, params, playback_guard=None):
+    async def play_wav(self, raw, volume=100, playback_guard=None, on_playback_start=None):
+        if not self.cfg.get('enabled'):
+            raise StepError('SPEECH_NOT_ENABLED')
+        player = shutil.which('aplay')
+        if not player:
+            raise StepError('SPEECH_DEPENDENCY_MISSING', 'Install alsa-utils inside MentorPi')
+        from .cloud_speech import volume_wav
+        raw = await asyncio.to_thread(volume_wav, raw, volume)
+        device = audio_device(self.cfg)
+        async with self.lock:
+            if playback_guard is not None and not playback_guard():
+                raise StepError('NAVIGATION_GUIDANCE_EXPIRED')
+            if on_playback_start is not None:
+                on_playback_start()
+            await self.process([player, '-q', '-D', device, '-t', 'wav'], raw)
+
+    async def speak(self, params, playback_guard=None, on_playback_start=None):
         if not self.cfg.get('enabled'):
             raise StepError('SPEECH_NOT_ENABLED')
         engine = self.cfg.get('engine', 'espeak-ng')
@@ -93,6 +109,8 @@ class SpeechPlayer:
                     raise StepError('SPEECH_EMPTY_AUDIO')
                 if playback_guard is not None and not playback_guard():
                     raise StepError('NAVIGATION_GUIDANCE_EXPIRED')
+                if on_playback_start is not None:
+                    on_playback_start()
                 await self.process([player, '-q', '-D', device, wav])
         # Playback process completion is not a microphone verification of audibility.
         return {'completed': True, 'action': 'SPEAK', 'prompt_key': params['prompt_key'],

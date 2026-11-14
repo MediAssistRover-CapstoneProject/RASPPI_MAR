@@ -32,6 +32,9 @@ def camera_config(mapping):
     if camera['stream_backend'] not in ('python','web_video_server'):
         raise StepError('INVALID_CAMERA_STREAM_BACKEND')
     camera.setdefault('mqtt_preview_enabled',camera['stream_backend']!='web_video_server')
+    camera.setdefault('vendor_stream_type', 'mjpeg')
+    if camera['vendor_stream_type'] not in ('mjpeg', 'ros_compressed'):
+        raise StepError('INVALID_VENDOR_CAMERA_STREAM_TYPE')
     if type(camera['mqtt_preview_enabled']) is not bool:
         raise StepError('INVALID_CAMERA_CONFIG','mqtt_preview_enabled')
     if type(camera['enabled']) is not bool or not isinstance(camera['topic'],str) or not camera['topic'].startswith('/'):
@@ -109,6 +112,13 @@ def load(path):
     if (not isinstance(cfg.get("enabled_step_types"),list) or
         not set(cfg["enabled_step_types"]) <= {"MOVE","CONTROL_HARDWARE","EXECUTE_SENSING","WAIT","INTERACT"}):
         raise StepError("INVALID_ENABLED_STEPS")
+    commissioning_unlock = cfg.get("allow_commissioning_unlock", False)
+    if type(commissioning_unlock) is not bool or commissioning_unlock and (
+            cfg["unlock_policy"] != "STAFF_VERIFIED"
+            or "CONTROL_HARDWARE" not in cfg["enabled_step_types"]
+            or cfg["compartments"].get("CART_MAIN") != "cargo_lock"
+            or not hardware["servo"]["commissioned"]):
+        raise StepError("INVALID_COMMISSIONING_UNLOCK_CONFIG")
     speech=cfg.setdefault("speech", {"enabled": False, "device": "auto"})
     if (not isinstance(speech,dict) or type(speech.get("enabled")) is not bool
         or not isinstance(speech.get("device"),str) or not speech["device"]
@@ -143,10 +153,16 @@ def load(path):
         value=mapping[key]
         if type(value) not in (int,float) or not low<=value<=high:raise StepError('INVALID_SLAM_SESSION_CONFIG',key)
     mapping.setdefault('control_source','local')
-    if mapping['control_source'] not in ('local','mqtt','gamepad'):raise StepError('INVALID_MAPPING_CONTROL_SOURCE')
+    if mapping['control_source'] not in ('local','mqtt','gamepad','auto'):raise StepError('INVALID_MAPPING_CONTROL_SOURCE')
     from .gamepad import configuration as gamepad_configuration
     gamepad_configuration(mapping)
-    camera_config(mapping)
+    camera = camera_config(mapping)
+    if ai.get('restricted_zone') is not None:
+        from .patrol_sensing import configuration as restricted_zone_configuration
+        restricted_zone_configuration(ai, camera)
+    if ai.get('patrol_fall') is not None:
+        from .patrol_fall import configuration as fall_configuration
+        fall_configuration(ai, camera)
     mapping.setdefault("max_preview_rate_hz",0.2)
     mapping.setdefault("max_preview_bytes",131072)
     if type(mapping["max_preview_rate_hz"]) not in (int,float) or not 0.2 <= mapping["max_preview_rate_hz"] <= 1:

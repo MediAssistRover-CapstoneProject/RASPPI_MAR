@@ -97,10 +97,10 @@ class QualityGate:
         except KeyError:reasons.append('POSE_UNAVAILABLE')
         except (TypeError,ValueError):reasons.append('POSE_INVALID')
         # AMCL publishes after motion thresholds, not at every controller tick.
-        # Bridge an older correction with LIVE map TF, odom and stronger laser
+        # Bridge an older correction with live map TF, odom and fresh laser
         # agreement; never reuse a fixed robot pose or accept stale sensors.
         correction_held=established and sample.get('pose_age_sec',math.inf)>2.
-        scan_min=min(c['min_scan_match'],c['tracking_min_scan_match']) if established and not correction_held else c['min_scan_match']
+        scan_min=min(c['min_scan_match'],c['tracking_min_scan_match']) if established else c['min_scan_match']
         for key,minimum in (('scan_match',scan_min),('known_fraction',c['min_known_fraction']),('valid_beams',c['min_valid_beams'])):
             value=sample.get(key)
             if type(value) not in (int,float) or not math.isfinite(value) or value<minimum:reasons.append(key.upper()+'_LOW')
@@ -140,16 +140,26 @@ class QualityGate:
             # but does not prove that the established map hypothesis changed.
             # Keep its bounded recovery memory so fresh evidence can resume in
             # .5 s instead of repeating bootstrap until MOVE's 5 s hold expires.
-            # A small covariance threshold crossing during a turn still holds
-            # the wheels, but must not discard an established map hypothesis.
-            # Otherwise stationary AMCL's slower correction cadence can keep
-            # resetting bootstrap stability until MOVE's hold timeout expires.
-            # Large uncertainty, jumps, invalid covariance, TF/body/sensor faults
-            # still require full initialization. No uncertain pose authorizes motion.
-            if (metrics.get('xy_std_m',math.inf)<=1.25*c['max_xy_std_m']
-                    and metrics.get('yaw_std_rad',math.inf)<=1.25*c['max_yaw_std_rad']
-                    and sample.get('scan_match',0)>=c['min_scan_match']
-                    and sample.get('valid_beams',0)>=c['min_valid_beams']):
+            # A brief scan or scan-TF gap can coincide with a mild covariance
+            # spike. Keep recovery memory while withholding READY until fresh
+            # sensor and covariance evidence passes the checks above.
+            scan_unavailable = 'scan_match' not in metrics and (
+                'SCAN_AGE_SEC_STALE' in reasons or 'SCAN_TF_UNAVAILABLE' in reasons)
+            scan_supports_pose = (metrics.get('scan_match',0)>=c['min_scan_match']
+                                  and metrics.get('valid_beams',0)>=c['min_valid_beams'])
+            # A moderate turn covariance spike still withholds READY. Preserve
+            # the prior hypothesis only when fresh, aligned geometry supports
+            # it, so sparse AMCL publication cannot restart bootstrap forever.
+            strong_scan_support = (sample.get('tf_fresh') is True
+                and sample.get('amcl_tf_ready') is True
+                and metrics.get('scan_match',0)>=max(.75,c['min_scan_match'])
+                and sample.get('known_fraction',0)>=c['min_known_fraction']
+                and metrics.get('valid_beams',0)>=c['min_valid_beams']
+                and set(reasons)<={'AMCL_UNCERTAIN'})
+            recovery_covariance_ratio=1.5 if strong_scan_support else 1.25
+            if (metrics.get('xy_std_m',math.inf)<=recovery_covariance_ratio*c['max_xy_std_m']
+                    and metrics.get('yaw_std_rad',math.inf)<=recovery_covariance_ratio*c['max_yaw_std_rad']
+                    and (scan_supports_pose or scan_unavailable)):
                 transient.add('AMCL_UNCERTAIN')
             self.recovering=bool(self.had_lock and self.last_good_at is not None and 0<=now-self.last_good_at<=recovery_window
                                  and set(reasons)<=transient)

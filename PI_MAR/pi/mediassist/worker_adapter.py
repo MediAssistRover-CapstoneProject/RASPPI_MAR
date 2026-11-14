@@ -30,12 +30,31 @@ class WorkerAdapter(RosAdapter):
         from .speech import SpeechPlayer
         self.speech = SpeechPlayer(worker.get("speech", {}))
         self.mapping = None
+        self.navigation_manual = None
         if worker["mapping"]["enabled"]:
             from .mapping import MappingManager
             self.mapping = MappingManager(self,worker["mapping"])
+        elif (worker.get('navigation_session') and
+              not worker.get('navigation_runtime', {}).get('localization_only') and
+              worker['mapping']['control_source'] in ('auto', 'gamepad')):
+            from .manual_drive import NavigationManual
+            self.navigation_manual = NavigationManual(self, worker)
         from std_msgs.msg import String
         if worker["ai"]["enabled"]:
             self.node.create_subscription(String, worker["ai"]["topic"], self._ai_sample, 10)
+        self.restricted_zone_observer = None
+        if worker['ai'].get('restricted_zone'):
+            from .patrol_sensing import RestrictedZoneObserver
+            self.restricted_zone_observer = RestrictedZoneObserver(
+                self, worker['ai']['restricted_zone'], worker['mapping']['camera']['topic'])
+        self.patrol_fall_observer = None
+        if worker.get('navigation_session') and worker['ai'].get('patrol_fall', {}).get('enabled'):
+            from .patrol_fall import PatrolFallObserver, configuration
+            camera = worker['mapping']['camera']
+            try:
+                self.patrol_fall_observer = PatrolFallObserver(self, configuration(worker['ai'], camera), camera['topic'])
+            except (OSError, StepError):
+                logging.warning('PATROL_FALL_INIT_FAILED')
 
     def _ai_sample(self, msg):
         try:
@@ -161,17 +180,14 @@ class WorkerAdapter(RosAdapter):
         if kind == "MOVE":
             return await self.execute(kind,p,meta)
         if kind == "CONTROL_HARDWARE":
+            from .step_contract import hardware_authorization_mode
             action = "LOCK" if p["action"] == "LOCK_COMPARTMENT" else "UNLOCK"
-            mode = 'DEVICE_COMMAND' if action == 'LOCK' else self.worker['unlock_policy']
-            if action == 'UNLOCK' and mode not in ('COMMISSIONING_ONLY','STAFF_VERIFIED'):
-                raise StepError('STAFF_VERIFICATION_REQUIRED')
+            mode = hardware_authorization_mode(step, self.worker)
             if mode == 'STAFF_VERIFIED':
-                from .step_contract import require_current_unlock_grant
-                grant = require_current_unlock_grant(p)
                 if (not self.staff_unlock_ready or self.pwm_read_client is None
                         or not self.pwm_read_client.service_is_ready() or not self.stationary_for_handover()):
                     raise StepError('STAFF_UNLOCK_NOT_READY')
-                meta['unlock_valid_until'] = grant['valid_until']
+                meta['unlock_valid_until'] = p['authorization']['valid_until']
             data = await self.execute(kind,{"device_id":"cargo_lock","action":action},meta)
             if mode == 'STAFF_VERIFIED':
                 if await self.read_servo_pwm() != data['position_raw']:
@@ -181,6 +197,22 @@ class WorkerAdapter(RosAdapter):
                 "action":p["action"],"authorization_mode":mode}
         if kind == "EXECUTE_SENSING":
             task = p["sensing_type"]
+            if p.get('fall_detection'):
+                if self.patrol_fall_observer is None:
+                    raise StepError('PATROL_FALL_NOT_READY')
+                if task == 'PATROL_FALL':
+                    frames = await self.patrol_fall_observer.observe(step)
+                    return {'sensing_type': task, 'metrics': {'frames': frames},
+                            'captured_at': utcnow(), 'evidence_ref': None}
+                tasks = (asyncio.create_task(self.sense_zone(p)),
+                         asyncio.create_task(self.patrol_fall_observer.observe(step)))
+                try:
+                    result, _ = await asyncio.gather(*tasks)
+                    return result
+                finally:
+                    for item in tasks:
+                        if not item.done():item.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
             if task == "AUDIO_LOOPBACK":
                 from .voice_capture import loopback
                 return await loopback(self.speech,p)
@@ -196,18 +228,24 @@ class WorkerAdapter(RosAdapter):
                 if task == "SIDE_CLEARANCE" and not (data["left_fresh"] and data["right_fresh"]):
                     raise StepError("RANGE_NOT_READY")
                 return {"sensing_type":task,"metrics":data,"captured_at":utcnow(),"evidence_ref":None}
-            started = time.monotonic()
-            window = p.get("window_sec",0)
-            while True:
-                with self.ai_lock:
-                    item = self.ai_observations.get((task,p["zone_id"]))
-                if item:
-                    data, received = item
-                    captured = parse_timestamp(data["captured_at"])
-                    if ((received >= started or window == 0) and time.monotonic()-received <= self.worker["ai"]["max_age_sec"]
-                        and 0 <= (datetime.now(timezone.utc)-captured).total_seconds() <= self.worker["ai"]["max_age_sec"]):
-                        return data
-                if time.monotonic()-started >= window:
-                    raise StepError("AI_DATA_UNAVAILABLE")
-                await asyncio.sleep(0.05)
+            return await self.sense_zone(p)
         raise StepError("SERVER_STEP_REQUIRED")
+
+    async def sense_zone(self, p):
+        task = p['sensing_type']
+        if task == 'RESTRICTED_ZONE' and self.restricted_zone_observer is not None:
+            return await self.restricted_zone_observer.observe(p)
+        started = time.monotonic()
+        window = p.get('window_sec', 0)
+        while True:
+            with self.ai_lock:
+                item = self.ai_observations.get((task, p['zone_id']))
+            if item:
+                data, received = item
+                captured = parse_timestamp(data['captured_at'])
+                if ((received >= started or window == 0) and time.monotonic()-received <= self.worker['ai']['max_age_sec']
+                        and 0 <= (datetime.now(timezone.utc)-captured).total_seconds() <= self.worker['ai']['max_age_sec']):
+                    return data
+            if time.monotonic()-started >= window:
+                raise StepError('AI_DATA_UNAVAILABLE')
+            await asyncio.sleep(.05)

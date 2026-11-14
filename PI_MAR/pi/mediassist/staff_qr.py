@@ -144,10 +144,41 @@ class StaffQrScanner:
         except (ValueError, TypeError, KeyError, AttributeError):
             return None
 
-    def close_preview(self):
-        if self.preview is not None:
-            preview, self.preview = self.preview, None
-            self.worker.adapter.node.destroy_subscription(preview.subscription)
+    async def set_preview(self, enabled):
+        adapter = self.worker.adapter
+        executor = adapter.node.executor
+        if executor is None or not adapter.thread.is_alive():
+            if enabled:
+                raise StepError('QR_ROS_EXECUTOR_UNAVAILABLE')
+            self.preview = None
+            return
+
+        caller_waiting = True
+
+        def change_subscription():
+            # The ROS executor owns the subscription and its QoS events. Removing
+            # them from asyncio can invalidate handles while ROS builds a wait set.
+            try:
+                if enabled and caller_waiting and self.preview is None:
+                    self.preview = CameraPreview(adapter, self.camera, lambda: self.preview is not None)
+                elif not enabled and self.preview is not None:
+                    preview, self.preview = self.preview, None
+                    adapter.node.destroy_subscription(preview.subscription)
+            except Exception as error:
+                # Report camera errors in the QR task without stopping ROS callbacks.
+                return error
+            return None
+
+        task = executor.create_task(change_subscription)
+        try:
+            error = await adapter.future(task, timeout=2.)
+        finally:
+            # A queued open is obsolete after cancellation or timeout. An
+            # already running open is cleaned up by the scanner's final close.
+            # The queued close remains valid even if its caller stops waiting.
+            caller_waiting = False
+        if error is not None:
+            raise error
 
     async def stop_hint(self):
         if self.hint_task is not None:
@@ -182,7 +213,7 @@ class StaffQrScanner:
             while True:
                 window = self.window(session)
                 if window != selected:
-                    self.close_preview()
+                    await self.set_preview(False)
                     await self.stop_hint()
                     selected = window
                     last_digest = None
@@ -197,7 +228,7 @@ class StaffQrScanner:
                     await asyncio.sleep(.15)
                     continue
                 if self.preview is None:
-                    self.preview = CameraPreview(self.worker.adapter, self.camera, lambda: self.preview is not None)
+                    await self.set_preview(True)
                     logging.info('STAFF_QR_SCAN_READY job=%s step=%s', *window)
                 sample = self.preview.take_sample(.5)
                 if sample is None or time.monotonic() < next_submit:
@@ -237,10 +268,10 @@ class StaffQrScanner:
                                 getattr(exc, 'code', type(exc).__name__),round((time.monotonic()-submitted)*1000))
                         else:
                             verified = window
-                            self.close_preview()
                             logging.info('STAFF_QR_VERIFIED job=%s step=%s decode_ms=%.2f verify_ms=%d window_elapsed_ms=%d',
                                 *window,metrics['decode_ms'],round((time.monotonic()-submitted)*1000),
                                 round((time.monotonic()-window_started)*1000))
+                            await self.set_preview(False)
                 elif metrics.get('hint') and self.window(session) == window:
                     next_hint = time.monotonic() + self.guidance['repeat_sec']
                     self.hint_task = asyncio.create_task(self.play_hint(session, window, metrics['hint']))
@@ -250,5 +281,7 @@ class StaffQrScanner:
         except Exception as exc:
             logging.warning('STAFF_QR_SCAN_UNAVAILABLE %s', type(exc).__name__)
         finally:
-            self.close_preview()
-            await self.stop_hint()
+            try:
+                await self.set_preview(False)
+            finally:
+                await self.stop_hint()

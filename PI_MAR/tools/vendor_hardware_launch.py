@@ -43,4 +43,7 @@ def include(context,root):
                 else Path('/home/ubuntu/ros2_ws/src/driver/controller'))/'launch/controller.launch.py'
     overlay=prepare(root,original,controller)
     return [IncludeLaunchDescription(PythonLaunchDescriptionSource(str(overlay)),launch_arguments={
-        'sim':'false','robot_name':'/','master_name':'/','use_joy':'false'}.items())]
+        'sim':'false','robot_name':'/','master_name':'/','use_joy':'false',
+        # The vendor robot launch includes the camera unconditionally. This
+        # switch controls whether its separate LiDAR launch is skipped.
+        'use_depth_camera':'false'}.items())]

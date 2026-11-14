@@ -14,8 +14,10 @@ def camera_argv(python, config, camera):
 def stream_path(camera):
     params = {'topic': camera['topic']}
     if camera['stream_backend'] == 'web_video_server':
-        params.update(type='mjpeg', width=camera['stream_max_width'],
-                      height=camera['stream_max_height'], quality=camera['stream_jpeg_quality'])
+        params['type'] = camera.get('vendor_stream_type', 'mjpeg')
+        if params['type'] == 'mjpeg':
+            params.update(width=camera['stream_max_width'], height=camera['stream_max_height'],
+                          quality=camera['stream_jpeg_quality'])
     # The installed Hiwonder HTTP parser keeps query values verbatim. Encoding
     # topic slashes as %2F produces an empty MJPEG response instead of images.
     return '/stream?' + urlencode(params, safe='/' if camera['stream_backend'] == 'web_video_server' else '')

@@ -8,6 +8,7 @@ from .contracts import StepError, canonical, parse_timestamp
 CONTRACT = "MAR-STEP-2"
 SUBPROTOCOL = "mar-step-v1"
 VERSION = "0.14.4"
+COMMISSIONING_UNLOCK_CAPABILITY = "commissioning-unlock-v1"
 UUID_SCHEMA = {"type": "string", "format": "uuid"}
 
 def obj(properties, required=None):
@@ -34,8 +35,9 @@ PARAMS = {
             "valid_until": {"type": "string", "format": "date-time"}})},
         ["compartment_id", "action"]),
     "EXECUTE_SENSING": obj({"sensing_type": text(["ROBOT_HEALTH", "SIDE_CLEARANCE",
-                            "CROWD_DENSITY", "RESTRICTED_ZONE"]),
-        "zone_id": UUID_SCHEMA, "window_sec": {"type": "number", "minimum": 0, "maximum": 30}},
+                            "CROWD_DENSITY", "RESTRICTED_ZONE", "PATROL_FALL"]),
+        "zone_id": UUID_SCHEMA, "window_sec": {"type": "number", "minimum": 0, "maximum": 30},
+        "fall_detection": {"type": "boolean"}},
         ["sensing_type"]),
     "WAIT": obj({"wait_type": text(["DURATION", "EVENT"]),
         "duration_sec": {"type": "number", "minimum": 1, "maximum": 3600},
@@ -84,6 +86,7 @@ COMMAND_SCHEMA['properties']['navigationContext']=obj({
     'initialization_revision':{'type':'integer','minimum':1},'profile_hash':{'type':'string','pattern':'^[a-f0-9]{64}$'}})
 
 COMMAND_SCHEMA['properties']['startMode']={'const':'ACCEPT_AND_START'}
+COMMAND_SCHEMA['properties']['commissioningUnlock']={'const':True}
 COMMAND_SCHEMA['allOf']=[{'if':{'required':['startMode']},'then':{
     'required':['step','navigationContext'],
     'properties':{'commandType':{'const':'EXECUTE_STEP'},'step':{'properties':{'stepType':{'const':'MOVE'}}}}}}]
@@ -110,10 +113,40 @@ def require_current_unlock_grant(params):
         raise StepError('STAFF_VERIFICATION_EXPIRED')
     return grant
 
+
+def hardware_authorization_mode(step, cfg):
+    params = step["params"]
+    has_grant = "authorization" in params
+    commissioning = step.get("commissioningUnlock") is True
+    if params["action"] == "LOCK_COMPARTMENT":
+        if has_grant:
+            raise StepError("UNEXPECTED_STAFF_VERIFICATION")
+        if commissioning:
+            raise StepError("INVALID_COMMISSIONING_UNLOCK")
+        return "DEVICE_COMMAND"
+    policy = cfg["unlock_policy"]
+    if commissioning:
+        if has_grant or policy != "STAFF_VERIFIED" or cfg.get("allow_commissioning_unlock") is not True:
+            raise StepError("COMMISSIONING_UNLOCK_NOT_ALLOWED")
+        return "COMMISSIONING_ONLY"
+    if policy == "STAFF_VERIFIED":
+        require_current_unlock_grant(params)
+        return policy
+    if policy == "COMMISSIONING_ONLY" and not has_grant:
+        return policy
+    raise StepError("STAFF_VERIFICATION_REQUIRED")
+
+
 def validate_command(command, robot_id, check_expiry=True):
     validate(command, COMMAND_SCHEMA)
     if command["robotId"] != robot_id:
         raise StepError("WRONG_ROBOT")
+    if command.get("commissioningUnlock"):
+        step = command.get("step", {})
+        params = step.get("params", {})
+        if (command["commandType"] != "EXECUTE_STEP" or step.get("stepType") != "CONTROL_HARDWARE"
+                or params.get("action") != "UNLOCK_COMPARTMENT" or "authorization" in params):
+            raise StepError("INVALID_COMMISSIONING_UNLOCK")
     if check_expiry and expiry(command["expiresAt"]) <= datetime.now(timezone.utc):
         raise StepError("COMMAND_EXPIRED")
 
@@ -141,12 +174,7 @@ def validate_step(step, cfg, hardware):
     if kind == "CONTROL_HARDWARE":
         if p["compartment_id"] not in cfg["compartments"]:
             raise StepError("COMPARTMENT_NOT_CONFIGURED")
-        if p["action"] == "LOCK_COMPARTMENT":
-            if 'authorization' in p:raise StepError('UNEXPECTED_STAFF_VERIFICATION')
-        elif cfg["unlock_policy"] == "STAFF_VERIFIED":
-            require_current_unlock_grant(p)
-        elif cfg["unlock_policy"] != "COMMISSIONING_ONLY" or 'authorization' in p:
-            raise StepError("STAFF_VERIFICATION_REQUIRED")
+        hardware_authorization_mode(step, cfg)
     if kind == "WAIT":
         if set(p) != {"wait_type","duration_sec"} or p["wait_type"] != "DURATION":
             raise StepError("INVALID_WAIT_PARAMS")
@@ -178,6 +206,15 @@ def validate_step(step, cfg, hardware):
             raise StepError("ZONE_REQUIRED")
         if ai and not cfg["ai"]["enabled"]:
             raise StepError("AI_PROVIDER_NOT_CONFIGURED")
+        fall_only = p['sensing_type'] == 'PATROL_FALL'
+        if fall_only and (p.get('fall_detection') is not True or 'zone_id' in p):
+            raise StepError('PATROL_FALL_PARAMS_INVALID')
+        if p.get('fall_detection') and (not (ai or fall_only) or not cfg.get('navigation_session')
+                or not cfg['ai'].get('patrol_fall', {}).get('enabled') or p.get('window_sec', 0) < 3.):
+            raise StepError('PATROL_FALL_NOT_READY')
+        if (p['sensing_type'] == 'RESTRICTED_ZONE' and cfg['ai'].get('restricted_zone')
+                and p.get('window_sec', 0) < 1.):
+            raise StepError('AI_OBSERVATION_WINDOW_REQUIRED')
         if step["timeoutSec"] < p.get("window_sec", 0) + 1:
             raise StepError("TIMEOUT_TOO_SHORT")
     return step

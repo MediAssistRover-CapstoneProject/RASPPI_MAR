@@ -55,6 +55,19 @@ class SweepTests(unittest.TestCase):
         self.assertTrue(maneuver_clear(grid,points,BODY,[]))
         self.assertFalse(maneuver_clear(grid,points,BODY,[(.82,1.14)]))
 
+    def test_diagonal_can_clear_two_close_obstacles_before_turning(self):
+        grid=dict(width=100,height=100,resolution=.02,origin=[0.,0.,0.],data=bytes(10000))
+        origin=dict(x_m=1.,y_m=1.,yaw_rad=0.)
+        obstacles=[(1.119,1.),(1.,.904)]
+        for distance,lateral in ((.06,0.),(-.06,0.),(0.,.06),(0.,-.06)):
+            points=maneuver_points(origin,distance,.35,lateral)
+            self.assertFalse(maneuver_clear(grid,points,BODY,obstacles))
+            self.assertFalse(padding_escape_clear(grid,points,BODY,obstacles))
+        diagonal=.06/math.sqrt(2)
+        points=maneuver_points(origin,diagonal,.35,diagonal)
+        self.assertTrue(padding_escape_clear(grid,points,BODY,obstacles))
+        self.assertFalse(padding_escape_clear(grid,points,BODY,obstacles+[(.75,1.05)]))
+
     def test_gate_only_triggers_escape_for_a_confirmed_collision_stop(self):
         gate=dict(reason='TURN_ENVELOPE_BLOCKED',applied_velocity=[0.,0.,0.])
         self.assertEqual(blocked_motion_reason({'gate':{'value':gate}}),'TURN_ENVELOPE_BLOCKED')
@@ -346,7 +359,36 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         a=self.adapter();a._plan=AsyncMock(side_effect=StepError('PATH_UNAVAILABLE'))
         with self.assertRaises(StepError):await a._plan_with_cargo_recovery({},'A',{})
         a._cargo_reverse.assert_not_awaited();a._cargo_rotate.assert_not_awaited()
-        self.assertLessEqual(a._plan.await_count,7)
+        self.assertLessEqual(a._plan.await_count,1+8+4)
+
+    async def test_all_short_escape_directions_get_a_probe(self):
+        a=self.adapter()
+        async def planner(p,endpoint_id,meta,start_override=None,probe=False):
+            if not probe:return 'actual'
+            if start_override['x_m']<0 and start_override['y_m']<0:return 'virtual'
+            raise StepError('PATH_UNAVAILABLE')
+        a._plan=AsyncMock(side_effect=planner)
+        result=await a._plan_with_cargo_recovery({},'A',{},force_escape=True)
+        self.assertEqual(result,'actual')
+        self.assertEqual(a._plan.await_count,9)
+        distance,lateral,_=a._cargo_translate.await_args.args
+        self.assertAlmostEqual(distance,.06/math.sqrt(2))
+        self.assertAlmostEqual(lateral,-.06/math.sqrt(2))
+
+    async def test_spin_collision_repositions_once_then_retries_arrival(self):
+        a=self.adapter()
+        a.cargo_escape_used=True
+        a.cfg['endpoints']['A']=dict(x_m=0.,y_m=0.,yaw_rad=.35)
+        a._wait_arrival_pose=AsyncMock()
+        a._finish_heading=AsyncMock(side_effect=[StepError('FINAL_ALIGNMENT_BLOCKED'),True])
+        a._cargo_clear=lambda p,d,y,**kw:(
+            (d==0. and kw['lateral']==0.) or (d>0. and kw['lateral']>0.),
+            maneuver_points(p,d,y,**kw))
+        self.assertTrue(await a._align_arrival_heading({},'A'))
+        self.assertEqual(a._finish_heading.await_count,2)
+        a._cargo_translate.assert_awaited_once()
+        a._wait_arrival_pose.assert_awaited_once_with('A')
+        self.assertTrue(a.cargo_arrival_reposition_used)
 
     async def test_reverse_and_rotate_once_then_replan_actual_pose(self):
         a=self.adapter();a._plan=AsyncMock(side_effect=[StepError('PATH_UNAVAILABLE'),'virtual','actual'])
@@ -366,17 +408,29 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_final_heading_checks_and_retreats_before_issuing_spin(self):
         a=self.adapter();a.cfg['endpoints']['A']=dict(x_m=0.,y_m=0.,yaw_rad=1.)
-        a._cargo_clear=lambda p,d,y,**kw:(d>0.,maneuver_points(p,d,y,**kw))
+        origin=a._cargo_pose.return_value
+        a._cargo_pose.side_effect=[origin,({},dict(x_m=-.06,y_m=0.,yaw_rad=0.))]
+        a._cargo_clear=lambda p,d,y,**kw:(d>0. or (p['x_m']<0. and kw['turn_delta']<0.),maneuver_points(p,d,y,**kw))
         await a._cargo_prepare_final_heading({},'A')
         a._cargo_reverse.assert_awaited_once_with(.06,{})
         a._cargo_rotate.assert_not_awaited()
-        self.assertTrue(a.cargo_escape_used)
+        self.assertTrue(a.cargo_arrival_reposition_used)
+        self.assertEqual(a.cargo_final_turn_sign,-1.)
+
+    async def test_final_heading_does_not_spin_when_actual_turn_sweep_is_blocked(self):
+        a=self.adapter();a.cfg['endpoints']['A']=dict(x_m=0.,y_m=0.,yaw_rad=1.)
+        a._finish_heading=AsyncMock()
+        a._cargo_clear=lambda p,d,y,**kw:(d>0.,maneuver_points(p,d,y,**kw))
+        with self.assertRaisesRegex(StepError,'FINAL_ALIGNMENT_BLOCKED'):
+            await a._align_arrival_heading({},'A')
+        a._cargo_reverse.assert_awaited_once_with(.06,{})
+        a._finish_heading.assert_not_awaited()
 
     async def test_final_retreat_must_not_leave_arrival_tolerance_or_repeat(self):
         for repeated in (False,True):
             a=self.adapter();a.cfg['endpoints']['A']=dict(x_m=.08,y_m=0.,yaw_rad=1.)
             a._cargo_clear=lambda p,d,y,**kw:(d>0.,maneuver_points(p,d,y,**kw))
-            a.cargo_escape_used=repeated
+            a.cargo_arrival_reposition_used=repeated
             with self.assertRaises(StepError):await a._cargo_prepare_final_heading({},'A')
             a._cargo_reverse.assert_not_awaited()
 
