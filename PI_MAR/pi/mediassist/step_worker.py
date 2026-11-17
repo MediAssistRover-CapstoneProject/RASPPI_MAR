@@ -24,6 +24,7 @@ class StepWorker:
         self.outbox_wakeup = asyncio.Event()
         self.ack_waiters = {}
         self.staff_qr = None
+        self.staff_face = None
         self.navigation_audio = {}
         self.voice_publisher=None
         from .voice_runtime import enabled,StatePublisher
@@ -39,13 +40,16 @@ class StepWorker:
     def advertised_capabilities(self):
         from .staff_qr import CAPABILITIES
         values=[value for value in self.hardware['capabilities']
-                if value not in CAPABILITIES and value not in (COMMISSIONING_UNLOCK_CAPABILITY, 'PATROL_FALL')]
+                if value not in CAPABILITIES and value not in (COMMISSIONING_UNLOCK_CAPABILITY, 'PATROL_FALL', 'staff-face-verify-v1')]
         if self.cfg.get('allow_commissioning_unlock') is True:
             values.append(COMMISSIONING_UNLOCK_CAPABILITY)
         if self.cfg.get('navigation_session') and 'MOVE' in self.cfg.get('enabled_step_types',[]) and 'move-start-commit-v1' not in values:
             values.append('move-start-commit-v1')
         if self.staff_qr is not None:
             values.extend(CAPABILITIES)
+        if getattr(self, 'staff_face', None) is not None:
+            values.extend(['staff-face-verify-v1', 'secure-unlock-v1'])
+        values=list(dict.fromkeys(values))
         if getattr(self.adapter, 'patrol_fall_observer', None) is not None:
             values.append('PATROL_FALL')
         return values
@@ -414,6 +418,7 @@ class StepWorker:
         self.sent.clear()
         unlock_policy = self.cfg['unlock_policy']
         self.staff_qr = None
+        self.staff_face = None
         if unlock_policy == 'STAFF_VERIFIED':
             try:
                 from .staff_qr import StaffQrScanner
@@ -421,7 +426,14 @@ class StepWorker:
                     self.staff_qr = StaffQrScanner(self)
             except Exception as exc:
                 logging.warning('STAFF_UNLOCK_UNAVAILABLE code=%s', getattr(exc, 'code', type(exc).__name__))
-            if self.staff_qr is None:
+            if self.cfg.get('staff_face_enabled', False):
+                try:
+                    from .staff_face import StaffFaceScanner
+                    if await self.adapter.probe_staff_unlock():
+                        self.staff_face = StaffFaceScanner(self)
+                except Exception as exc:
+                    logging.warning('STAFF_FACE_UNAVAILABLE code=%s', type(exc).__name__)
+            if self.staff_qr is None and self.staff_face is None:
                 unlock_policy = 'DISABLED'
                 self.adapter.staff_unlock_ready = False
                 logging.warning('STAFF_UNLOCK_DISABLED: camera and PWM readback must be ready')
@@ -443,6 +455,7 @@ class StepWorker:
         logging.info("BE MQTT session ready: %s",self.cfg["robot_id"])
         outgoing=asyncio.create_task(self.publish(send))
         scanner = asyncio.create_task(self.staff_qr.run(ws)) if self.staff_qr is not None else None
+        face_scanner = asyncio.create_task(self.staff_face.run(ws)) if self.staff_face is not None else None
         try:
             while True:
                 incoming=asyncio.create_task(ws.recv())
@@ -494,6 +507,10 @@ class StepWorker:
             if scanner is not None:
                 scanner.cancel()
                 await asyncio.gather(scanner, return_exceptions=True)
+            if face_scanner is not None:
+                face_scanner.cancel()
+                await asyncio.gather(face_scanner, return_exceptions=True)
+            self.staff_face = None
             self.staff_qr = None
             await asyncio.gather(outgoing,return_exceptions=True)
 

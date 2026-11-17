@@ -47,13 +47,13 @@ class SessionClient:
         self.origin=uri.scheme+'://'+uri.netloc
         self.opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect(),
             urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=self.auth.get('upload_ca_file'))))
-    def request(self,path,body=None,limit=65536):
+    def request(self,path,body=None,limit=65536,timeout=4):
         for attempt in range(2):
             token=upload_token(self.auth,self.cfg['robot_id'],force=attempt==1)
             req=urllib.request.Request(self.origin+path,data=json.dumps(body).encode() if body is not None else None,
                 headers={'Authorization':'Bearer '+token,**({'Content-Type':'application/json'} if body is not None else {})})
             try:
-                with self.opener.open(req,timeout=4) as response:raw=response.read(limit+1)
+                with self.opener.open(req,timeout=timeout) as response:raw=response.read(limit+1)
                 if len(raw)>limit:raise StepError('SESSION_RESPONSE_TOO_LARGE')
                 return raw
             except urllib.error.HTTPError as error:

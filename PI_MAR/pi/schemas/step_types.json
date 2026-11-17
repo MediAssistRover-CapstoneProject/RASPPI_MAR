@@ -321,7 +321,8 @@
         "method": {
           "enum": [
             "QR_CODE",
-            "STAFF_CONFIRMATION"
+            "STAFF_CONFIRMATION",
+            "FACE_VERIFICATION"
           ]
         },
         "required_permission": {
