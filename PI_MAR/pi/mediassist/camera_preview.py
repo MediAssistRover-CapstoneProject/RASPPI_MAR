@@ -47,11 +47,13 @@ def encode_frame(sample, cfg):
     return {**frame, 'encoding':'jpeg-base64', 'data':base64.b64encode(jpeg).decode('ascii')}
 
 class CameraPreview:
-    def __init__(self,adapter,cfg,active,on_receive=None):
+    def __init__(self,adapter,cfg,active,on_receive=None,retain_header=False):
         from sensor_msgs.msg import Image
         from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
         self.cfg,self.active=cfg,active
         self.on_receive=on_receive
+        self.retain_header = retain_header
+        self.sample_header = None
         self.source_clock=adapter.node.get_clock() if hasattr(adapter.node,'get_clock') else None
         self.lock=threading.Lock();self.sample=None;self.last_sample=0.;self.revision=0;self.error=None
         qos=QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT,durability=DurabilityPolicy.VOLATILE)
@@ -63,10 +65,10 @@ class CameraPreview:
         if not self.cfg.get('sample_every_frame',False) and now-self.last_sample<1/self.cfg['rate_hz']:return
         self.last_sample=now
         channels = PIXEL_CHANNELS.get(msg.encoding)
-        if (not channels or not 0 < msg.width * msg.height <= 4000000
+        if (not channels or not 0 < msg.width * msg.height <= self.cfg.get('source_max_pixels', 4000000)
                 or msg.encoding in YUV422_ENCODINGS and msg.width % 2
                 or msg.step < msg.width * channels or len(msg.data) != msg.step * msg.height
-                or len(msg.data) > 16000000):
+                or len(msg.data) > self.cfg.get('source_max_bytes', 16000000)):
             if self.error!='CAMERA_FORMAT_UNSUPPORTED':logging.warning('Camera preview: unsupported color encoding or size: %s',msg.encoding)
             self.error='CAMERA_FORMAT_UNSUPPORTED';return
         captured=utcnow()
@@ -83,14 +85,21 @@ class CameraPreview:
                 return
             captured=datetime.fromtimestamp(stamp/1e9,timezone.utc).isoformat()
         sample=(bytes(msg.data),msg.width,msg.height,msg.step,msg.encoding,captured,now)
-        with self.lock:self.sample=sample
+        with self.lock:
+            self.sample=sample
+            self.sample_header=header if getattr(self, 'retain_header', False) else None
         self.error=None
         observer=getattr(self,'on_receive',None)
         if observer:observer(msg.width,msg.height,now)
 
     def take_sample(self,max_age):
-        with self.lock:sample=self.sample;self.sample=None
-        return sample if sample and time.monotonic()-sample[-1]<=max_age else None
+        return self.take_sample_with_header(max_age)[0]
+
+    def take_sample_with_header(self, max_age):
+        with self.lock:
+            sample, header = self.sample, getattr(self, 'sample_header', None)
+            self.sample = self.sample_header = None
+        return (sample, header) if sample and time.monotonic()-sample[-1]<=max_age else (None, None)
 
     async def preview(self,session_id):
         sample=self.take_sample(3)

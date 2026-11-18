@@ -141,6 +141,69 @@ class StepStore:
     def blocked(self):
         return bool(self.db.execute("SELECT 1 FROM worker_steps WHERE status='RECOVERY_REQUIRED' LIMIT 1").fetchone())
 
+    def stopped_move_settlements(self):
+        pending = {event.get('jobStepId') for event in self.pending()}
+        commands = {}
+        for (body,) in self.db.execute('SELECT body FROM worker_outbox ORDER BY seq'):
+            event = json.loads(body)
+            payload = event.get('payload', {})
+            command_id = payload.get('commandId')
+            if (event.get('messageType') == 'COMMAND_ACK' and payload.get('commandType') == 'EXECUTE_STEP'
+                    and isinstance(command_id,str) and command_id == event.get('correlationId')):
+                key = (event.get('jobId'),event.get('jobStepId'),event.get('operationKey'))
+                commands.setdefault(key,set()).add(command_id)
+        candidates = []
+        for sid, raw, status, result in self.db.execute(
+                "SELECT step_id,body,status,result FROM worker_steps "
+                "WHERE status IN ('RECOVERY_REQUIRED','FAILED','TIMED_OUT','CANCELLED')"):
+            if status != 'RECOVERY_REQUIRED' and sid not in pending:
+                continue
+            step = json.loads(raw)
+            evidence = json.loads(result) if result else {}
+            if step.get('stepType') != 'MOVE' or evidence.get('physicalStopConfirmed') is not True:
+                continue
+            command_ids = commands.get((step['jobId'],sid,step['operationKey']),set())
+            if len(command_ids) == 1:
+                candidates.append(dict(jobId=step['jobId'],jobStepId=sid,
+                    commandId=next(iter(command_ids)),operationKey=step['operationKey']))
+        return candidates
+
+    def settle_cancelled_move(self, candidate, receipt):
+        """Retire a stopped MOVE only after BE confirms its matching terminal outcome."""
+        from uuid import UUID
+        if (not isinstance(receipt, dict) or receipt.get('robotId') != self.robot_id
+                or any(receipt.get(key) != candidate[key] for key in
+                       ('jobId','jobStepId','commandId','operationKey'))
+                or receipt.get('status') not in ('CANCELLED','FAILED') or receipt.get('physicalStopConfirmed') is not True):
+            raise StepError('CANCEL_SETTLEMENT_IDENTITY_MISMATCH')
+        try:
+            UUID(receipt['receiptId'])
+            if receipt['status']=='FAILED':
+                from .contracts import parse_timestamp
+                if receipt.get('reconciliationOutcome')!='CONFIRM_FAILED':
+                    raise ValueError()
+                parse_timestamp(receipt['reconciledAt'])
+        except (KeyError,ValueError,TypeError,AttributeError):
+            raise StepError('CANCEL_SETTLEMENT_RECEIPT_INVALID') from None
+        with self.db:
+            if candidate not in self.stopped_move_settlements():
+                raise StepError('CANCEL_SETTLEMENT_LOCAL_STATE_CHANGED')
+            raw, status = self.db.execute('SELECT result,status FROM worker_steps WHERE step_id=?',
+                                         (candidate['jobStepId'],)).fetchone()
+            result = {**json.loads(raw),'status':receipt['status'],'previousStatus':status,
+                      'settlement':receipt}
+            self.db.execute('UPDATE worker_steps SET status=?,result=? WHERE step_id=?',
+                            (receipt['status'],canonical(result),candidate['jobStepId']))
+            superseded = []
+            for mid, body in self.db.execute(
+                    'SELECT message_id,body FROM worker_outbox WHERE acked=0 AND superseded_by IS NULL'):
+                event = json.loads(body)
+                if (event.get('jobId') == candidate['jobId'] and event.get('jobStepId') == candidate['jobStepId']
+                        and event.get('operationKey') == candidate['operationKey']):
+                    superseded.append((receipt['receiptId'],mid))
+            self.db.executemany('UPDATE worker_outbox SET superseded_by=? WHERE message_id=? AND acked=0',
+                                superseded)
+
     def reconcile(self, sid, reason, allow_terminal_failed_mapping=False):
         row = self.db.execute("SELECT body,status FROM worker_steps WHERE step_id=?", (sid,)).fetchone()
         if not row:

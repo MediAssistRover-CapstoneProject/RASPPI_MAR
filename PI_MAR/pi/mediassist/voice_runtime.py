@@ -101,6 +101,11 @@ class VoiceRuntime:
         # The confirmed HTTP request may create a job before its reply returns.
         # Finish that handoff; cancellation must never replay or cancel the job.
         self.handoff=True;self.report('HANDOFF')
+        def rejected():
+            # A definite HTTP rejection created no job. Another job must once
+            # again preempt the chat while this consent waits for readiness.
+            self.handoff=False;self.report('CHATTING')
+        return rejected
 
     async def guarded(self,operation):
         task=asyncio.create_task(operation)

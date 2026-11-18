@@ -53,6 +53,8 @@ class WorkerAdapter(RosAdapter):
             camera = worker['mapping']['camera']
             try:
                 self.patrol_fall_observer = PatrolFallObserver(self, configuration(worker['ai'], camera), camera['topic'])
+                logging.info('PATROL_FALL_READY mode=%s depth=%s', self.patrol_fall_observer.config['mode'],
+                             self.patrol_fall_observer.config['depth'] is not None)
             except (OSError, StepError):
                 logging.warning('PATROL_FALL_INIT_FAILED')
 

@@ -64,6 +64,25 @@ class ReportingTests(unittest.IsolatedAsyncioTestCase):
         gate.set();await first;self.assertEqual(sent,['first','latest'])
 
 class ClearanceTests(unittest.TestCase):
+    def test_one_centimetre_profile_passes_alongside_wall_but_brakes_towards_it(self):
+        from mediassist.autonomous_mapping import configuration
+        raw,hw=speed_tune(*speed_fixtures.MotionSpeedTests().profile(),.25,.15,.8)
+        candidate,tuned=tune(raw,hw,.01,.03)
+        auto=configuration(candidate['mapping']);profile=tuned['motion']['lidar_braking']
+        self.assertEqual((auto['stop_margin_m'],auto['near_slow_margin_m']),(.01,.03))
+        self.assertEqual((profile['stop_margin_m'],profile['near_slow_margin_m']),(.01,.03))
+        self.assertAlmostEqual(tuned['motion']['rear_stop_distance_m'],auto['footprint']['rear']+.01)
+        front=auto['footprint']['front'];left=auto['footprint']['left']
+        view=dict(valid=True,nearest_lidar_m=.5,obstacle_points=[(0.,left+.015)])
+        self.assertEqual(limit_velocity((.1,0.,0.),view,.05,profile)[0],(.1,0.,0.))
+        towards,_=limit_velocity((0.,.1,0.),view,.05,profile)
+        self.assertGreater(towards[1],0.);self.assertLess(towards[1],.1)
+        view['obstacle_points']=[(front+.009,0.)]
+        self.assertEqual(limit_velocity((.1,0.,0.),view,.05,profile)[0],(0.,0.,0.))
+        self.assertEqual(limit_velocity((.1,0.,0.),view,.41,profile)[0],(0.,0.,0.))
+        for stop in (.009,0.,float('nan')):
+            with self.subTest(stop=stop),self.assertRaises(ValueError):tune(raw,hw,stop,.03)
+
     def test_clearance_preserves_network_calibration_and_speed_and_brakes_before_close_range(self):
         raw,hw=speed_tune(*speed_fixtures.MotionSpeedTests().profile(),.8,.8,.8)
         before=copy.deepcopy((raw,hw));candidate,tuned=tune(raw,hw)
@@ -75,7 +94,7 @@ class ClearanceTests(unittest.TestCase):
         profile=tuned['motion']['lidar_braking']
         view=dict(valid=True,nearest_lidar_m=1.,rotation_clear=True,obstacle_points=[(.16,0.)])
         velocity,reason=limit_velocity((.6,0.,.3),view,.05,profile)
-        self.assertLess(velocity[0],.1);self.assertIsNone(reason)
+        self.assertLess(velocity[0],.1);self.assertIn(reason,(None,'TURN_SWEEP_SLOWDOWN'))
         self.assertAlmostEqual(velocity[2]/velocity[0],.5)
         view['obstacle_points']=[(.14,0.)]
         self.assertEqual(limit_velocity((.6,0.,.3),view,.05,profile)[0],(0.,0.,0.))

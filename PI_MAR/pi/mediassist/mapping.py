@@ -105,6 +105,8 @@ class MappingManager:
                 forward_mps=MAX_LINEAR,angular_rps=MAX_ANGULAR,continuous=False)
         if self.auto.cfg['enabled'] and getattr(self,'exploration',None):
             status['exploration']=self.exploration.tracker.status()
+        # Nav2 recovery details stay in the navigator. The wire contract
+        # exposes the current outcome through the autonomous status reason.
         return status
 
     @property
@@ -159,7 +161,9 @@ class MappingManager:
                 normal=1-2*(q.x*q.x+q.y*q.y)
                 if not .99<=norm<=1.01 or abs(normal)<.98:raise ValueError('Non-planar lidar transform')
                 transform=(tf.translation.x,tf.translation.y,math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z)),1 if normal>0 else -1)
-            view=scan_view(msg,transform,self.auto.cfg)
+            config=self.auto.cfg
+            if getattr(self,'navigator',None) is not None:config={**config,'include_points':True}
+            view=scan_view(msg,transform,config)
         except Exception:
             view={'valid':False,'reason':'LIDAR_TF_NOT_READY'}
         with self.lock:self.auto_scan=(view,time.monotonic()-max(0.,age))
@@ -304,6 +308,7 @@ class MappingManager:
     async def tick(self, ready, idle):
         from geometry_msgs.msg import Twist
         y=0.
+        nav_requested=None
         navigator=getattr(self,'navigator',None)
         if navigator and navigator.active and (not self.active or not self.auto_selected or self.auto.phase!='RUNNING'):
             await navigator.stop()
@@ -338,7 +343,9 @@ class MappingManager:
             if not odom or odom['age_sec'] > .5:
                 moving = False
         auto=getattr(self,'auto',None)
-        if auto and getattr(self,'auto_selected',False):
+        auto_selected=bool(auto and getattr(self,'auto_selected',False))
+        if auto_selected:
+            auto_run=auto.run_id
             telemetry=self.adapter.telemetry();sample=telemetry.get('map_pose',{})
             with self.lock:view,at=self.auto_scan
             old_phase=auto.phase
@@ -372,14 +379,25 @@ class MappingManager:
             continue_goal=bool(navigator and navigator.active and not plan_error and plan_result
                 and plan_result.get('seed_body_clear') is True
                 and plan_result['reason'] in ('FRONTIERS_UNREACHABLE','OBSERVED_AND_VISITED_REACHABLE_SPACE','NO_SIGNIFICANT_REACHABLE_FRONTIER'))
-            hold=auto.cfg['exploration_mode']=='frontier' and not continue_goal and (plan_result is None or plan_result['state'] in ('NO_FRONTIERS','BLOCKED'))
+            side_active=bool(navigator and (getattr(navigator,'side',None) is not None
+                or getattr(navigator,'observation',None) is not None or getattr(navigator,'side_pending',False)))
+            hold=auto.cfg['exploration_mode']=='frontier' and not (continue_goal or side_active) and (plan_result is None or plan_result['state'] in ('NO_FRONTIERS','BLOCKED'))
             reactive=auto.cfg['exploration_mode']=='reactive' and auto.cfg['vehicle']=='rigid'
             x,z=auto.current(now,view,now-at,pose,moving,'SENSORS_OR_SESSION_NOT_READY',gate,heading,hold or bool(navigator) or reactive)
             rear_blocked=auto.reason=='REPLANNING_REAR_BLOCKED' and auto.phase=='RUNNING'
-            if rear_blocked and navigator and navigator.active:
-                target=dict(navigator.target)
+            lidar_blocked=auto.reason=='REPLANNING_LIDAR_BLOCKED' and auto.phase=='RUNNING'
+            route_blocked=rear_blocked or lidar_blocked
+            # Give a brief candidate veto to Nav2 without ending the scan. If
+            # it persists, cancel/confirm stop before a bounded escape or goal
+            # change. A raw hard-stop/sensor failure still ends autonomy above.
+            from .mapping_navigator import frontier_replan_delay
+            replan_blocked=(route_blocked and auto.gate_blocked_at is not None
+                            and now-auto.gate_blocked_at>=frontier_replan_delay(auto.cfg))
+            if replan_blocked and navigator and navigator.active:
+                target=navigator.target
                 await navigator.stop()
-                self.exploration.exclude_goal(target,now,ttl=15.)
+                navigator.side_pending=True
+                if target:self.exploration.exclude_goal(target,now,ttl=15.)
                 plan_result=None
             authorized=auto.phase=='RUNNING' and now<auto.deadline
             if reactive and authorized:
@@ -395,13 +413,36 @@ class MappingManager:
                         if result['source_signature']==source_signature(grid[0]):
                             x,z=auto.stop('COVERAGE_COMPLETE');y=0.
             if authorized and auto.cfg['exploration_mode']=='frontier':
-                if rear_blocked:x,y,z=0.,0.,0.
+                if route_blocked:x,y,z=0.,0.,0.
                 elif plan_error:x,z=auto.stop(plan_error)
+                elif side_active:
+                    if navigator.side_pending:
+                        navigator.start_sideways(auto.run_id,pose,now,grid[0],view,telemetry.get('odom_speed',{}))
+                    was_recovering=navigator.side is not None or getattr(navigator,'observation',None) is not None
+                    x,y,z=navigator.sideways_velocity(pose,now,grid[0],view)
+                    if was_recovering and not (x or y or z):
+                        self.exploration.invalidate_plan()
+                        self.exploration.no_progress(now,False)
+                        navigator.recovery_reason='REPLANNING_AFTER_SIDEWAYS'
+                    auto.reason=('MAPPING_OBSERVING_ROTATION' if z else
+                                 'MAPPING_REPOSITIONING' if x or y else
+                                 navigator.recovery_reason or 'REPLANNING_AFTER_SIDEWAYS')
                 elif plan_result is None:x,z=0.,0.;auto.reason='PLANNING_FRONTIERS'
                 elif plan_result['state']=='BLOCKED' and not continue_goal:
-                    if plan_result['reason']=='FRONTIERS_UNREACHABLE' and not self.exploration.no_progress(now,True):
-                        x,z=0.,0.;auto.reason='REOBSERVING_FRONTIERS'
-                    elif plan_result.get('seed_block_kind') in ('unknown','boundary') and now-auto.start_at<8.:
+                    retry_observation=(plan_result['reason'] in ('FRONTIERS_UNREACHABLE','FRONTIERS_BLOCKED_BY_FOOTPRINT')
+                                       and plan_result.get('seed_body_clear') is True)
+                    if retry_observation and not self.exploration.no_progress(now,True):
+                        x,y,z=0.,0.,0.;auto.reason='REOBSERVING_FRONTIERS'
+                        if navigator:
+                            navigator.start_sideways(auto.run_id,pose,now,grid[0],view,telemetry.get('odom_speed',{}))
+                            x,y,z=navigator.sideways_velocity(pose,now,grid[0],view)
+                            if navigator.active:
+                                hold=False
+                                auto.reason=('MAPPING_OBSERVING_ROTATION' if z else
+                                             'MAPPING_REPOSITIONING' if x or y else
+                                             navigator.recovery_reason or 'REPLANNING_AFTER_SIDEWAYS')
+                    elif (plan_result.get('seed_block_kind') in ('unknown','boundary')
+                          and not self.exploration.no_progress(now,True)):
                         x,z=0.,0.;auto.reason='WAITING_FOR_MAP_AROUND_BODY'
                     else:x,z=auto.stop(plan_result['reason'])
                 elif plan_result['state']=='NO_FRONTIERS' and not continue_goal:
@@ -415,7 +456,11 @@ class MappingManager:
                     try:
                         (x,y,z),auto.reason=await navigator.tick(plan_result,pose,now)
                         from .autonomous_mapping import nav2_assist
-                        limited=nav2_assist((x,y,z),view,auto.cfg,max(0.,now-at))
+                        requested=(x,y,z)
+                        nav_requested=requested
+                        with self.lock:view,at=self.auto_scan
+                        checked_at=time.monotonic()
+                        limited=nav2_assist(requested,view,auto.cfg,max(0.,checked_at-at))
                         if limited!=(x,y,z):auto.reason='FOLLOW_FRONTIER_NAV2_SLOWED'
                         x,y,z=limited
                     except Exception as error:
@@ -440,6 +485,23 @@ class MappingManager:
         msg = Twist()
         auto_cap = auto.cfg['speed_mps'] if auto and getattr(self,'auto_selected',False) else .30
         cap = min(auto_cap, self.adapter.cfg['max_speed_mps'])
+        if auto_selected:
+            # A Nav2 action exchange can await longer than the control lease.
+            # Recheck its deadline and the sampled sensors at publication.
+            output_at=time.monotonic()
+            with self.lock:
+                view,at=self.auto_scan
+                grid=self.grid
+            permit=(self.auto_selected and auto.run_id==auto_run and auto.phase=='RUNNING'
+                    and output_at<auto.deadline and output_at-auto.start_at<auto.duration)
+            sensors_fresh=(output_at-at<=auto.cfg['scan_max_age_sec'] and grid is not None
+                           and output_at-grid[1]<=min(2.,self.cfg['max_map_age_sec']))
+            if not (permit and sensors_fresh):
+                x,y,z=0.,0.,0.
+                if navigator:
+                    navigator.side=None
+                    if hasattr(navigator,'observation'):navigator.observation=None
+                    if not permit:navigator.side_pending=False
         if moving:
             target = (max(-cap,min(x,cap)),
                       max(-self.adapter.cfg['motion']['max_angular_speed_rps'],
@@ -450,6 +512,20 @@ class MappingManager:
                 if not self.adapter.cfg['motion'].get('allow_strafe',False):y=0.
                 scale=min(1.,cap/max(math.hypot(target[0],y),1e-9))
                 msg.linear.x,msg.linear.y,msg.angular.z=self.holonomic_ramp.update((target[0]*scale,y*scale,target[1]),time.monotonic())
+                if navigator:
+                    # Ramp interpolation can differ from the validated Nav2
+                    # curve. Validate the velocity actually published, using
+                    # the newest scan after any awaited action exchange.
+                    from .motion_braking import limit_velocity
+                    with self.lock:view,at=self.auto_scan
+                    applied,reason=limit_velocity((msg.linear.x,msg.linear.y,msg.angular.z),
+                                                 view,time.monotonic()-at,auto.cfg)
+                    msg.linear.x,msg.linear.y,msg.angular.z=applied
+                    self.holonomic_ramp.value=applied
+                    x,y,z=applied
+                    note_limit=getattr(navigator,'note_velocity_limit',None)
+                    if note_limit and nav_requested is not None:
+                        note_limit(nav_requested,applied,time.monotonic())
             else:
                 if hasattr(self,'holonomic_ramp'):self.holonomic_ramp.reset()
                 msg.linear.x, msg.angular.z = self.ramp.update(target, time.monotonic())
@@ -483,7 +559,9 @@ class MappingManager:
             # telemetry also includes mapping_session_id; neither identity field
             # belongs in common.pose, which accepts only these three numbers.
             pose = {**pose, 'value':{k:pose['value'][k] for k in ('x_m','y_m','yaw_rad')}}
-        return {**{k:v for k,v in snap.items() if k!='data'}, 'revision':rev,
+        # Geometry checks cache bytes/arrays on this shared snapshot. Only the
+        # public map metadata belongs on the wire; the cache stays local.
+        return {**{k:snap[k] for k in ('width','height','resolution','origin','frame_id','captured_at')}, 'revision':rev,
                 'mapping_session_id':self.state['session_id'], 'pose':pose,
                 'encoding':'zlib-base64-int8-row-major-bottom-up', 'data':encoded}
 
@@ -618,7 +696,8 @@ class MappingManager:
             report={'observed_at':utcnow(),'run_id':self.auto.run_id,'mapping_session_id':self.state.get('session_id'),
                 'map_revision':revision,'pose':pose,'pose_jump':getattr(self.auto,'pose_jump',None),
                 'scan_view':view,'autonomy':self.auto.cfg,'plan':result,
-                'snapshot':{**snap,'data':base64.b64encode(zlib.compress(snap['data'])).decode()}}
+                'snapshot':{**{k:v for k,v in snap.items() if not k.startswith('_') and k!='data'},
+                            'data':base64.b64encode(zlib.compress(snap['data'])).decode()}}
             folder=self.root/'diagnostics';folder.mkdir(exist_ok=True)
             (folder/(self.auto.run_id+'.json')).write_text(json.dumps(report,allow_nan=False))
         except Exception:self.adapter.node.get_logger().warning('AUTONOMY_DIAGNOSTIC_WRITE_FAILED')

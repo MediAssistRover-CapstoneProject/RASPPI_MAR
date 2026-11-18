@@ -9,6 +9,7 @@ from mediassist.navigation_setup import nav2_params
 from mediassist.ros_adapter import RosAdapter
 from mediassist.contracts import StepError
 from mediassist.navigation_zones import NavigationZones,rules
+from mediassist.footprint import NAVIGATION_PADDING_M
 
 def params(**kw):
     base={'amcl':{'ros__parameters':{}},'velocity_smoother':{'ros__parameters':{}},
@@ -31,8 +32,12 @@ class ProfileTests(unittest.TestCase):
         self.assertFalse(f['allow_reversing']);self.assertTrue(f['use_collision_detection'])
         self.assertTrue(f['use_rotate_to_heading'])
         self.assertEqual(f['rotate_to_heading_angular_vel'],.8)
-        self.assertEqual(f['max_angular_accel'],3.2)
-        self.assertEqual(c['general_goal_checker']['xy_goal_tolerance'],.06)
+        smoother=p['velocity_smoother']['ros__parameters']
+        self.assertGreater(f['max_angular_accel'],0.)
+        self.assertLessEqual(f['max_angular_accel'],1.8)
+        self.assertEqual(f['max_angular_accel'],smoother['max_accel'][2])
+        self.assertEqual(-f['max_angular_accel'],smoother['max_decel'][2])
+        self.assertEqual(c['general_goal_checker']['xy_goal_tolerance'],.04)
         self.assertEqual(c['general_goal_checker']['yaw_goal_tolerance'],math.pi)
         planner=p['planner_server']['ros__parameters']['GridBased']
         self.assertEqual(planner['plugin'],'nav2_smac_planner/SmacPlanner2D')
@@ -49,16 +54,22 @@ class ProfileTests(unittest.TestCase):
     def test_saved_map_yaw_is_independent_from_mapping_yaw(self):
         p=params(angular=1.2,fast_navigation=True,forward_only=True,position_only=True,path_tracking=True)
         f=p['controller_server']['ros__parameters']['FollowPath']
-        self.assertEqual(f['rotate_to_heading_angular_vel'],.8)
+        self.assertEqual(f['rotate_to_heading_angular_vel'],1.)
+        self.assertLessEqual(f['rotate_to_heading_angular_vel'],p['velocity_smoother']['ros__parameters']['max_velocity'][2])
         self.assertLessEqual(f['desired_linear_vel']/f['regulated_linear_scaling_min_radius'],1.2)
         self.assertTrue(f['use_collision_detection'])
         self.assertEqual(p['controller_server']['ros__parameters']['failure_tolerance'],2.)
         self.assertEqual(p['velocity_smoother']['ros__parameters']['max_velocity'],[.6,0.,1.2])
-        self.assertEqual(p['velocity_smoother']['ros__parameters']['max_accel'][2],3.2)
+        smoother=p['velocity_smoother']['ros__parameters']
+        self.assertEqual(smoother['max_accel'][2],f['max_angular_accel'])
+        self.assertEqual(smoother['max_decel'][2],-f['max_angular_accel'])
+        self.assertGreater(smoother['max_accel'][2],0.)
+        self.assertLessEqual(smoother['max_accel'][2],1.8)
         mapping=params(angular=1.2,fast_mapping=True)
         self.assertEqual(mapping['controller_server']['ros__parameters']['FollowPath']['max_vel_theta'],1.2)
         self.assertEqual(mapping['velocity_smoother']['ros__parameters']['max_accel'][2],2.4)
-        self.assertEqual(mapping['local_costmap']['local_costmap']['ros__parameters']['footprint_padding'],.03)
+        for name in ('local_costmap','global_costmap'):
+            self.assertEqual(mapping[name][name]['ros__parameters']['footprint_padding'],NAVIGATION_PADDING_M)
         with self.assertRaises(ValueError):params(angular=1.21,fast_mapping=True)
 
 
@@ -151,7 +162,8 @@ class ArrivalTests(unittest.IsolatedAsyncioTestCase):
 class ZoneDirectionTests(unittest.TestCase):
     def zone(self,kind='KEEP_OUT'):
         z=NavigationZones.__new__(NavigationZones);z.se2=True
-        z.footprint=dict(front=.109,rear=.104,left=.086,right=.086);z.radius=math.hypot(.109,.086)+.03
+        z.footprint=dict(front=.109,rear=.104,left=.086,right=.086)
+        z.radius=math.hypot(.109+NAVIGATION_PADDING_M,.086+NAVIGATION_PADDING_M)
         z.zones=rules([dict(zone_type=kind,polygon=[[.3,-2],[.5,-2],[.5,2],[.3,2]],speed_limit_mps=.15)])
         return z
     def pose(self,yaw=0.,x=0.):return dict(fresh=True,value=dict(x_m=x,y_m=0.,yaw_rad=yaw))
@@ -178,8 +190,8 @@ class ZoneDirectionTests(unittest.TestCase):
         self.assertEqual(z.speed_cap(self.pose(x=.72),.6,(.15,0.,0.)),.6)  # Whole padded body out.
         self.assertEqual(z.speed_cap(self.pose(math.pi/2,x=0.),.6,(.6,0.,0.)),.6)
 
-    def test_restricted_path_checks_three_centimetres_beyond_body_edge(self):
-        z=self.zone();x=.3-z.footprint['front']-.03-.006
+    def test_restricted_path_checks_configured_padding_beyond_body_edge(self):
+        z=self.zone();x=.3-z.footprint['front']-NAVIGATION_PADDING_M-.006
         z.validate_path([(x,0.,0.)])
         with self.assertRaisesRegex(StepError,'NAVIGATION_PATH_INTERSECTS_KEEPOUT'):
             z.validate_path([(x+.01,0.,0.)])

@@ -139,7 +139,7 @@ def plan(snapshot,pose,cfg):
                   seed_clearance_m=min(obstacle_clearance,unknown_clearance),
                   seed_obstacle_clearance_m=obstacle_clearance,seed_unknown_clearance_m=unknown_clearance)
     nav2=cfg.get('frontier_controller')=='nav2'
-    from .footprint import body_clear
+    from .footprint import cached_body_clear as body_clear
     actual=body_clear(snapshot,pose,footprint)
     result.update(planning_backend='nav2' if nav2 else 'reactive',seed_body_clear=actual['clear'],seed_block_kind=actual['kind'])
     if not actual['clear'] or not nav2 and not safe[seed]:
@@ -147,6 +147,11 @@ def plan(snapshot,pose,cfg):
     if not clusters and not cfg.get('visit_known_space',False):
         result.update(state='NO_FRONTIERS',reason='NO_SIGNIFICANT_REACHABLE_FRONTIER')
         return result
+    def world(i):
+        x=(min(width,(i%w+1)*stride)+i%w*stride)*res*.5
+        y=(min(height,(i//w+1)*stride)+i//w*stride)*res*.5
+        return (origin[0]+c*x-s*y,origin[1]+s*x+c*y)
+
     parents={seed:None};cost={seed:0};q=deque([seed])
     while q:
         i=q.popleft()
@@ -156,29 +161,67 @@ def plan(snapshot,pose,cfg):
             # it must never be forwarded as a direct velocity authorization.
             if (cells[j]==0 if nav2 else safe[j]) and j not in parents:
                 parents[j]=i;cost[j]=cost[i]+1;q.append(j)
-    best=None
+    def approach_heading(i):
+        previous=parents[i]
+        if previous is None:return pose['yaw_rad']
+        gx,gy=world(i);px,py=world(previous)
+        return math.atan2(gy-py,gx-px)
+
+    def frontier_heading(i,frontier):
+        gx,gy=world(i);fx,fy=world(frontier)
+        desired=math.atan2(fy-gy,fx-gx)
+        if safe[i]:return desired
+        if not nav2:return None
+        # Reject guaranteed overlap before the more expensive polygon/raster
+        # checks. If a blocked coarse cell fits inside the body's inscribed
+        # circle, no orientation can make this candidate valid. Native blocked
+        # cells contain their centres. For coarsened cells, a half-diagonal
+        # accounts for the unknown location of a blocked source pixel.
+        inscribed=max(0.,min(footprint.values())+cfg['stop_margin_m']-(cell/math.sqrt(2) if stride>1 else 0.))
+        if min(distance[i],unknown[i])<=(inscribed/cell)**2:return None
+        # An observation goal does not require a full turn. A rectangle can
+        # enter a narrow door in one orientation even when its circumscribed
+        # disc does not fit. Validate the complete padded body on the original
+        # observed grid; Nav2 still owns collision checking along the route.
+        approach=approach_heading(i);tried=[]
+        extent={k:v+cfg['stop_margin_m'] for k,v in footprint.items()}
+        for yaw in (desired,approach,pose['yaw_rad'],approach+math.pi):
+            if any(abs(math.atan2(math.sin(yaw-old),math.cos(yaw-old)))<.01 for old in tried):continue
+            tried.append(yaw)
+            if body_clear(snapshot,dict(x_m=gx,y_m=gy,yaw_rad=yaw),extent)['clear']:
+                return yaw
+        return None
+    best=None;frontier_anchor=None
     # Prefer large frontiers, but never declare completion when some are blocked.
     for group in sorted(clusters,key=lambda g:(-len(g),min(g)))[:32]:
-        q=deque(sorted(group));source={i:i for i in group};depth=0;candidates=[]
+        q=deque(sorted(group));source={i:i for i in group};depth=0;candidates=[];headings={}
         # Frontier search uses four-neighbour (Manhattan) steps while inflation
         # uses Euclidean distance, so a diagonal stand-off needs up to sqrt(2) more steps.
         while q and depth<=math.ceil(padding*math.sqrt(2))+3+(math.ceil(.25/cell) if nav2 else 0) and not candidates:
             for _ in range(len(q)):
                 i=q.popleft()
-                if i in parents and safe[i]:
+                if i in parents:
                     excluded=cfg.get('_excluded_goals',[])
                     ux=(i%w+.5)*cell;uy=(i//w+.5)*cell;wx=origin[0]+c*ux-s*uy;wy=origin[1]+s*ux+c*uy
                     # Failed Nav2 goals often reappear one or two grid cells
                     # away. Exclude the whole local goal cluster, not one cell.
                     if not excluded_goal(wx,wy,excluded):
-                        candidates.append(i);continue
+                        yaw=frontier_heading(i,source[i])
+                        if yaw is not None:
+                            candidates.append(i);headings[i]=yaw;continue
                 for j in neighbors(i,w,h):
                     if cells[j]==0 and j not in source:source[j]=source[i];q.append(j)
             depth+=1
         if candidates:
             goal=min(candidates,key=lambda i:(cost[i],i))
-            score=cost[goal]*cell-.05*min(len(group),20)
-            if best is None or score<best[0]:best=(score,goal,source[goal])
+            # The source cell can move along the same frontier on every scan.
+            # Remember a representative of the cluster, not just the last pose.
+            mean_x=sum(i%w for i in group)/len(group)
+            mean_y=sum(i//w for i in group)/len(group)
+            anchor=world(min(group,key=lambda i:((i%w-mean_x)**2+(i//w-mean_y)**2,i)))
+            repeats=sum(math.hypot(anchor[0]-x,anchor[1]-y)<.45 for x,y in cfg.get('_recent_frontiers',()))
+            score=cost[goal]*cell-.05*min(len(group),20)+min(3.,1.2*repeats)
+            if best is None or score<best[0]:best=(score,goal,source[goal],headings[goal]);frontier_anchor=anchor
     # White means observed free, not that the robot entered that room. A
     # 360-degree scan can reveal an entire room from its doorway, so visit
     # reachable interior viewpoints even while other frontiers remain.
@@ -193,10 +236,14 @@ def plan(snapshot,pose,cfg):
         # Measure distance through connected known-free cells, not across walls.
         distance_to_path=[n+1]*n;q=deque(i for i in range(n) if visited[i] and cells[i]==0)
         for i in q:distance_to_path[i]=0
-        threshold=cfg.get('visit_radius_m',.6)/cell
+        visit_radius=cfg.get('visit_radius_m',.6)
+        threshold=visit_radius/cell
+        # A radius-only flood left deeper cells at the same sentinel value.
+        # Measure real distance through the doorway for the interior score.
+        depth_limit=max(2.,2*visit_radius)/cell
         while q:
             i=q.popleft()
-            if distance_to_path[i]>=threshold:continue
+            if distance_to_path[i]>=depth_limit:continue
             for j in neighbors(i,w,h):
                 if cells[j]==0 and distance_to_path[j]>distance_to_path[i]+1:
                     distance_to_path[j]=distance_to_path[i]+1;q.append(j)
@@ -210,14 +257,33 @@ def plan(snapshot,pose,cfg):
             # A region with appreciable unvisited floor gets a goal inside it,
             # rather than another observation point outside the door. Keep a
             # frontier goal when the interior would require a long detour.
-            interior=[i for i in candidates if distance_to_path[i]*cell>=max(.8,2*cfg.get('visit_radius_m',.6))]
-            nearby=[i for i in interior if cost[i]*cell<=6.]
-            if len(cfg.get('_visited_poses',[]))>=10 and len(interior)*cell*cell>=.35 and nearby:
+            # A fixed 1.2 m depth / .35 m2 threshold skipped compact rooms:
+            # the whole room could be visible from the hall but never entered.
+            # Require one body radius beyond the visited neighbourhood and a
+            # connected patch large enough for two physical body areas instead.
+            # This changes goal ranking only; the full-circle goal clearance,
+            # raw-free connectivity and Nav2's oriented sweep remain mandatory.
+            interior={i for i in candidates if distance_to_path[i]*cell>=visit_radius+body_radius}
+            minimum_area=max(.08,2*(footprint['front']+footprint['rear'])*(footprint['left']+footprint['right']))
+            remaining=set(candidates);nearby=[]
+            while remaining:
+                seed_i=min(remaining);remaining.remove(seed_i);region=[seed_i];queue=deque([seed_i])
+                while queue:
+                    for j in neighbors(queue.popleft(),w,h):
+                        if j in remaining:remaining.remove(j);region.append(j);queue.append(j)
+                if len(region)*cell*cell>=minimum_area:
+                    nearby.extend(i for i in region if i in interior and cost[i]*cell<=6.)
+            # A genuinely new observation point still takes priority over
+            # walking known floor. Prefer a compact unvisited room only when
+            # the best frontier viewpoint is already covered by the physical
+            # traversal history (or there is no frontier goal at all).
+            frontier_covered=best is None or distance_to_path[best[1]]<=threshold
+            if nearby and frontier_covered:
                 goal=min(nearby,key=lambda i:(cost[i]*cell-1.5*min(2.,distance_to_path[i]*cell),i))
-                best=(cost[goal]*cell,goal,goal);visiting=True
+                best=(cost[goal]*cell,goal,goal,approach_heading(goal));visiting=True
             elif best is None:
                 goal=min(candidates,key=lambda i:(cost[i],-distance[i],i))
-                best=(cost[goal]*cell,goal,goal);visiting=True
+                best=(cost[goal]*cell,goal,goal,approach_heading(goal));visiting=True
         elif not clusters and not uncovered:
             result.update(state='NO_FRONTIERS',reason='OBSERVED_AND_VISITED_REACHABLE_SPACE')
             return result
@@ -239,22 +305,19 @@ def plan(snapshot,pose,cfg):
             difference=abs(math.atan2(math.sin(bearing-failed_heading),math.cos(bearing-failed_heading)))
             viewpoints.append((abs(distance_m-.7)-.2*difference,i))
         if viewpoints:
-            _,goal=min(viewpoints);best=(cost[goal]*cell,goal,goal);visiting=relocating=True
+            _,goal=min(viewpoints);best=(cost[goal]*cell,goal,goal,approach_heading(goal));visiting=relocating=True
     if best is None:
         result['reason']='FRONTIERS_UNREACHABLE' if cfg.get('_excluded_goals') else 'FRONTIERS_BLOCKED_BY_FOOTPRINT';return result
-    _,goal,frontier=best
-    def world(i):
-        x=(min(width,(i%w+1)*stride)+i%w*stride)*res*.5
-        y=(min(height,(i//w+1)*stride)+i//w*stride)*res*.5
-        return (origin[0]+c*x-s*y,origin[1]+s*x+c*y)
+    _,goal,frontier,goal_yaw=best
     path=[];i=goal
     while i is not None:path.append(world(i));i=parents[i]
     path.reverse();gx,gy=world(goal);fx,fy=world(frontier)
     approach=math.atan2(gy-path[-2][1],gx-path[-2][0]) if len(path)>1 else pose['yaw_rad']
     result.update(state='FRONTIERS_PRESENT',reason='REOBSERVE_FROM_NEW_VIEWPOINT' if relocating else 'VISIT_UNTRAVERSED_FREE_SPACE' if visiting else 'APPROACH_FRONTIER',path=path,
-                  goal=dict(x_m=gx,y_m=gy,yaw_rad=approach if visiting else math.atan2(fy-gy,fx-gx)),
+                  goal=dict(x_m=gx,y_m=gy,yaw_rad=approach if visiting else goal_yaw),
                   planning_grid=dict(width=w,height=h,cell=cell,origin=origin,
                       safe=safe))
+    if not visiting and frontier_anchor is not None:result['goal']['frontier_anchor']=frontier_anchor
     return result
 
 
@@ -279,10 +342,12 @@ class Tracker:
 
     def status(self):
         r=self.result or {}
+        goal=r.get('goal')
         return dict(enabled=True,state='COMPLETE' if self.complete else r.get('state','PLANNING'),
                     reason=r.get('reason','WAITING_FOR_PLAN'),frontier_count=r.get('frontier_count',0),
                     frontier_cells=r.get('frontier_cells',0),ignored_frontier_cells=r.get('ignored_frontier_cells',0),
-                    reachable_free_area_m2=r.get('reachable_free_area_m2',0.),goal=r.get('goal'),
+                    reachable_free_area_m2=r.get('reachable_free_area_m2',0.),
+                    goal={k:goal[k] for k in ('x_m','y_m','yaw_rad')} if goal else None,
                     **{k:r[k] for k in ('planning_backend','planner_cell_m','clearance_radius_m','body_radius_m',
                         'seed_obstacle_clearance_m','seed_unknown_clearance_m','seed_body_clear','seed_block_kind') if k in r})
 
@@ -294,7 +359,7 @@ class FrontierWorker:
         self.submitted_at=self.observed_at=0.;self.pending_revision=None
         self.hold_at=None;self.hold_signature=None
         self.excluded=[];self.replan=False
-        self.visited=[]
+        self.visited=[];self.recent_frontiers=[]
 
     def reset(self,run):
         if self.task:self.task.cancel()
@@ -302,10 +367,17 @@ class FrontierWorker:
         self.submitted_at=self.observed_at=0.
         self.hold_at=None;self.hold_signature=None
         self.excluded=[];self.replan=False
-        self.visited=[]
+        self.visited=[];self.recent_frontiers=[]
 
     def exclude_goal(self,goal,now,ttl=30.,radius=.35):
         self.excluded.append((goal['x_m'],goal['y_m'],now+ttl,radius));self.excluded=self.excluded[-64:]
+        anchor=goal.get('frontier_anchor')
+        if anchor is not None:
+            self.recent_frontiers.append((*anchor,now+max(ttl,30.)))
+            self.recent_frontiers=self.recent_frontiers[-16:]
+        self.invalidate_plan()
+
+    def invalidate_plan(self):
         # Do not corrupt the timestamp of a plan still running in the executor.
         # Discard that result and submit a new plan with the exclusion applied.
         self.replan=True
@@ -337,7 +409,9 @@ class FrontierWorker:
             self.replan=False
             self.pending_revision=revision;self.submitted_at=now
             self.excluded=[g for g in self.excluded if now<g[2]]
-            options={**self.cfg,'_excluded_goals':[(x,y,radius) for x,y,_,radius in self.excluded], '_visited_poses':list(self.visited)}
+            self.recent_frontiers=[g for g in self.recent_frontiers if now<g[2]]
+            options={**self.cfg,'_excluded_goals':[(x,y,radius) for x,y,_,radius in self.excluded],
+                     '_recent_frontiers':[(x,y) for x,y,_ in self.recent_frontiers], '_visited_poses':list(self.visited)}
             self.task=asyncio.create_task(asyncio.to_thread(plan,snapshot,dict(pose),options))
         if self.tracker.result and now-self.observed_at>3.:return None,'EXPLORATION_PLAN_STALE'
         return self.tracker.result,None

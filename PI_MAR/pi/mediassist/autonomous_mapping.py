@@ -13,7 +13,10 @@ def configuration(mapping):
                     manual_lidar_assist=False,frontier_min_length_m=.20,coverage_stable_sec=15.,
                     coverage_min_duration_sec=30.,coverage_min_travel_m=0.,coverage_min_area_m2=.5,
                     frontier_no_progress_sec=15.,frontier_stall_sec=8.,frontier_goal_timeout_sec=60.,
-                    lidar_stop_distance_m=.10,frontier_controller='nav2',
+                    lidar_stop_distance_m=.10,frontier_controller='nav2',frontier_blocked_replan_sec=1.5,
+                    frontier_escape_min_m=.10,frontier_escape_max_m=.15,
+                    frontier_observation_rotation=True,frontier_observation_max_rad=math.tau,
+                    frontier_lidar_avoidance=True,
                     visit_known_space=False,visit_radius_m=.6,reverse_enabled=False,max_reverse_mps=.1,control_pause_sec=0.)
     for key, value in defaults.items(): cfg.setdefault(key, value)
     if cfg['vehicle'] not in ('rigid','articulated'):raise StepError('INVALID_AUTONOMY_VEHICLE')
@@ -21,14 +24,14 @@ def configuration(mapping):
     if cfg['exploration_mode'] not in ('reactive','frontier') or type(cfg['manual_lidar_assist']) is not bool:
         raise StepError('INVALID_EXPLORATION_CONFIG')
     if type(cfg.get('enabled')) is not bool: raise StepError('INVALID_AUTONOMY_CONFIG')
-    if any(type(cfg[k]) is not bool for k in ('visit_known_space','reverse_enabled')):raise StepError('INVALID_AUTONOMY_CONFIG')
+    if any(type(cfg[k]) is not bool for k in ('visit_known_space','reverse_enabled','frontier_observation_rotation','frontier_lidar_avoidance')):raise StepError('INVALID_AUTONOMY_CONFIG')
     if cfg['reverse_enabled'] and (cfg['vehicle']!='rigid' or cfg['frontier_controller']!='nav2' or cfg['exploration_mode']!='frontier'):
         raise StepError('AUTONOMOUS_REVERSE_REQUIRES_RIGID_NAV2')
     # The final manual/MOVE braking profile also covers the vendor's 2 rad/s
     # joystick ceiling. Rigid exploration has an independent 1.2 rad/s limit.
     braking_yaw=(2. if cfg.get('include_points') is True else 1.2) if cfg['vehicle']=='rigid' else .8
     for key, low, high in (('speed_mps', .02, 1.00), ('angular_rps', .10, braking_yaw),
-                          ('stop_margin_m', .02, .4), ('turn_clearance_m', .2, 1.),
+                          ('stop_margin_m', .01, .4), ('turn_clearance_m', .2, 1.),
                           ('slow_clearance_m', .3, 2.), ('max_duration_sec', 10, 600),
                           ('return_radius_m', .15, .5), ('min_return_sec', 10, 300),
                           ('min_return_travel_m', 1, 50), ('scan_max_age_sec', .1, .6),
@@ -36,11 +39,15 @@ def configuration(mapping):
                           ('frontier_min_length_m',.10,.5),('coverage_stable_sec',10,60),
                           ('coverage_min_duration_sec',20,120),('coverage_min_travel_m',0.,5.),
                           ('coverage_min_area_m2',.3,10.),('frontier_no_progress_sec',10,60),
-                          ('frontier_stall_sec',2,20),('frontier_goal_timeout_sec',15,180),('lidar_stop_distance_m',.05,.50),
+                          ('frontier_stall_sec',2,20),('frontier_goal_timeout_sec',15,180),('frontier_blocked_replan_sec',.2,2.),
+                          ('frontier_escape_min_m',.05,.15),('frontier_escape_max_m',.05,.15),('lidar_stop_distance_m',.05,.50),
+                          ('frontier_observation_max_rad',.35,math.tau),
                           ('visit_radius_m',.3,1.5),('max_reverse_mps',.02,.8),('control_pause_sec',0.,2.)):
         value = cfg[key]
         if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
             raise StepError('INVALID_AUTONOMY_CONFIG', key)
+    if cfg['frontier_escape_min_m']>cfg['frontier_escape_max_m']:
+        raise StepError('INVALID_AUTONOMY_CONFIG','frontier_escape_min_m')
     if not cfg['stop_margin_m'] < cfg['turn_clearance_m'] < cfg['slow_clearance_m']:
         raise StepError('INVALID_AUTONOMY_CLEARANCES')
     near=cfg.get('near_slow_margin_m')
@@ -207,13 +214,14 @@ class AutoMapper:
             return self.stop('LIDAR_OBSTACLE_WITHIN_10CM' if self.cfg['lidar_stop_distance_m']==.10 else 'LIDAR_OBSTACLE_WITHIN_STOP_DISTANCE')
         if not pose or not all(math.isfinite(pose.get(k,math.nan)) for k in ('x_m','y_m','yaw_rad')):
             return self.stop('MAPPING_POSE_NOT_READY')
-        if gate is not None and (not isinstance(gate,dict) or gate.get('reason') not in ('CLEAR','NO_LEASE','STALE_COMMAND','TURN_ENVELOPE_BLOCKED')):
+        if gate is not None and (not isinstance(gate,dict) or gate.get('reason') not in ('CLEAR','NO_LEASE','STALE_COMMAND','TURN_ENVELOPE_BLOCKED','TURN_SWEEP_SLOWDOWN','LIDAR_PADDING_ESCAPE')):
             if not isinstance(gate,dict):return self.stop('GATE_INVALID_STATUS')
-            if gate.get('reason')=='REAR_OBSTACLE':
+            if gate.get('reason') in ('REAR_OBSTACLE','LIDAR_BRAKING_STOP'):
                 if self.gate_blocked_at is None:self.gate_blocked_at=now
                 # A vetoed reverse candidate is a reason to choose another goal,
                 # not permission to finish the whole exploration run.
-                self.reason='REPLANNING_REAR_BLOCKED';return (0.,0.)
+                self.reason=('REPLANNING_REAR_BLOCKED' if gate['reason']=='REAR_OBSTACLE'
+                             else 'REPLANNING_LIDAR_BLOCKED');return (0.,0.)
             return self.stop('GATE_' + str(gate.get('reason','UNKNOWN')))
         self.gate_blocked_at=None
         previous, at = self.last_pose; dt = max(0.,now-at)
@@ -303,32 +311,40 @@ def manual_assist(velocity,view,age,cfg):
 
 
 def nav2_assist(velocity,view,cfg,scan_age=0.):
-    """Bound a Nav2 candidate and slow forward motion near the body corridor.
-
-    Nav2 checks its oriented trajectory; a blocked full turning circle must not
-    veto a valid turn. The caller has already checked scan age and hard stops.
-    """
+    """Scale one Nav2 trajectory; never change its heading or curvature."""
     legacy=len(velocity)==2
+    zero=(0.,0.) if legacy else (0.,0.,0.)
     x,y,z=(velocity[0],0.,velocity[1]) if legacy else velocity
-    if not all(math.isfinite(v) for v in (x,y,z)):return (0.,0.) if legacy else (0.,0.,0.)
+    if (not all(math.isfinite(v) for v in (x,y,z)) or not view or view.get('valid') is False
+            or not math.isfinite(scan_age) or not 0<=scan_age<=cfg.get('scan_max_age_sec',.4)):
+        return zero
+    if view.get('nearest_lidar_m',math.inf)<=cfg['lidar_stop_distance_m']:return zero
     reverse=cfg.get('reverse_enabled',False) and cfg.get('vehicle')=='rigid'
-    x=max(-cfg.get('max_reverse_mps',.1),x) if reverse else max(0.,x)
     # DWB can add millimetres-per-second of reverse drift to a sideways
     # command.  Treat that as zero before the independent rear guard sees it;
     # meaningful reverse motion is still checked against the rear sector.
     if abs(x)<.005:x=0.
-    # A rear/side point inside the full turning circle does not veto a clear
-    # translation corridor. Keep the Nav2 translation and remove only yaw.
-    if not view.get('rotation_clear',True):z=0.
-    # A configured maximum is never permission to outrun sensor latency and
-    # the .6 m/s^2 Nav2 deceleration profile. Bound each translation corridor.
-    def braking_cap(gap):
-        return braking_speed_cap(gap,scan_age,cfg['stop_margin_m'])
-    longitudinal_gap=view.get('back_m',0.) if x<0 else view['front_m']
-    x=math.copysign(min(abs(x),braking_cap(longitudinal_gap)),x)
-    if y:
-        cap=braking_cap(view.get('lateral_left_m' if y>0 else 'lateral_right_m',0.))
-        y=math.copysign(min(abs(y),cap),y)
-    scale=min(1.,cfg['speed_mps']/max(math.hypot(x,y),1e-9))
-    result=(x*scale,y*scale,max(-cfg['angular_rps'],min(z,cfg['angular_rps'])))
+    if x<0 and not reverse:return zero
+    scale=min(1.,cfg['speed_mps']/max(math.hypot(x,y),1e-9),
+              cfg['angular_rps']/max(abs(z),1e-9))
+    if x<0:scale=min(scale,cfg.get('max_reverse_mps',.1)/abs(x))
+    result=(x*scale,y*scale,z*scale)
+    if 'obstacle_points' in view:
+        # The shared final gate checks the actual swept body. Axis-wise caps
+        # would mistake a diagonal escape for a drive toward a nearby wall.
+        from .motion_braking import limit_velocity
+        result,_=limit_velocity(result,view,scan_age,cfg)
+    else:
+        # Older sector-only views cannot prove a partial turn is clear. Hold
+        # the whole candidate instead of dropping yaw and driving straight.
+        if z and not view.get('rotation_clear',True):return zero
+        limits=[]
+        if x:
+            gap=view.get('back_m',0.) if x<0 else view.get('front_m',0.)
+            limits.append(braking_speed_cap(gap,scan_age,cfg['stop_margin_m'])/abs(x))
+        if y:
+            gap=view.get('lateral_left_m' if y>0 else 'lateral_right_m',0.)
+            limits.append(braking_speed_cap(gap,scan_age,cfg['stop_margin_m'])/abs(y))
+        scale=min(scale,*limits) if limits else scale
+        result=(x*scale,y*scale,z*scale)
     return (result[0],result[2]) if legacy else result

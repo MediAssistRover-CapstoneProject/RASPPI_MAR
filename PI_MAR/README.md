@@ -150,6 +150,109 @@ trên Pi phải trỏ tới địa chỉ Pi truy cập được, chứng chỉ s
 đó trong SAN, và CA tin cậy trên Pi phải khớp CA ký chứng chỉ. Device token
 là thông tin xác thực API, không phải CA. Giữ kiểm tra TLS hoạt động.
 
+## Quan sát té ngã tại checkpoint hoặc trong MOVE/IDLE
+
+Trong `pi/config/mqtt.worker.json`, thêm vào mục `ai` cấu hình sau. File token
+nằm ngoài repo, chỉ cho user chạy worker đọc.
+
+```json
+{
+  "patrol_fall": {
+    "enabled": false,
+    "mode": "CONTINUOUS",
+    "base_url": "https://media.mediassistrover.duckdns.org",
+    "token_file": "/home/ubuntu/mar-secrets/fall-ai.token",
+    "rate_hz": 4,
+    "min_available_memory_mb": 512,
+    "cooldown_sec": 60,
+    "depth": {
+      "enabled": false,
+      "registered_depth_verified": true,
+      "depth_topic": "/ascamera/camera_publisher/depth0/image_raw",
+      "rgb_info_topic": "/ascamera/camera_publisher/rgb0/camera_info",
+      "depth_info_topic": "/ascamera/camera_publisher/depth0/camera_info",
+      "rgb_rectified": false,
+      "floor_z_m": 0,
+      "near_floor_max_height_m": 0.45
+    }
+  }
+}
+```
+
+Khi BE đã nhận workflow tương ứng, mở phiên navigation và thêm `--patrol-fall`
+vào lệnh chạy phiên để bật cho lần chạy đó. Ở BE, dùng checkpoint
+`sensingType: "PATROL_FALL"` để quan sát riêng, hoặc `fallDetection: true`
+để thêm vào các checkpoint quan sát vùng đã có. Dùng `sensingWindowSec: 12`
+cho lần thử đầu. `PATROL_FALL` riêng không cần cấu hình bộ nhận diện vùng cấm.
+
+Để giám sát nền trong MOVE/IDLE, dùng `--fall-monitor` thay cho `--patrol-fall`.
+Task này không đổi trạng thái robot, không trực tiếp điều khiển bánh và không
+đưa lỗi AI thành lỗi MOVE. Nó dùng chung ROS camera, giữ một ảnh RGB mới nhất,
+tối đa sáu ảnh depth và chỉ một request AI đang chạy. QR được ưu tiên;
+thiếu RAM khả dụng sẽ tạm ngưng lấy ảnh AI. Khi SOS giữ micro/loa, phân tích RGB
+vẫn chạy để hỗ trợ staff quan sát; không phát thêm cảnh báo lặp trong cuộc gọi.
+Thời gian cooldown chỉ hạn chế tạo sự kiện mới, không làm đứng khung AI. Sự kiện dùng
+`POST /api/v1/pi/fall-events`, độc lập với job/step. Phải deploy BE/AI tương ứng
+và cài token trước khi bật; cấu hình mặc định giữ tắt cả detector và depth.
+
+### Khung nhận diện trên video WebRTC
+
+AI trả `overlay` từ cùng lần suy luận pose. Worker công bố metadata tại ROS
+`/mediassist/ai/overlay` (giữ bản mới nhất); media bridge gửi gói lossy
+`mar.ai.overlay.v1` trong đúng phiên LiveKit. Pi không vẽ/encode lại video và
+không chạy thêm model. Task metadata có timeout 200 ms, không nằm trong vòng
+MOVE hoặc vòng phát video; không có hàng đợi gửi lại các khung cũ.
+
+Gói gồm `v`, `media_session_id`, `seq`, `captured_at`, kích thước ảnh,
+`status` và `detections`. Gói tối đa 1200 byte; khi quá giới hạn ưu tiên giữ
+khung nghi té ngã rồi khung người có độ tin cậy cao. Timestamp cũ hơn 1,5 giây
+bị loại. UI kiểm tra participant robot/session/sequence, vẽ canvas đúng vùng
+video và xóa khung khi rỗng, mất video, reconnect hoặc hết TTL. Đây là overlay
+theo ảnh AI gần nhất, có nhãn tuổi kết quả; không trì hoãn video để đồng bộ
+từng frame. Một khung đỏ là nghi vấn để staff xem, không tự xác nhận sự cố.
+
+Triển khai AI service có phản hồi `overlay` và BE có quyền data chỉ cho robot
+trước, sau đó cài Pi `media_runtime.py`, `media_bridge.py`, `patrol_fall.py`.
+Trang `/media-call.html` đi kèm BE mới. Dùng `--fall-monitor` cho MOVE/IDLE;
+`--patrol-fall` chỉ phân tích trong cửa sổ sensing của checkpoint. Chỉ chạy
+`robot.zsh run` để quét map không tự tạo observer navigation.
+
+Nhánh `PERSON_ON_FLOOR` nhận người đã nằm sẵn bằng tư thế ngang duy trì ít
+nhất hai giây ở service. Pi chỉ gửi cảnh báo nhánh này khi RGB/depth cùng khung,
+TF hợp lệ và cả hai hông không cao hơn ngưỡng `near_floor_max_height_m` so với
+sàn. Đây là nghi vấn cần staff xem camera, không phải kết luận té ngã. Khi
+camera đang di chuyển, không suy luận quá trình ngã từ vận tốc hông trên ảnh;
+nhánh người nằm sẵn vẫn có thể quan sát nếu đủ depth/TF. Thời điểm chụp và cờ
+chuyển động được gửi tới AI để tránh tính vận tốc từ độ trễ mạng.
+
+Pi lấy khung RGB từ cùng topic của camera đang chạy và chỉ gửi trong lúc đứng
+yên tại checkpoint. Khi nghi té ngã, worker gửi sự kiện cho BE để staff trực
+xác minh. Staff nhận phiên `MONITOR` trên `/media-call.html`, xem camera trực
+tiếp rồi bấm xác nhận. BE dùng bản đồ đã lưu để tính đường từ endpoint phòng
+SOS tới điểm người đã đo được bằng RGB-D, nếu có tọa độ đáng tin cậy và lối đi
+hợp lệ. Response chứa riêng điểm người, vị trí robot lúc quan sát và endpoint
+gần người có thể đề xuất cho một lệnh MOVE. Khi thiếu depth/TF hoặc hông bị che,
+BE chỉ có điểm robot lúc quan sát. Luồng tuần tra dừng ở checkpoint khi
+báo nghi té ngã. SOS do người bấm dùng luồng SOS bình thường.
+
+Độ sâu cần trùng frame và thông số camera RGB, lệch thời gian không quá 40 ms.
+Pi lấy median depth quanh hai điểm cơ thể của đúng người kích hoạt cảnh báo.
+Nếu có đủ hai hông, điểm map là trung điểm hông; nếu chỉ có hông và gối/cổ
+chân, điểm map giữ tại hông. Pi dùng TF tại thời điểm chụp và gửi `patientLocation` có
+map/hash/session/revision. Trường hợp nhiều người chồng lên nhau hoặc depth
+không nhất quán sẽ bỏ tọa độ người. Trước khi bật, kiểm tra hướng và vị trí
+mount camera ngoài robot để TF khớp thực tế. Cấu hình mẫu dành cho camera
+AS đã xác minh registered depth; không áp dụng chỉ dựa vào tên topic.
+
+AI v5 còn trả `floor_candidate` cho thân người hướng dọc camera, chưa coi là
+té ngã. Pi chỉ chuyển thành nghi nằm trên sàn khi đứng yên, hông và gối/cổ
+chân cùng người đều thấp tối đa 30 cm, chênh cao tối đa 18 cm và khoảng ngang
+25–120 cm trong 3D. Có thể chỉnh `depth.end_on_max_height_m` trong 0,15–0,45 m;
+không vượt ngưỡng chung `near_floor_max_height_m`. Không dùng điểm thấp nhất
+toàn ảnh hoặc tự suy vị trí từ khung người khi thiếu keypoint. Log
+`FALL_MONITOR_HEALTH` gồm `location_reason` và số pixel depth hợp lệ tại điểm
+đo để phân biệt thiếu depth, hai điểm trùng nhau, sai calibration và thiếu TF.
+
 ## Thùng gắn cứng phía sau khi MOVE trên map đã lưu
 
 Quét map giữ thân robot trần. Thùng gắn **cứng, thẳng và ở giữa** được cấu hình
@@ -159,15 +262,15 @@ nhô thêm từ mép sau robot, kể cả giá đỡ. Sau khi dừng stack, tron
 ```sh
 cd /home/ubuntu/mediassist-mqtt-2026-10-08
 pi/.venv/bin/python tools/configure_navigation_geometry.py \
-  --rear-extension .10 --cargo-width .15
+  --rear-extension .08 --cargo-width .15
 pi/.venv/bin/python tools/configure_navigation_geometry.py \
-  --rear-extension .10 --cargo-width .15 --apply
+  --rear-extension .08 --cargo-width .15 --apply
 ```
 
 Với biên trần front=.109, rear=.104, left/right=.086 m từ `base_footprint`,
-thân cộng thùng có rear=.204 m, tổng dài .313 m và rộng .172 m. Hình chữ nhật
+thân cộng thùng có rear=.184 m, tổng dài .293 m và rộng .172 m. Hình chữ nhật
 bao dùng chiều rộng robot cả phần đuôi (dư 1,1 cm mỗi bên so với thùng 15 cm).
-Padding Nav2 hiện có vẫn tính riêng, không cộng 10 cm vào cả trước và sau.
+Nav2 tính riêng padding 2 cm ở mỗi cạnh, nên hình bao có đệm là 33,3 × 21,2 cm.
 
 Lệnh cấu hình lưu mặc định `cargo` cho **những phiên saved-map mới**; không
 đổi footprint/tốc độ quét map, hardware profile gốc, URL, TLS hay asset map.
@@ -181,6 +284,12 @@ zsh tools/navigation_session.zsh --session-id SESSION_ID --load-profile bare
 # Quét map mới không gắn thùng:
 zsh tools/robot.zsh run
 ```
+
+Phiên navigation mới mặc định `--travel-policy FORWARD_PATH`: robot quay theo
+path rồi tiến/cua để dẫn đường. Đi ngang/lùi ngắn vẫn dành cho phục hồi đã
+kiểm tra khoảng trống; quét map giữ cấu hình riêng. Chỉ chọn
+`--travel-policy HOLONOMIC` khi muốn giữ hướng thân và dịch ngang khi đi bình
+thường. Đổi chính sách cần mở lại phiên, không đổi controller giữa MOVE.
 
 Mỗi phiên cargo tạo bản config/hardware tạm với cùng biên cho localization,
 endpoint, zone, phanh LiDAR và hai costmap. Cargo chọn Smac Hybrid SE2 để
@@ -334,6 +443,13 @@ File bíp và WAV TTS là âm thanh hệ thống, được xóa khi phát xong/h
 workflow voice MOVE → báo đã tới nơi** một lần. Workflow chuẩn
 `WF_VOICE_ENDPOINT_V1` nhận endpoint/map/tốc độ qua tham số, không cố định a/b/c.
 
+Trong cùng file AI private, có thể đặt `"navigation_ready_timeout_sec": 6`;
+mặc định 6 giây, cho phép 0,5..15 giây. Khi xác nhận điểm đến mà phiên map cũ
+tạm mất READY, voice chờ trong giới hạn này để phiên sẵn sàng trở lại; không
+tạo phiên map mới hoặc khởi tạo lại AMCL. Phiên đóng/hết hạn, map hay revision
+khởi tạo thay đổi vẫn bị từ chối;
+MOVE tiếp tục kiểm tra pose và cảm biến trực tiếp trước khi chạy bánh.
+
 Mở map đúng nơi robot đứng, tạo phiên tạm và chạy navigation với session ID
 HTML cung cấp. Chờ READY rồi mở terminal khác, chạy `voice_audio.py chat`
 như trên. Câu Việt/Anh hoặc trộn ngôn ngữ như “dẫn tôi tới point b”, “take me
@@ -418,6 +534,41 @@ Không ghi transcript vào log voice của stack, không giữ file thu âm củ
 dùng. Lịch sử văn bản tiếp tục về BE. Lỗi AI/micro không dừng stack di chuyển.
 Chưa có phiên map thì chức năng thường trực này không tự bật; CLI thu/phát/chat
 thủ công vẫn dùng được. `Ctrl+C` stack dừng cả tiến trình voice và thiết bị thu/phát.
+
+## Điện áp và phần trăm pin
+
+RRC Lite phát `/ros_robot_controller/battery` dạng `UInt16`, đơn vị mV.
+Worker gửi số đo trong `HEARTBEAT.payload.telemetry.battery`; không thêm MQTT
+client, ROS node hoặc file lịch sử pin. `value` và `age_sec` giữ tương thích;
+các trường mới gồm `unit`, `voltage_v`, `percent`, `estimate_method`,
+`estimate_status`, `profile_id`, `curve_calibrated` và thông số cụm pin.
+Pi chỉ gửi phần mở rộng sau khi `HELLO_ACK` từ BE có
+`batteryTelemetryVersion=1`; với BE cũ, heartbeat/ROBOT_HEALTH giữ nguyên dạng
+raw và `% = null` để không bị từ chối vì trường dữ liệu chưa hỗ trợ.
+
+Phần `battery` trong hardware profile đang dùng cấu hình số cell nối tiếp/song
+song, dung lượng mỗi cell và bảng `cell_voltage_curve` theo điện áp **mỗi cell**.
+Ví dụ trong `pi/config/site.example.json` dành cho 4 cell 5330 mAh mắc 2S2P:
+7,4 V danh định, 10660 mAh, đầy 8,4 V. Chỉ đặt `enabled=true` khi đúng cụm pin;
+cấu hình cũ không có phần này tiếp tục gửi số đo raw, chưa ước tính %.
+
+Bộ lọc median 5 mẫu và EMA 15 giây giảm dao động khi motor tải; cần 3 mẫu hợp lệ
+trước khi có %. Mẫu quá 60 giây hoặc ngoài dải điện áp sẽ làm % về
+`null` và khởi tạo lại bộ lọc khi nhận mẫu mới. Đọc API/heartbeat không gia hạn
+thời điểm đo. Tính năng này chỉ cung cấp telemetry, không đổi chính sách MOVE,
+điều khiển motor hay ngưỡng bảo vệ pin/BMS.
+
+`curve_calibrated=false` là bảng Li-ion 4,2 V ban đầu, chưa phải phép đo dung
+lượng hay đường cong đã đo riêng cho Samsung 58E. Dung lượng trên nhãn không
+xác định được chính xác % từ điện áp dưới tải. Đối chiếu với đồng hồ đo trước
+khi chỉnh `voltage_gain`/`voltage_offset_v`; chỉ bật `curve_calibrated` sau khi
+đã đo và thay bảng SOC cho chính cụm pin. Không suy ra dòng sạc/xả hoặc thời
+gian còn lại từ số đo này.
+
+Sau khi deploy BE tương ứng, ADMIN/STAFF đọc
+`GET /api/v1/robots/{robotId}/battery` với Bearer token của người dùng. Response
+có điện áp, %, độ mới và phương pháp ước tính; dữ liệu cũ không được trình bày
+như số đo hiện tại. Pi tiếp tục dùng device token riêng và MQTT đã cấu hình.
 
 ## Kiểm thử offline
 

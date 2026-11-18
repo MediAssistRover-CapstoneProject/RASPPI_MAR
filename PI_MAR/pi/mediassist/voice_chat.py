@@ -19,6 +19,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import wave
+from collections import deque
 from contextlib import contextmanager
 from .audio_lock import AudioLock
 from .be_token import NoRedirect
@@ -252,6 +253,57 @@ def rms(raw):
     return math.sqrt(sum(x*x for x in samples)/max(1,len(samples)))/32768.
 
 
+class TurnCapture:
+    """Bounded VAD capture with pre-roll and a short retained silence tail."""
+    FRAME_SEC = .03
+    FRAME_BYTES = 960
+    MIN_VOICED = 8
+    END_SILENCE = 22
+    KEEP_TAIL = 4
+
+    def __init__(self, detector, max_seconds):
+        self.detector = detector
+        self.max_frames = int(max_seconds / self.FRAME_SEC)
+        self.noise = deque(maxlen=40)
+        self.lead = deque(maxlen=10)
+        self.onset = deque(maxlen=3)
+        self.frames = []
+        self.voiced = self.quiet = 0
+
+    def push(self, block):
+        level = rms(block)
+        speech = self.detector.is_speech(block, 16000)
+        if not speech:
+            self.noise.append(level)
+        noise = sorted(self.noise)
+        floor = noise[(len(noise) - 1) // 3] if noise else .002
+        threshold = max(.003, floor * (1.25 if self.frames else 1.7))
+        active = speech and level >= threshold
+        if not self.frames:
+            self.lead.append((block, active))
+            self.onset.append(active)
+            if sum(self.onset) >= 2:
+                self.frames = [sample for sample, _ in self.lead]
+                self.voiced = sum(voiced for _, voiced in self.lead)
+            return None
+
+        self.frames.append(block)
+        self.voiced += active
+        self.quiet = 0 if active else self.quiet + 1
+        if self.quiet < self.END_SILENCE and len(self.frames) < self.max_frames:
+            return None
+        trim = max(0, self.quiet - self.KEEP_TAIL)
+        end = len(self.frames) - trim
+        if self.voiced >= self.MIN_VOICED:
+            return b''.join(self.frames[:end])
+        # A short noise burst must not hold the mic open until the 15 s cap.
+        self.frames.clear()
+        self.lead.clear()
+        self.onset.clear()
+        self.voiced = self.quiet = 0
+        return None
+
+
 async def stop_process(proc):
     if proc.returncode is None:
         try:proc.terminate()
@@ -263,11 +315,16 @@ async def stop_process(proc):
         await proc.communicate()
 
 
-async def listen(player,start_timeout=8,max_seconds=15,threshold=.008):
-    """Read ALSA raw PCM to bounded RAM, finish after 0.8 s of silence."""
+async def listen(player,start_timeout=8,max_seconds=15):
+    """Read ALSA raw PCM to bounded RAM and stop on a speech pause."""
+    try:
+        import webrtcvad
+    except ImportError:
+        raise StepError('VOICE_VAD_DEPENDENCY_MISSING') from None
     recorder=shutil.which('arecord');output=shutil.which('aplay')
     if not recorder or not output:raise StepError('VOICE_ALSA_TOOLS_MISSING')
-    device=audio_device(player.cfg);block_bytes=960;rate=16000
+    device=audio_device(player.cfg);rate=16000
+    segmenter = TurnCapture(webrtcvad.Vad(1), max_seconds)
     async with player.lock:
         with tempfile.TemporaryFile() as diagnostic:
             proc=await asyncio.create_subprocess_exec(recorder,'-q','-D',device,'-t','raw','-f','S16_LE','-r',str(rate),'-c','1',
@@ -275,29 +332,24 @@ async def listen(player,start_timeout=8,max_seconds=15,threshold=.008):
             armed=asyncio.Event()
 
             async def capture():
-                blocks=[];lead=[];started=None;speech_at=None;voiced=0;quiet=0
+                started=None
                 while True:
-                    try:block=await asyncio.wait_for(proc.stdout.readexactly(block_bytes),1.5)
+                    try:block=await asyncio.wait_for(proc.stdout.readexactly(TurnCapture.FRAME_BYTES),1.5)
                     except (asyncio.IncompleteReadError,asyncio.TimeoutError):raise StepError('VOICE_MIC_STREAM_FAILED') from None
                     # ALSA is already open during the cue. Discard the robot's
                     # own beep instead of opening the mic after the user starts.
                     if not armed.is_set():continue
-                    active=rms(block)>=threshold;now=time.monotonic()
+                    now=time.monotonic()
                     if started is None:started=now
-                    if speech_at is None:
-                        lead.append(block);lead=lead[-10:]
-                        if active:speech_at=now;blocks=list(lead);voiced=1
-                        elif now-started>=start_timeout:return None
-                    else:
-                        blocks.append(block);voiced+=int(active);quiet=0 if active else quiet+1
-                        if (quiet>=27 and voiced>=12) or now-speech_at>=max_seconds:
-                            return b''.join(blocks)[-rate*2*max_seconds:] if voiced>=12 else None
+                    pcm = segmenter.push(block)
+                    if pcm is not None:
+                        return pcm
+                    if not segmenter.frames and now-started>=start_timeout:
+                        return None
 
             recording=asyncio.create_task(capture())
             try:
-                with tempfile.TemporaryDirectory(prefix='mar-voice-cue-') as folder:
-                    cue=Path(folder)/'ready.wav';cue.write_bytes(recording_cue())
-                    await player.process([output,'-q','-D',device,str(cue)])
+                await player.process([output,'-q','-D',device,'-t','wav'], recording_cue())
                 await asyncio.sleep(.10)
                 armed.set()
                 print('VOICE_LISTENING: nói sau tiếng bíp.',flush=True)
@@ -315,15 +367,29 @@ async def listen(player,start_timeout=8,max_seconds=15,threshold=.008):
 async def say(player,text,log_transcripts=True,ai=None):
     if log_transcripts:print('MAR:',text,flush=True)
     text = text[:500]
+    started = time.monotonic()
+    first_audio = None
+    audio = None
+    source = player.cfg.get('engine', 'espeak-ng')
+
+    def audio_started():
+        nonlocal first_audio
+        first_audio = time.monotonic()
+
     if ai is not None:
         try:
             audio = await asyncio.to_thread(ai.synthesize,text)
         except StepError as error:
             logging.info('VOICE_TTS_FALLBACK code=%s',error.code)
-        else:
-            await player.play_wav(audio,volume=70)
-            return
-    await player.speak(dict(action='SPEAK',prompt_key='VOICE_CHAT',data=dict(text=text,language_code='vi',volume=70,speed_wpm=150)))
+    if audio is not None:
+        source = 'ai-direct'
+        await player.play_wav(audio, volume=70, on_playback_start=audio_started)
+    else:
+        await player.speak(dict(action='SPEAK',prompt_key='VOICE_CHAT',data=dict(text=text,language_code='vi',volume=70,speed_wpm=150)),
+                           on_playback_start=audio_started)
+    if first_audio is not None:
+        logging.info('VOICE_TTS_TIMING engine=%s first_audio_ms=%d played_ms=%d chars=%d', source,
+                     round((first_audio-started)*1000), round((time.monotonic()-first_audio)*1000), len(text))
 
 
 async def transcribe(be,ai,raw,language):
@@ -386,12 +452,12 @@ async def conversation(worker,config_path,start_now=True,once=True,max_turns=10,
     stt_language=ai.config.get('stt_language','auto')
     if stt_language not in ('vi','en','auto'):raise StepError('VOICE_LANGUAGE_UNSUPPORTED')
     # History is independent of MQTT and motor execution.
-    health=await asyncio.to_thread(ai.request,'/health')
+    health, _ = await asyncio.gather(asyncio.to_thread(ai.request, '/health'),
+                                     asyncio.to_thread(history.recover))
     if health.get('state')!='READY':raise StepError('VOICE_AI_NOT_READY')
     speech_ai = ai if health.get('direct_speech') is True else None
     async def speak(text):
         await say(player,text,log_transcripts,speech_ai)
-    await asyncio.to_thread(history.recover)
     while True:
         if not start_now:await wait_for_wake(worker,ai)
         start_now=False

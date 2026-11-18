@@ -667,11 +667,84 @@
           "type": "object",
           "properties": {
             "value": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
             },
             "age_sec": {
               "type": "number",
               "minimum": 0
+            },
+            "unit": {
+              "enum": [
+                "MILLIVOLT"
+              ]
+            },
+            "percent": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "voltage_v": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "estimate_method": {
+              "enum": [
+                "VOLTAGE_CURVE",
+                "UNAVAILABLE"
+              ]
+            },
+            "estimate_status": {
+              "enum": [
+                "ESTIMATED",
+                "WARMING_UP",
+                "STALE",
+                "INVALID",
+                "UNCONFIGURED"
+              ]
+            },
+            "profile_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "curve_calibrated": {
+              "type": "boolean"
+            },
+            "series_cells": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 12
+            },
+            "parallel_cells": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16
+            },
+            "nominal_capacity_mah": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 480000
+            },
+            "nominal_voltage_v": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 60
             }
           },
           "required": [

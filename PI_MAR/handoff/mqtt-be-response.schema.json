@@ -25,6 +25,9 @@
         },
         "accepted": {
           "type": "boolean"
+        },
+        "batteryTelemetryVersion": {
+          "const": 1
         }
       },
       "required": [

@@ -64,6 +64,8 @@ def main():
     parser.add_argument('--broker', help='Override diagnostic hostname; by default read the active worker config')
     parser.add_argument('--config', default='/home/ubuntu/mediassist-mqtt-2026-10-08/pi/config/mqtt.worker.json')
     parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--sync-network', action='store_true',
+                        help='Also replace a slow/stale resolver snapshot after switching Wi-Fi, even if lookup succeeds')
     args = parser.parse_args()
     if sys.platform != 'linux' or Path('/.dockerenv').exists():
         parser.error('Run on Pi HOST using sudo python3, not Windows or inside MentorPi')
@@ -82,10 +84,11 @@ def main():
         raise RuntimeError('HOST_DNS_FAILED: fix Pi host Wi-Fi/Internet/DNS first; container DNS was not changed')
     print('HOST_DNS_OK', flush=True)
     resolves = lambda: dns_resolves(docker + ['getent', 'ahostsv4', args.broker], 'CONTAINER', timeout=12)
-    if resolves():
+    resolved = resolves()
+    if resolved and not args.sync_network:
         print('CONTAINER_DNS_OK: no change needed. Check worker reconnect and broker TLS next.')
         return
-    print('CONTAINER_DNS_FAILED', flush=True)
+    print('CONTAINER_DNS_NETWORK_SYNC_REQUESTED' if resolved else 'CONTAINER_DNS_FAILED', flush=True)
     if mode not in ('host', 'bridge', 'default'):
         raise RuntimeError('NETWORK_MODE_NEEDS_INSPECTION: no DNS change made for network ' + mode + '; preserve custom-network service discovery and inspect Docker upstream DNS first')
     extra = ''

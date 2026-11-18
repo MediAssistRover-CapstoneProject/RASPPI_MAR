@@ -692,7 +692,12 @@
                     ]
                   },
                   "battery_percent": {
-                    "type": "null"
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "maximum": 100
                   }
                 },
                 "required": [

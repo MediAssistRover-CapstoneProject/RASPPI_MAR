@@ -13,7 +13,10 @@ def footprint_rectangle(front, rear, left, right):
     return [[front, left], [-rear, left], [-rear, -right], [front, -right]]
 
 
-def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=False, fast_mapping=False, fast_navigation=False, position_then_spin=False, footprint_planner=False, forward_only=False, position_only=False, path_tracking=False, full_footprint_search=False):
+def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=False, fast_mapping=False, fast_navigation=False, position_then_spin=False, footprint_planner=False, forward_only=False, position_only=False, path_tracking=False, full_footprint_search=False, holonomic_move=False, reverse_limit=0.):
+    if holonomic_move and (not mecanum or not footprint_planner or fast_mapping
+                           or forward_only or path_tracking or full_footprint_search):
+        raise ValueError('Holonomic MOVE requires the saved-map Mecanum footprint controller')
     if forward_only and fast_mapping:raise ValueError('Forward only is for saved-map MOVE, not exploration')
     if position_only and (position_then_spin or fast_mapping):raise ValueError('Position-only MOVE cannot also align final heading or explore')
     if path_tracking and not (forward_only and (position_only or position_then_spin)):
@@ -55,8 +58,11 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
     if follow.get('plugin') != 'dwb_core::DWBLocalPlanner':
         raise ValueError('Expected installed Hiwonder DWB profile; do not replace an unknown controller silently')
     # Saved-map escort/delivery follows its heading. Exploration may strafe.
-    lateral = speed if mecanum and fast_mapping else 0.0
-    follow.update(min_vel_x=-speed if mecanum and not forward_only else 0.0, min_vel_y=-lateral, max_vel_x=speed, max_vel_y=lateral,
+    lateral = speed if mecanum and fast_mapping else min(speed,.15) if holonomic_move else 0.0
+    reverse = min(speed,reverse_limit) if holonomic_move else speed if mecanum and not forward_only else 0.
+    if not 0. <= reverse <= speed:
+        raise ValueError('Invalid reverse velocity limit')
+    follow.update(min_vel_x=-reverse, min_vel_y=-lateral, max_vel_x=speed, max_vel_y=lateral,
                   max_speed_xy=speed, max_vel_theta=angular,
                   min_speed_xy=min(.025,speed), min_speed_theta=min(.10,angular),
                   trans_stopped_velocity=0.01, vy_samples=5 if lateral else 1,xy_goal_tolerance=.05)
@@ -82,6 +88,7 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
     # DWB's centre-point BaseObstacle critic alone does not check the cart polygon.
     follow['critics'] = ['ObstacleFootprint' if x == 'BaseObstacle' else x for x in follow['critics']]
     follow.pop('BaseObstacle.scale', None)
+    if 'ObstacleFootprint' not in follow['critics']:follow['critics'].insert(0,'ObstacleFootprint')
     follow['ObstacleFootprint.scale'] = 1.0
     ctl['progress_checker'].update(required_movement_radius=0.1, movement_time_allowance=20.0)
     # Exploration goals are observation viewpoints, not delivery docking poses.
@@ -119,7 +126,7 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
     follow.update(acc_lim_x=.40,decel_lim_x=-.6,acc_lim_y=.40 if mecanum else 0.,
                   decel_lim_y=-.6 if mecanum else 0.,acc_lim_theta=1.2,decel_lim_theta=-1.8)
     result['velocity_smoother']['ros__parameters'].update(
-        max_velocity=[speed, lateral, angular], min_velocity=[-speed if mecanum and not forward_only else 0.0, -lateral, -angular],
+        max_velocity=[speed, lateral, angular], min_velocity=[-reverse, -lateral, -angular],
         scale_velocities=True, smoothing_frequency=20.,
         max_accel=[.40,.40 if mecanum else 0.,1.2],max_decel=[-.6,-.6 if mecanum else 0.,-1.8],velocity_timeout=.25)
     if fast_mapping and mecanum:
@@ -150,7 +157,7 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
                 # Two 2.5 cm grid cells keep finite Dubins primitives, while
                 # SE2 still collision-checks the complete cargo rectangle.
                 result['planner_server']['ros__parameters']['GridBased']['minimum_turning_radius']=.05
-            if (position_only or path_tracking) and not full_footprint_search:
+            if (position_only or path_tracking or holonomic_move) and not full_footprint_search:
                 # A position target must not require a Dubins terminal heading
                 # or a last-metre loop. Smac 2D smooths a cost-aware grid path;
                 # the local controller still checks the oriented real footprint.
@@ -162,12 +169,43 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
                     'use_final_approach_orientation':True,
                     'smoother':{'max_iterations':500,'tolerance':1.e-8,
                                 'w_data':.15,'w_smooth':.35,'do_refinement':True}}
+                if holonomic_move:
+                    # Preserve the grid's straight segments through narrow bends.
+                    result['planner_server']['ros__parameters']['GridBased']['smoother'].update(
+                        max_iterations=0,do_refinement=False)
             result['global_costmap']['global_costmap']['ros__parameters'].update(rolling_window=False,track_unknown_space=True)
             for name in ('global_costmap','local_costmap'):
                 costmap=result[name][name]['ros__parameters']
                 costmap['filters']=list(dict.fromkeys([*costmap.get('filters',[]),'mar_keepout_inflation']))
                 costmap['mar_keepout_inflation']={'plugin':'nav2_costmap_2d::InflationLayer',
                     'enabled':True,'inflation_radius':.45,'cost_scaling_factor':3.0}
+    if holonomic_move:
+        # Let the chassis translate around a corner before turning. DWB checks
+        # each sampled trajectory against the actual padded body in the costmap.
+        for critic in ('PathDist','GoalDist','Twirling'):
+            if critic not in follow['critics']:follow['critics'].append(critic)
+        follow['critics']=[critic for critic in follow['critics']
+                           if critic not in ('RotateToGoal','GoalAlign','PathAlign')]
+        follow.update({'PathDist.scale':32.,'GoalDist.scale':20.,'Twirling.scale':12.})
+        follow.update(vx_samples=11,vy_samples=5,vtheta_samples=7,
+                      sim_time=1.,linear_granularity=.025,angular_granularity=.08)
+        ctl.update(failure_tolerance=2.,controller_frequency=15.)
+        ctl['general_goal_checker'].update(xy_goal_tolerance=.04,yaw_goal_tolerance=math.pi,stateful=True)
+        ctl['progress_checker'].update(required_movement_radius=.04,movement_time_allowance=20.)
+        # Local trajectories also check mapped walls beyond live sensor coverage.
+        local=result['local_costmap']['local_costmap']['ros__parameters']
+        # Humble ObstacleFootprint multiplies scale by costmap resolution,
+        # unlike BaseObstacle. Keep the vendor's effective .02 cost weight:
+        # excessive inflation cost made legal reverse trajectories beat progress.
+        resolution=local.get('resolution',.1)  # Costmap2DROS default when omitted.
+        if type(resolution) not in (int,float) or not math.isfinite(resolution) or resolution<=0.:
+            raise ValueError('Local costmap resolution must be finite and positive')
+        follow['ObstacleFootprint.scale']=.02/resolution
+        plugins=list(local.get('plugins',[]))
+        if not any(local.get(name,{}).get('plugin')=='nav2_costmap_2d::StaticLayer' for name in plugins):
+            local['plugins']=['mar_static',*plugins]
+            local['mar_static']={'plugin':'nav2_costmap_2d::StaticLayer','map_subscribe_transient_local':True}
+        result['global_costmap']['global_costmap']['ros__parameters']['update_frequency']=2.
     if path_tracking:
         # Replace the sampled DWB + per-replan rotation shim as one unit.
         # RPP follows a forward carrot and regulates speed/footprint collision
@@ -219,7 +257,7 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
         for plugin in ('nav2_recovery_node_bt_node','nav2_clear_costmap_service_bt_node','nav2_wait_action_bt_node',
                        'nav2_is_path_valid_condition_bt_node'):
             if plugin not in navigator['plugin_lib_names']:navigator['plugin_lib_names'].append(plugin)
-        if forward_only and 'mar_commit_navigation_path_bt_node' not in navigator['plugin_lib_names']:
+        if (forward_only or holonomic_move) and 'mar_commit_navigation_path_bt_node' not in navigator['plugin_lib_names']:
             navigator['plugin_lib_names'].append('mar_commit_navigation_path_bt_node')
     return result
 

@@ -13,8 +13,9 @@ from mediassist.worker_config import load
 from configure_mapping import stopped_configuration
 from configure_localization import nav_parameters
 
-def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profile=None,voice_chat=None,patrol_fall=None):
+def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profile=None,voice_chat=None,patrol_fall=None,fall_monitor=None,travel_policy='FORWARD_PATH'):
     if arrival_mode not in ('POSITION_ONLY','POSITION_THEN_SPIN'):raise ValueError('Unsupported arrival mode')
+    if travel_policy not in ('FORWARD_PATH','HOLONOMIC'):raise ValueError('Unsupported travel policy')
     position_only=arrival_mode=='POSITION_ONLY'
     native=ROOT/'pi/native/navigation_bt/build'
     if not (native/'libmar_commit_navigation_path_bt_node.so').is_file():
@@ -23,11 +24,24 @@ def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profil
     cfg,hw=load(config)
     if voice_chat is not None:cfg['voice_chat']['enabled']=voice_chat
     if patrol_fall is not None:
-        from mediassist.patrol_fall import configuration as fall_configuration
         settings=cfg['ai'].setdefault('patrol_fall', {})
         settings['enabled']=patrol_fall
-        fall_configuration(cfg['ai'], cfg['mapping']['camera'])
+        if patrol_fall:settings['mode']='CHECKPOINT'
+    if fall_monitor is not None:
+        settings=cfg['ai'].setdefault('patrol_fall', {})
+        settings['enabled']=fall_monitor
+        if fall_monitor:settings['mode']='CONTINUOUS'
+    if cfg.get('ai', {}).get('patrol_fall', {}).get('enabled'):
+        from mediassist.patrol_fall import configuration as fall_configuration, read_token
+        settings = fall_configuration(cfg['ai'], cfg['mapping']['camera'])
+        read_token(settings['token_file'])
     cfg,hw,geometry=session_geometry(cfg,hw,load_profile)
+    mecanum=hw['motion'].get('chassis_model')=='MENTORPI_M1_MECANUM' and hw['motion'].get('allow_strafe') is True
+    # Routine travel faces the path; chassis capability alone must not select
+    # fixed-yaw strafing. Collision-checked escape XY keeps its hardware limits.
+    holonomic=travel_policy=='HOLONOMIC'
+    if holonomic and not (mecanum and hw['motion'].get('lidar_braking') is not None):
+        raise ValueError('Holonomic travel requires the Mecanum chassis and lidar braking')
     client=SessionClient(cfg);descriptor=client.get(session_id)
     session_id=descriptor['sessionId'];map_id=descriptor['mapId']
     import uuid
@@ -48,25 +62,26 @@ def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profil
     polygon=footprint_rectangle(**extent)
     base=yaml.safe_load(Path('/home/ubuntu/ros2_ws/src/navigation/config/nav2_params.yaml').read_text())
     controller=yaml.safe_load(Path('/home/ubuntu/ros2_ws/src/navigation/config/nav2_controller_dwb.yaml').read_text())
-    mecanum=hw['motion'].get('chassis_model')=='MENTORPI_M1_MECANUM' and hw['motion'].get('allow_strafe') is True
     if not Path('/opt/ros/humble/lib/libnav2_smac_planner.so').is_file():raise RuntimeError('SMAC_PLANNER_NOT_INSTALLED')
-    required='libnav2_regulated_pure_pursuit_controller.so'
+    reverse=hw['motion']['max_reverse_speed_mps'] if hw['motion'].get('allow_reverse') else 0.
+    required='libdwb_core.so' if holonomic else 'libnav2_regulated_pure_pursuit_controller.so'
     if not Path('/opt/ros/humble/lib',required).is_file():raise RuntimeError('NAVIGATION_CONTROLLER_NOT_INSTALLED: '+required)
     params=nav_parameters(nav2_params(base,controller,polygon,
         speed=min(hw['navigation'].get('max_speed_mps',.25),hw['max_speed_mps']),
         angular=min(2. if mecanum else .6,hw['navigation'].get('max_angular_speed_rps',.8 if mecanum else .6),hw['motion']['max_angular_speed_rps']),
         mecanum=mecanum,fast_navigation=mecanum and hw['motion'].get('lidar_braking') is not None,
-        position_then_spin=not position_only,footprint_planner=True,forward_only=True,
-        position_only=position_only,path_tracking=True,
-        full_footprint_search=geometry['profile']=='cargo'),hardware)
+        position_then_spin=not position_only,footprint_planner=True,forward_only=not holonomic,
+        position_only=position_only,path_tracking=not holonomic,
+        full_footprint_search=not holonomic and (mecanum or geometry['profile']=='cargo'),
+        holonomic_move=holonomic,reverse_limit=reverse),hardware)
     (root/'nav2.yaml').write_text(yaml.safe_dump(params,sort_keys=False),encoding='utf-8')
     write_private(root/'hardware.json',json.dumps(hardware,indent=2))
     runtime=copy.deepcopy(cfg);runtime['hardware_profile']=str(root/'hardware.json');runtime['navigation_session']=context
     runtime['stack_state_dir']=str(ROOT/'pi/state/stack')
     runtime['navigation_runtime']=dict(map_yaml=str(root/'map.yaml'),nav2_params=str(root/'nav2.yaml'),localization_only=False,
-        arrival_mode=arrival_mode,controller='REGULATED_PURSUIT',
-        footprint_planner=True,forward_only=True,preserve_path_on_replan=True,geometry=geometry,
-        full_footprint_search=geometry['profile']=='cargo')
+        arrival_mode=arrival_mode,travel_policy=travel_policy,controller='HOLONOMIC_DWB' if holonomic else 'REGULATED_PURSUIT',
+        footprint_planner=True,forward_only=not holonomic,preserve_path_on_replan=True,geometry=geometry,
+        full_footprint_search=not holonomic and (mecanum or geometry['profile']=='cargo'))
     runtime['navigation_runtime'].update(obstacle_wait_sec=15.,obstacle_retry_interval_sec=1.)
     runtime['navigation_runtime'].update(localization_wait_sec=30.,localization_retry_count=2)
     runtime['localization']={**runtime.get('localization',{}),
@@ -82,18 +97,24 @@ def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profil
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--config',type=Path,default=ROOT/'pi/config/mqtt.worker.json');p.add_argument('--session-id')
     p.add_argument('--arrival-mode',choices=['POSITION_ONLY','POSITION_THEN_SPIN'],default='POSITION_THEN_SPIN')
+    p.add_argument('--travel-policy',choices=['FORWARD_PATH','HOLONOMIC'],default='FORWARD_PATH',
+                   help='Travel policy for this new session: face the path by default; HOLONOMIC permits routine strafing')
     p.add_argument('--load-profile',choices=['bare','cargo'],help='Override saved-map load geometry; mapping configuration is unchanged')
     p.add_argument('--voice-chat',action=argparse.BooleanOptionalAction,default=None,
                    help='Override the managed idle wake/chat listener for this session only')
     p.add_argument('--patrol-fall',action=argparse.BooleanOptionalAction,default=None,
                    help='Enable or disable stationary fall observation for patrol checkpoints in this session')
+    p.add_argument('--fall-monitor',action=argparse.BooleanOptionalAction,default=None,
+                   help='Enable or disable background fall observation during MOVE/IDLE for this session')
     a=p.parse_args()
-    with stopped_configuration(a.config):root,client,descriptor=prepare(a.config,a.session_id,a.arrival_mode,a.load_profile,a.voice_chat,a.patrol_fall)
+    if a.patrol_fall is not None and a.fall_monitor is not None:
+        p.error('Choose either --patrol-fall or --fall-monitor')
+    with stopped_configuration(a.config):root,client,descriptor=prepare(a.config,a.session_id,a.arrival_mode,a.load_profile,a.voice_chat,a.patrol_fall,a.fall_monitor,a.travel_policy)
     print('NAVIGATION_SESSION:',descriptor['sessionId'],'MAP:',descriptor['mapId'])
     print('Base configuration preserved. Waiting for initial pose/global localization from the map UI; no goal sent.')
-    print('ARRIVAL_MODE:',a.arrival_mode,'; forward RPP path tracking; at most one final Spin when heading is requested.')
-    geometry=json.loads((root/'worker.json').read_text())['navigation_runtime']['geometry']
-    print('NAVIGATION_GEOMETRY:',json.dumps(geometry))
+    navigation=json.loads((root/'worker.json').read_text())['navigation_runtime']
+    print('ARRIVAL_MODE:',a.arrival_mode,'TRAVEL_POLICY:',navigation['travel_policy'],'CONTROLLER:',navigation['controller'])
+    print('NAVIGATION_GEOMETRY:',json.dumps(navigation['geometry']))
     process=None
     try:
         process=subprocess.Popen(['zsh',str(ROOT/'tools/robot.zsh'),'run','--config',str(root/'worker.json'),'--mode','navigation','--nav2-params',str(root/'nav2.yaml')],cwd=ROOT)

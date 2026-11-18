@@ -438,10 +438,132 @@
                   ]
                 },
                 "battery_percent": {
-                  "type": "null"
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 100
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "battery_unit": {
-                  "const": "UNVERIFIED_UINT16"
+                  "enum": [
+                    "UNVERIFIED_UINT16",
+                    "MILLIVOLT"
+                  ]
+                },
+                "battery_voltage_v": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "battery_estimate_method": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "VOLTAGE_CURVE",
+                        "UNAVAILABLE"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "battery_estimate_status": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "ESTIMATED",
+                        "WARMING_UP",
+                        "STALE",
+                        "INVALID",
+                        "UNCONFIGURED"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "battery_profile_id": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "battery_curve_calibrated": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "battery_series_cells": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 12
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "battery_parallel_cells": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 16
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "battery_nominal_capacity_mah": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 100,
+                      "maximum": 480000
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "battery_nominal_voltage_v": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "maximum": 60
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [

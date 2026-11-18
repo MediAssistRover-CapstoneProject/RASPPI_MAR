@@ -28,7 +28,9 @@ for kind,fields in {
  'EVENT_ACK':{'messageId':UUID_SCHEMA,'accepted':{'type':'boolean'}},
  'SERVER_HEARTBEAT':{}
 }.items():
-    responses.append(obj({'messageType':{'const':kind},'robotId':UUID_SCHEMA,'transportSessionId':UUID_SCHEMA,**fields}))
+    response=obj({'messageType':{'const':kind},'robotId':UUID_SCHEMA,'transportSessionId':UUID_SCHEMA,**fields})
+    if kind=='HELLO_ACK':response['properties']['batteryTelemetryVersion']={'const':1}
+    responses.append(response)
 put('mqtt-be-response.schema.json',{'oneOf':responses})
 for p in (ROOT/'handoff').glob('example-*.json'):
     value=json.loads(p.read_text())

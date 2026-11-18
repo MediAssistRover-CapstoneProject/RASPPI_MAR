@@ -36,9 +36,35 @@ POSE=dict(x_m=2.05,y_m=2.55,yaw_rad=0.)
 
 
 class FrontierTests(unittest.TestCase):
+    def test_nav2_frontier_uses_oriented_body_in_a_narrow_observed_corridor(self):
+        from mediassist.footprint import body_clear
+        w,h=100,30;raw=bytearray([255]*(w*h))
+        for y in range(8,22):
+            for x in range(4,84):raw[y*w+x]=100 if x==4 or y in (8,21) else 0
+        snapshot=dict(width=w,height=h,resolution=.025,origin=[0.,0.,0.],frame_id='map',data=bytes(raw))
+        pose=dict(x_m=.5125,y_m=.375,yaw_rad=0.)
+        cfg=profile();cfg.update(frontier_controller='nav2',stop_margin_m=.02,
+            footprint=dict(front=.109,rear=.104,left=.086,right=.086))
+        result=plan(snapshot,pose,cfg)
+        self.assertEqual(result['reason'],'APPROACH_FRONTIER')
+        goal=result['goal'];self.assertGreater(goal['x_m'],1.8)
+        extent={k:v+.02 for k,v in cfg['footprint'].items()}
+        self.assertTrue(body_clear(snapshot,goal,extent)['clear'])
+        self.assertEqual(result['planning_grid']['safe'][int(goal['y_m']/.025)*w+int(goal['x_m']/.025)],0)
+        for x,y in result['path']:self.assertEqual(raw[int(y/.025)*w+int(x/.025)],0)
+        # A real wall closing the corridor must not be crossed to reach unknown.
+        for y in range(9,21):raw[y*w+55]=100
+        closed=plan({**snapshot,'data':bytes(raw)},pose,cfg)
+        self.assertEqual(closed['state'],'NO_FRONTIERS')
+        # The legacy reactive controller retains its full-turn safe corridor.
+        self.assertEqual(plan(snapshot,pose,{**cfg,'frontier_controller':'reactive'})['state'],'BLOCKED')
+
     def test_excluded_frontiers_choose_a_different_known_free_viewpoint(self):
         cfg=profile();cfg.update(frontier_controller='nav2',visit_known_space=False,
-            _excluded_goals=[(3.6,2.5,1.9)])
+            # Include the extra edge viewpoint now accepted by exact oriented
+            # geometry, so this case still exercises relocation after all
+            # candidate approaches to this frontier have been excluded.
+            _excluded_goals=[(3.6,2.5,2.0)])
         snapshot=room(True);result=plan(snapshot,POSE,cfg)
         self.assertEqual(result['reason'],'REOBSERVE_FROM_NEW_VIEWPOINT')
         self.assertGreater(result['frontier_count'],0)
@@ -316,7 +342,8 @@ class AsyncTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(nav.active)
             velocity,reason=await nav.tick({},POSE,8.1)
         self.assertEqual(reason,'REPLANNING_STALLED_FRONTIER');self.assertEqual(velocity,(0.,0.,0.))
-        self.assertFalse(nav.active);nav.adapter.stop.assert_awaited_once()
+        self.assertIsNone(nav.target);self.assertIsNone(nav.side);self.assertTrue(nav.side_pending)
+        nav.adapter.stop.assert_awaited_once()
         self.assertEqual(nav.exploration.exclude_goal.call_args.kwargs,dict(ttl=20.,radius=.25))
 
     async def test_real_translation_retains_a_route_around_a_wall(self):
@@ -332,7 +359,8 @@ class AsyncTests(unittest.IsolatedAsyncioTestCase):
         modules={'geometry_msgs.msg':NS(PoseStamped=Mock()),'nav2_msgs.action':NS(NavigateToPose=Mock())}
         with patch.dict(sys.modules,modules):
             _,reason=await nav.tick({},pose,60.1)
-        self.assertEqual(reason,'REPLANNING_STALLED_FRONTIER');self.assertFalse(nav.active)
+        self.assertEqual(reason,'REPLANNING_STALLED_FRONTIER');self.assertIsNone(nav.target)
+        self.assertIsNone(nav.side);self.assertTrue(nav.side_pending)
 
     async def test_planner_starts_in_background_then_returns_and_resets_run(self):
         worker=FrontierWorker(profile())

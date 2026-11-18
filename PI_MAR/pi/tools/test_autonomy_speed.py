@@ -41,7 +41,7 @@ class SpeedTests(unittest.TestCase):
         self.assertEqual(hw['max_speed_mps'],1.)
         view=dict(front_m=3.,lateral_left_m=3.,lateral_right_m=3.)
         x,y,z=nav2_assist((1.,1.,.8),view,auto,.1)
-        self.assertAlmostEqual(math.hypot(x,y),1.);self.assertEqual(z,.8)
+        self.assertAlmostEqual(math.hypot(x,y),1.);self.assertAlmostEqual(z/x,.8)
         near={**view,'front_m':.8}
         fresh=nav2_assist((1.,0.,0.),near,auto,.01)[0]
         older=nav2_assist((1.,0.,0.),near,auto,.39)[0]
@@ -101,7 +101,9 @@ class SpeedTests(unittest.TestCase):
         view=dict(front_m=2.,lateral_left_m=2.,lateral_right_m=2.)
         velocity=nav2_assist((.5,.5,0),view,auto)
         self.assertAlmostEqual(math.hypot(*velocity[:2]),.5)
-        self.assertLess(nav2_assist((.5,0,0),{**view,'front_m':.45},auto)[0],.3)
+        near=nav2_assist((.5,0,0),{**view,'front_m':.12},auto,.1)[0]
+        self.assertLess(near,.5)
+        self.assertLessEqual(near*(.1+.35)+near**2/(2*.6),.12-auto['stop_margin_m']+1.e-9)
         self.assertEqual(nav2_assist((.5,0,0),{**view,'front_m':.05},auto),(0.,0.,0.))
         hw['motion']['us100_required']=False
         applied,reason=gate_velocity(velocity,[],10,10,10,10,hw['motion'],.5)
@@ -122,7 +124,8 @@ class SpeedIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(sys.modules,{'geometry_msgs.msg':N(Twist=twist)}),patch('mediassist.mapping.time.monotonic') as clock:
             for i in range(32):
                 now=10.1+i*.05;clock.return_value=now
-                item.grid=({},now);item.auto_scan=({**fixtures.CLEAR,'lateral_left_m':3.},now)
+                item.grid=({},now);item.auto_scan=({**fixtures.CLEAR,'lateral_left_m':3.,
+                                                  'nearest_lidar_m':3.,'obstacle_points':[]},now)
                 item.auto.accept(dict(action='RENEW',runId=fixtures.RUN,maxDurationSec=180,stopOnReturn=False),now,fixtures.POSE,.9)
                 await item.tick(True,True)
             msg=item.velocity.publish.call_args.args[0]
@@ -133,6 +136,26 @@ class SpeedIntegrationTests(unittest.IsolatedAsyncioTestCase):
             msg=item.velocity.publish.call_args.args[0]
             self.assertEqual((msg.linear.x,msg.linear.y,msg.angular.z),(0.,0.,0.))
             self.assertFalse(item.adapter.lease_message.call_args.args[0])
+
+    async def test_new_obstacle_during_goal_exchange_blocks_the_published_velocity(self):
+        item,_=fixtures.MappingIntegrationTests().manager()
+        cfg,hw=tune(*inputs(),.5);item.auto.cfg=cfg['mapping']['autonomy'];item.auto_selected=True
+        item.adapter.cfg=hw
+        item.auto.accept(dict(action='START',runId=fixtures.RUN,maxDurationSec=180,stopOnReturn=False),10.,fixtures.POSE,.9)
+        item.grid=({},10.);item.auto_scan=({**fixtures.CLEAR,'nearest_lidar_m':3.,'obstacle_points':[]},10.)
+        item.exploration=Mock();item.exploration.poll.return_value=({'state':'FRONTIERS_PRESENT'},None)
+        item.exploration.no_progress.return_value=False
+        async def candidate(*args):
+            point=(item.auto.cfg['footprint']['front']+.005,0.)
+            item.auto_scan=({**fixtures.CLEAR,'nearest_lidar_m':point[0],'obstacle_points':[point]},10.1)
+            return (.2,0.,0.),'FOLLOW_FRONTIER_NAV2'
+        item.navigator=N(active=True,tick=candidate,stop=AsyncMock())
+        def twist():return N(linear=N(x=0.,y=0.,z=0.),angular=N(x=0.,y=0.,z=0.))
+        with patch.dict(sys.modules,{'geometry_msgs.msg':N(Twist=twist)}),patch('mediassist.mapping.time.monotonic',return_value=10.1):
+            await item.tick(True,True)
+        msg=item.velocity.publish.call_args.args[0]
+        self.assertEqual((msg.linear.x,msg.linear.y,msg.angular.z),(0.,0.,0.))
+        self.assertFalse(item.adapter.lease_message.call_args.args[0])
 
 
 if __name__=='__main__':unittest.main()

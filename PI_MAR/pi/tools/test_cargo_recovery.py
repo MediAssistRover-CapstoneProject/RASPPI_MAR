@@ -17,6 +17,29 @@ PROFILE=dict(vehicle='rigid',footprint=BODY,stop_margin_m=.02,scan_max_age_sec=.
 
 
 class SweepTests(unittest.TestCase):
+    def test_final_gate_allows_only_slow_straight_escape_from_existing_padding(self):
+        body=dict(front=.109,rear=.104,left=.086,right=.086)
+        profile={**PROFILE,'footprint':body,'stop_margin_m':.01}
+        view=dict(valid=True,nearest_lidar_m=.114,obstacle_points=[(.114,0.)])
+        escaped,reason=limit_velocity((-.04,0.,0.),view,.05,profile)
+        self.assertEqual(escaped,(-.04,0.,0.));self.assertEqual(reason,'LIDAR_PADDING_ESCAPE')
+        for velocity in ((.04,0.,0.),(0.,.04,0.),(-.1,0.,0.),(-.04,0.,.2)):
+            with self.subTest(velocity=velocity):self.assertEqual(limit_velocity(velocity,view,.05,profile)[0],(0.,0.,0.))
+        for change,age in (({'obstacle_points':[(.109,0.)]},.05),({'obstacle_points':[(.114,0.),(-.11,0.)]},.05),
+                           ({'obstacle_points':[(.114,0.),(-.135,0.)]},.4),({},.41)):
+            actual,_=limit_velocity((-.04,0.,0.),{**view,**change},age,profile)
+            if change.get('obstacle_points')==[(.114,0.),(-.135,0.)]:
+                self.assertGreater(abs(actual[0]),0.);self.assertLess(abs(actual[0]),.04)
+            else:self.assertEqual(actual,(0.,0.,0.))
+
+    def test_diagonal_escape_uses_actual_swept_rectangle_and_still_blocks_an_intersection(self):
+        body=dict(front=.109,rear=.104,left=.086,right=.086)
+        profile={**PROFILE,'footprint':body}
+        for point,allowed in (((.13,-.05),True),((.10,-.10),False)):
+            view=dict(valid=True,nearest_lidar_m=math.hypot(*point),rotation_clear=False,obstacle_points=[point])
+            limited,_=limit_velocity((-.012,-.04,0.),view,.05,profile)
+            self.assertEqual(any(limited),allowed)
+
     def test_free_space_cache_matches_exact_geometry_and_never_hides_changed_or_unknown_cells(self):
         from mediassist.footprint import body_clear
         grid=dict(width=120,height=120,resolution=.025,origin=[0.,0.,.1],data=bytes(14400))
@@ -38,7 +61,7 @@ class SweepTests(unittest.TestCase):
         grid=dict(width=100,height=100,resolution=.02,origin=[0.,0.,0.],data=bytes(10000))
         origin=dict(x_m=1.,y_m=1.,yaw_rad=0.)
         points=maneuver_points(origin,.06,0.)
-        obstacle=[(1.13,1.)]
+        obstacle=[(1.12,1.)]
         self.assertFalse(maneuver_clear(grid,points,BODY,obstacle))
         self.assertTrue(padding_escape_clear(grid,points,BODY,obstacle))
         self.assertFalse(padding_escape_clear(grid,maneuver_points(origin,-.06,0.),BODY,obstacle))
@@ -46,6 +69,19 @@ class SweepTests(unittest.TestCase):
         self.assertFalse(padding_escape_clear(grid,maneuver_points(origin,0.,1.),BODY,obstacle))
         zones=Mock();zones.validate_path.side_effect=StepError('NAVIGATION_PATH_INTERSECTS_KEEPOUT')
         self.assertFalse(padding_escape_clear(grid,points,BODY,obstacle,zones))
+
+    def test_padding_escape_cannot_clip_a_thin_corner_between_samples(self):
+        from mediassist.mapping_navigator import translation_sweep_clear
+        from mediassist.footprint import body_clear
+        w=1000;raw=bytearray(w*w);raw[422*w+602]=100
+        grid=dict(width=w,height=w,resolution=.001,origin=[-.5008,-.5,0.],data=bytes(raw))
+        body=dict(front=.1,rear=.1,left=.08,right=.08)
+        origin=dict(x_m=0.,y_m=0.,yaw_rad=0.)
+        view=dict(valid=True,nearest_lidar_m=1.,obstacle_points=[])
+        self.assertTrue(body_clear(grid,origin,body)['clear'])
+        self.assertFalse(body_clear(grid,dict(x_m=.0015,y_m=.0015,yaw_rad=0.),body)['clear'])
+        self.assertTrue(body_clear(grid,dict(x_m=.0070666,y_m=.0070666,yaw_rad=0.),body)['clear'])
+        self.assertFalse(translation_sweep_clear(grid,origin,view,body,.01,(.106,.106)))
 
     def test_side_step_preserves_heading_and_detects_cargo_side_collision(self):
         grid=dict(width=100,height=100,resolution=.02,origin=[0.,0.,0.],data=bytes(10000))
@@ -134,6 +170,45 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await a._move_with_path_recovery(params,'A',meta))['reached'])
         a._plan_with_cargo_recovery.assert_awaited_once_with(params,'A',meta,force_escape=True)
         self.assertEqual(a._move_one.await_count,2)
+
+    async def test_escape_turn_waits_for_stopped_wheels_and_checks_the_new_pose(self):
+        for preferred in (None,1.-2*math.pi):
+            with self.subTest(preferred=preferred):
+                a=self.adapter();events=[]
+                initial=dict(x_m=0.,y_m=0.,yaw_rad=0.)
+                actual=dict(x_m=.01,y_m=0.,yaw_rad=.2)
+                def pose():
+                    events.append('pose')
+                    return {},actual if 'stopped' in events else initial
+                async def stopped():events.append('stopped')
+                def sweep(*args,**kw):events.append('sweep');return False,[]
+                a._cargo_pose=Mock(side_effect=pose);a._wait_stationary=AsyncMock(side_effect=stopped)
+                a._cargo_clear=Mock(side_effect=sweep);a.spin=Mock()
+                with patch.dict(sys.modules,{'nav2_msgs.action':N(Spin=N())}):
+                    with self.assertRaisesRegex(StepError,'CARGO_ESCAPE_TURN_BLOCKED'):
+                        await CargoRecovery._cargo_rotate(a,1.,{},turn_delta=preferred)
+                expected=.8 if preferred is None else .8-2*math.pi
+                a._cargo_clear.assert_called_once_with(actual,0.,1.,turn_delta=expected)
+                self.assertEqual(events,['pose','stopped','pose','sweep'])
+                a.spin.send_goal_async.assert_not_called()
+
+    async def test_escape_turn_does_not_spin_if_settling_already_reached_the_heading(self):
+        a=self.adapter();a._cargo_pose.side_effect=[({},dict(yaw_rad=0.)),({},dict(yaw_rad=.95))]
+        a._cargo_clear=Mock();a.spin=Mock()
+        with patch.dict(sys.modules,{'nav2_msgs.action':N(Spin=N())}):
+            await CargoRecovery._cargo_rotate(a,1.,{},turn_delta=1.-2*math.pi)
+        a._wait_stationary.assert_awaited_once();a._cargo_clear.assert_not_called()
+        a.spin.send_goal_async.assert_not_called()
+
+    async def test_escape_turn_noop_skips_wait_but_a_failed_stop_blocks_a_real_turn(self):
+        a=self.adapter();a._cargo_clear=Mock();a.spin=Mock()
+        with patch.dict(sys.modules,{'nav2_msgs.action':N(Spin=N())}):
+            await CargoRecovery._cargo_rotate(a,.05,{})
+            a._wait_stationary.assert_not_awaited()
+            a._wait_stationary.side_effect=StepError('ROBOT_NOT_STATIONARY')
+            with self.assertRaisesRegex(StepError,'ROBOT_NOT_STATIONARY'):
+                await CargoRecovery._cargo_rotate(a,1.,{})
+        a._cargo_clear.assert_not_called();a.spin.send_goal_async.assert_not_called()
 
     async def test_bare_chassis_can_reposition_after_controller_abort(self):
         a=self.adapter();a.worker['navigation_runtime']['geometry']['profile']='bare'
@@ -399,12 +474,13 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(a._plan.await_args_list[1].kwargs['probe'])
         self.assertEqual(a._plan.await_args_list[-1].kwargs,{})
 
-    async def test_bare_and_endpoint_group_do_not_run_physical_recovery(self):
+    async def test_bare_probes_before_moving_and_endpoint_group_never_runs_physical_recovery(self):
         for bare,params in ((True,{}),(False,{'endpoint_group_id':'group'})):
             a=self.adapter();a._plan=AsyncMock(side_effect=StepError('PATH_UNAVAILABLE'))
             if bare:a.worker['navigation_runtime']['geometry']['profile']='bare'
             with self.assertRaises(StepError):await a._plan_with_cargo_recovery(params,'A',{})
             a._cargo_reverse.assert_not_awaited();a._cargo_rotate.assert_not_awaited()
+            self.assertEqual(a._plan.await_count>1,bare)
 
     async def test_final_heading_checks_and_retreats_before_issuing_spin(self):
         a=self.adapter();a.cfg['endpoints']['A']=dict(x_m=0.,y_m=0.,yaw_rad=1.)

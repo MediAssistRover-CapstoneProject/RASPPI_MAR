@@ -18,10 +18,11 @@ class SessionTests(unittest.TestCase):
     def test_nav2_candidate_slows_before_obstacles_and_preserves_a_valid_turn(self):
         from mediassist.autonomous_mapping import nav2_assist
         import test_frontier_mapping as fixtures
-        cfg=fixtures.profile();view={'front_m':.3,'rotation_clear':False}
+        cfg=fixtures.profile();view={'front_m':.3,'rotation_clear':True}
         x,z=nav2_assist((.2,.2),view,cfg)
-        self.assertGreater(x,0);self.assertLess(x,.2);self.assertEqual(z,.2)
-        self.assertEqual(nav2_assist((.2,.2),{**view,'front_m':.05},cfg),(0.,.2))
+        self.assertGreater(x,0);self.assertLess(x,.2);self.assertAlmostEqual(z/x,1.)
+        self.assertEqual(nav2_assist((.2,.2),{**view,'front_m':.05},cfg),(0.,0.))
+        self.assertEqual(nav2_assist((.2,.2),{**view,'rotation_clear':False},cfg),(0.,0.))
     def descriptor(self):return dict(sessionId=SESSION,robotId=ROBOT,mapId=MAP,mapAssetHash='a'*64,state='LOCALIZING',expiresAt=CTX['expires_at'],initialization=dict(mode='MANUAL',revision=0,pose=None))
     def test_loading_image_or_session_does_not_invent_an_initial_pose(self):
         value=validate_descriptor(self.descriptor(),ROBOT,SESSION)

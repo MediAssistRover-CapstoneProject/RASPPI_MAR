@@ -230,8 +230,12 @@ class ManagedVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(released.is_set())
 
     async def test_confirmed_handoff_can_complete_but_disconnect_still_preempts(self):
-        runtime,state=self.runtime();runtime.submitting();state['status']='BUSY'
+        runtime,state=self.runtime();rejected=runtime.submitting();state['status']='BUSY'
         self.assertEqual(await runtime.guarded(asyncio.sleep(0,result='receipt')),(True,'receipt'))
+        rejected()
+        self.assertEqual(await runtime.guarded(asyncio.sleep(10)),(False,None))
+        runtime.submitting()
+        self.assertEqual(await runtime.guarded(asyncio.sleep(0,result='accepted')),(True,'accepted'))
         state['connected']=False
         self.assertEqual(await runtime.guarded(asyncio.sleep(10)),(False,None))
 
@@ -285,5 +289,98 @@ class ManagedVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([c.args[1] for c in say.await_args_list],[INTRO,GOODBYE])
         history.close.assert_called_once_with('COMPLETED');ai.ask.assert_not_called()
         actions.return_value.consume.assert_not_called()
+
+class VoiceNavigationConfirmationTests(unittest.IsolatedAsyncioTestCase):
+    def catalog(self,state='READY',revision=1):
+        return dict(robotAvailable=True,workflowPrepared=True,workflowOwnsInvite=False,
+            navigationSession=dict(sessionId='33333333-3333-4333-8333-333333333333',
+                robotId='11111111-1111-4111-8111-111111111111',
+                mapId='22222222-2222-4222-8222-222222222222',mapAssetHash='a'*64,
+                state=state,expiresAt='2099-01-01T00:00:00Z',
+                initialization=dict(mode='SEED',revision=revision,pose=dict(x_m=0.,y_m=0.,yaw_rad=0.))),
+            endpoints=[dict(endpointId='44444444-4444-4444-8444-444444444444',
+                mapId='22222222-2222-4222-8222-222222222222',endpointCode='A',endpointName='A')])
+
+    def actions(self,folder):
+        from mediassist.voice_actions import VoiceActions
+        be=Mock(cfg={'robot_id':self.catalog()['navigationSession']['robotId']})
+        be.value.side_effect=json.loads
+        actions=VoiceActions(be,{'actions_enabled':True,'navigation_ready_timeout_sec':.5},Path(folder)/'voice.json')
+        actions.catalog=Mock(return_value=self.catalog())
+        return actions,be
+
+    async def test_same_initialized_session_survives_readiness_gap_and_post_race_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            actions,be=self.actions(folder);actions.ready_timeout=2.
+            actions.catalog.return_value=self.catalog('LOCALIZING')
+            self.assertIn('phải không',actions.prepare({'kind':'NAVIGATE','destination_label':'A'},'interaction'))
+            pending=actions.pending;key=pending['key']
+            actions.catalog.side_effect=[self.catalog('WAITING_FOR_PI'),self.catalog(),self.catalog(),self.catalog()]
+            receipt=json.dumps({'serviceRequestId':'55555555-5555-4555-8555-555555555555'})
+            be.request.side_effect=[StepError('NAVIGATION_SESSION_NOT_LOCALIZED'),(200,{},receipt)]
+            rejected,accepted=Mock(),Mock()
+            actions.before_dispatch=Mock(side_effect=[rejected,accepted])
+            invite=AsyncMock()
+            with patch('mediassist.voice_actions.asyncio.sleep',new=AsyncMock()):
+                reply,request=await actions.consume('xác nhận',invite)
+            self.assertIsNotNone(request);self.assertIsNone(actions.pending)
+            self.assertFalse(actions.marker.exists());invite.assert_awaited_once()
+            self.assertEqual(be.request.call_count,2)
+            self.assertEqual([call.kwargs['idempotency_key'] for call in be.request.call_args_list],[key,key])
+            self.assertEqual([call.kwargs['timeout'] for call in be.request.call_args_list],[15.,15.])
+            self.assertEqual(be.request.call_args_list[0].args[1],be.request.call_args_list[1].args[1])
+            self.assertEqual(pending['context']['revision'],1)
+            rejected.assert_called_once();accepted.assert_not_called()
+
+    async def test_wait_timeout_preserves_consent_but_identity_change_or_closed_session_clears_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            actions,be=self.actions(folder)
+            actions.prepare({'kind':'NAVIGATE','destination_label':'A'},'interaction')
+            pending=actions.pending;actions.catalog.return_value=self.catalog('LOCALIZING')
+            invite=AsyncMock()
+            reply,request=await actions.consume('xác nhận',invite)
+            self.assertIsNone(request);self.assertIn('phiên hiện tại',reply)
+            self.assertIs(actions.pending,pending);be.request.assert_not_called();invite.assert_not_awaited()
+            self.assertLessEqual(actions.catalog.call_args.kwargs['timeout'],.5)
+            for change in ('revision','mapAssetHash','closed'):
+                actions.pending=pending
+                changed=self.catalog(revision=2) if change=='revision' else self.catalog()
+                if change=='mapAssetHash':changed['navigationSession']['mapAssetHash']='b'*64
+                actions.catalog.side_effect=StepError('NAVIGATION_SESSION_CLOSED_OR_EXPIRED') if change=='closed' else None
+                actions.catalog.return_value=changed
+                _,request=await actions.consume('xác nhận',invite)
+                self.assertIsNone(request);self.assertIsNone(actions.pending)
+            be.request.assert_not_called()
+
+    async def test_uninitialized_session_and_ambiguous_post_never_create_a_second_request(self):
+        with tempfile.TemporaryDirectory() as folder:
+            actions,be=self.actions(folder);actions.catalog.return_value=self.catalog('LOCALIZING',0)
+            self.assertIn('vị trí khởi tạo',actions.prepare({'kind':'NAVIGATE','destination_label':'A'},'interaction'))
+            self.assertIsNone(actions.pending)
+            actions.catalog.return_value=self.catalog()
+            actions.prepare({'kind':'NAVIGATE','destination_label':'A'},'interaction')
+            be.request.side_effect=TimeoutError('ambiguous POST')
+            with self.assertRaises(TimeoutError):await actions.consume('xác nhận',AsyncMock())
+            self.assertTrue(actions.marker.exists());self.assertIsNone(actions.pending)
+            self.assertEqual(be.request.call_count,1)
+            self.assertIn('chờ kiểm tra',actions.prepare({'kind':'NAVIGATE','destination_label':'A'},'interaction'))
+            self.assertEqual(be.request.call_count,1)
+
+    def test_voice_http_client_preserves_only_recognized_navigation_reasons(self):
+        import io,urllib.error
+        from mediassist.voice_client import VoiceClient
+        client=VoiceClient.__new__(VoiceClient);client.auth={};client.cfg={'robot_id':'robot'}
+        client.origin='https://be.example';client.opener=Mock()
+        for message,expected in (
+                ('NAVIGATION_SESSION_NOT_LOCALIZED: wait for a verified pose','NAVIGATION_SESSION_NOT_LOCALIZED'),
+                ('NAVIGATION_SESSION_CLOSED_OR_EXPIRED','NAVIGATION_SESSION_CLOSED_OR_EXPIRED'),
+                ('unrecognized private detail','BUSINESS_RULE_VIOLATION')):
+            payload=json.dumps({'error':'BUSINESS_RULE_VIOLATION','message':message}).encode()
+            client.opener.open.side_effect=urllib.error.HTTPError(client.origin,422,'',{},io.BytesIO(payload))
+            with patch('mediassist.voice_client.upload_token',return_value='token'):
+                with self.assertRaises(StepError) as caught:client.request('/api/v1/pi/voice/navigation-requests')
+            self.assertEqual(caught.exception.code,expected)
+            self.assertNotIn(message,str(caught.exception))
+
 
 if __name__=='__main__':unittest.main(verbosity=2)

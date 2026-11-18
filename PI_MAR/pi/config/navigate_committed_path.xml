@@ -1,8 +1,8 @@
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <PipelineSequence name="PlanAndFollow">
-      <RateController hz="2.0">
-        <RecoveryNode number_of_retries="2" name="BoundedPlanningRetry">
+    <RecoveryNode number_of_retries="2" name="BoundedNavigationRetry">
+      <PipelineSequence name="PlanAndFollow">
+        <RateController hz="2.0">
           <Fallback name="KeepUsablePath">
             <Sequence name="UnchangedGoalAndClearPath">
               <NavigationPathMatchesGoal path="{path}" goal="{goal}" committed_goal="{committed_goal}"/>
@@ -13,13 +13,14 @@
               <CommitNavigationPath candidate="{candidate_path}" path="{path}" goal="{goal}" committed_goal="{committed_goal}"/>
             </Sequence>
           </Fallback>
-          <Wait wait_duration="1"/>
-        </RecoveryNode>
-      </RateController>
-      <RecoveryNode number_of_retries="2" name="BoundedControllerRetry">
+        </RateController>
         <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"/>
+      </PipelineSequence>
+      <Sequence name="WaitThenReplanFromCurrentPose">
         <Wait wait_duration="1"/>
-      </RecoveryNode>
-    </PipelineSequence>
+        <ComputePathToPose goal="{goal}" path="{candidate_path}" planner_id="GridBased"/>
+        <CommitNavigationPath candidate="{candidate_path}" path="{path}" goal="{goal}" committed_goal="{committed_goal}"/>
+      </Sequence>
+    </RecoveryNode>
   </BehaviorTree>
 </root>

@@ -17,6 +17,10 @@ from .be_token import NoRedirect,upload_token
 from .contracts import StepError
 
 MAX_WAV=4*1024*1024
+NAVIGATION_REASONS=frozenset({
+    'VOICE_NAVIGATION_SESSION_NOT_READY','NAVIGATION_SESSION_NOT_LOCALIZED',
+    'NAVIGATION_SESSION_CLOSED_OR_CHANGED','NAVIGATION_SESSION_CLOSED_OR_EXPIRED',
+    'NAVIGATION_SESSION_MAP_OR_ID_MISMATCH','NAVIGATION_SESSION_PROCESS_CHANGED'})
 
 
 def describe_audio(raw):
@@ -68,8 +72,11 @@ class VoiceClient:
                     value=json.loads(raw);value=value.get('data',value)
                     code=value.get('code') or value.get('error') or 'VOICE_HTTP_'+str(error.code)
                     if str(value.get('message','')).startswith('STT_'):code=value['message'].split(':',1)[0]
+                    reason=str(value.get('message','')).split(':',1)[0]
+                    if (error.code==422 and path.startswith('/api/v1/pi/voice/navigation-')
+                            and reason in NAVIGATION_REASONS):code=reason
                 except (ValueError,AttributeError):code='VOICE_HTTP_'+str(error.code)
-                raise StepError(str(code),'BE returned HTTP '+str(error.code)) from None
+                raise StepError(str(code),'BE returned HTTP '+str(error.code),retryable=error.code>=500) from None
 
     @staticmethod
     def value(raw):

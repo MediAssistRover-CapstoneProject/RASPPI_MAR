@@ -8,7 +8,8 @@ import signal
 import threading
 import time
 from uuid import UUID
-from .media_runtime import Reservation,configuration,use_media_packages
+from .media_runtime import (Reservation,configuration,use_media_packages,overlay_value,overlay_packet,
+                            OVERLAY_TOPIC,OVERLAY_DATA_TOPIC)
 from .media_client import MediaClient
 
 OPEN={'CONNECTING','ACTIVE','RECONNECTING'}
@@ -54,6 +55,8 @@ class CameraSource:
         self.publisher=self.node.create_publisher(String,'/mediassist/media_hold',10)
         self.node.create_subscription(String,'/mediassist/safety_state',self.safety_seen,10)
         self.node.create_subscription(Odometry,hardware['ros']['odom'],self.odom_seen,qos_profile_sensor_data)
+        self.overlay_lock=threading.Lock();self.overlay=None;self.overlay_revision=0
+        self.node.create_subscription(String,OVERLAY_TOPIC,self.overlay_seen,1)
         self.camera_settings = dict(worker['mapping']['camera'], sample_every_frame=True, source_max_age_sec=.75)
         self.preview = None
         self.frame_ready = None
@@ -95,6 +98,22 @@ class CameraSource:
     def safety_seen(self,msg):
         try:self.safety=json.loads(msg.data);self.safety_at=time.monotonic()
         except (ValueError,TypeError):pass
+
+    def overlay_seen(self,msg):
+        try:
+            if len(msg.data)>8192:raise ValueError('OVERLAY_TOO_LARGE')
+            value=overlay_value(json.loads(msg.data))
+            with self.overlay_lock:
+                self.overlay=value;self.overlay_revision+=1
+        except (ValueError,TypeError,KeyError) as error:
+            if time.monotonic()>=getattr(self,'overlay_error_at',0.):
+                detail=str(error)
+                code=detail if isinstance(error,ValueError) and detail.isupper() and detail.replace('_','').isalpha() else type(error).__name__
+                logging.info('MEDIA_OVERLAY_REJECTED code=%s',code)
+                self.overlay_error_at=time.monotonic()+30.
+
+    def latest_overlay(self):
+        with self.overlay_lock:return self.overlay_revision,self.overlay
 
     def odom_seen(self,msg):
         v=msg.twist.twist;self.odom=(v.linear.x,v.linear.y,v.angular.z);self.odom_at=time.monotonic()
@@ -139,6 +158,33 @@ class Bridge:
         self.worker=worker;self.options=configuration(worker);self.client=MediaClient(worker)
         self.source=CameraSource(worker,hardware);self.queue=asyncio.Queue(maxsize=1);self.call=None;self.current_id=None
 
+    async def overlays(self,room,session):
+        """Independent bounded data sender; failures cannot interrupt video/audio."""
+        revision=-1;sequence=0;warning_at=0.;report_at=0.;sent=0
+        while True:
+            await asyncio.sleep(.25)
+            current,value=self.source.latest_overlay()
+            if current==revision or value is None:continue
+            revision=current
+            try:
+                # A bridge process may rejoin the same room without a browser reload.
+                sequence=max(sequence+1,int(time.time()*1000))
+                payload=overlay_packet(value,session,sequence)
+                await asyncio.wait_for(room.local_participant.publish_data(
+                    payload,reliable=False,topic=OVERLAY_DATA_TOPIC),.2)
+                sent+=1
+                if time.monotonic()>=report_at:
+                    logging.info('MEDIA_OVERLAY_HEALTH sent=%d boxes=%d',sent,len(value['detections']))
+                    report_at=time.monotonic()+30.
+            except asyncio.CancelledError:raise
+            except Exception as error:
+                # No replay queue: the next result supersedes a lost/old packet.
+                if time.monotonic()>=warning_at:
+                    detail=str(error)
+                    code=detail if isinstance(error,ValueError) and detail.isupper() and detail.replace('_','').isalpha() else type(error).__name__
+                    logging.info('MEDIA_OVERLAY_UNAVAILABLE code=%s',code)
+                    warning_at=time.monotonic()+30.
+
     async def run(self):
         loop=asyncio.get_running_loop()
         listener=threading.Thread(target=self.client.listen,args=(loop,self.queue),name='media_https_events',daemon=True)
@@ -175,7 +221,7 @@ class Bridge:
         sid=session['sessionId'];assist=session['mode']=='ASSIST'
         reservation=Reservation(sid) if assist else None
         room=rtc.Room();player=None;capture=None;video=None;pulse=None;audio_lock=None
-        report_task = None
+        report_task = overlay_task = None
         audio_tasks=set()
         def spawn_audio(coro):
             task=asyncio.create_task(coro);audio_tasks.add(task)
@@ -222,6 +268,7 @@ class Bridge:
             track=rtc.LocalVideoTrack.create_video_track('robot-camera',video)
             await room.local_participant.publish_track(track,rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_CAMERA,
                 video_codec=rtc.VideoCodec.VP8,simulcast=False,video_encoding=rtc.VideoEncoding(max_bitrate=credentials['bitrate'],max_framerate=fps)))
+            overlay_task=asyncio.create_task(self.overlays(room,sid),name='media-ai-overlay')
 
             def convert_frame(sample):
                 pixels = frame_pixels(sample)
@@ -271,6 +318,9 @@ class Bridge:
             except Exception:pass
         finally:
             self.source.stop_video()
+            if overlay_task is not None:
+                overlay_task.cancel()
+                await asyncio.gather(overlay_task,return_exceptions=True)
             if report_task is not None:
                 report_task.cancel()
                 await asyncio.gather(report_task, return_exceptions=True)

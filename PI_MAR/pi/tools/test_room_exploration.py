@@ -127,6 +127,10 @@ class RoomTests(unittest.TestCase):
         self.assertEqual(cfg,before);self.assertEqual(result['mqtt'],before['mqtt']);self.assertEqual(result['mapping']['camera'],before['mapping']['camera'])
         self.assertEqual(result['mapping']['autonomy']['footprint'],before['mapping']['autonomy']['footprint'])
         self.assertEqual(result['mapping']['autonomy']['exploration_mode'],'frontier')
+        preset=result['mapping']['autonomy']
+        self.assertEqual((preset['speed_mps'],preset['max_reverse_mps'],preset['angular_rps']),(.25,.15,.8))
+        self.assertEqual((preset['frontier_escape_min_m'],preset['frontier_escape_max_m']),(.10,.15))
+        with self.assertRaises(StepError):tune(cfg,hw,escape_min=.15,escape_max=.10)
         fast=tune(cfg,hw,speed=.5,reverse=.2,angular=.8)['mapping']['autonomy']
         self.assertEqual((fast['speed_mps'],fast['max_reverse_mps'],fast['angular_rps']),(.5,.2,.8))
         self.assertGreaterEqual(fast['slow_clearance_m'],.8)
@@ -154,7 +158,8 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
             item,_=auto.MappingIntegrationTests().manager()
             item.auto.cfg=profile();item.auto_selected=True
             item.auto.accept(dict(action='START',runId=auto.RUN,maxDurationSec=180,stopOnReturn=False),10.,auto.POSE,.9)
-            item.grid=({},10.);item.auto_scan=({**auto.CLEAR,'back_m':1.},10.)
+            item.grid=({},10.);item.auto_scan=({**auto.CLEAR,'back_m':1.,
+                                              'nearest_lidar_m':3.,'obstacle_points':[]},10.)
             item.exploration=Mock();item.exploration.no_progress.return_value=False
             item.exploration.poll.return_value=({'state':state,'reason':reason,'seed_body_clear':clear,'goal':None},None)
             item.navigator=N(active=True,tick=AsyncMock(return_value=((.1,0.,0.),'FOLLOW_FRONTIER_NAV2')),stop=AsyncMock())
@@ -183,8 +188,15 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         def twist():return N(linear=N(x=0.,y=0.,z=0.),angular=N(x=0.,y=0.,z=0.))
         with patch.dict(sys.modules,{'geometry_msgs.msg':N(Twist=twist)}),patch('mediassist.mapping.time.monotonic',return_value=10.1):
             await item.tick(True,True)
+        item.navigator.stop.assert_not_awaited()
+        self.assertEqual(item.velocity.publish.call_args.args[0].linear.x,0.)
+        item.auto.deadline=12.1
+        item.grid=({},11.7)
+        item.auto_scan=({**auto.CLEAR,'back_m':1.},11.7)
+        with patch.dict(sys.modules,{'geometry_msgs.msg':N(Twist=twist)}),patch('mediassist.mapping.time.monotonic',return_value=11.7):
+            await item.tick(True,True)
         item.navigator.stop.assert_awaited_once();item.navigator.tick.assert_not_awaited()
-        item.exploration.exclude_goal.assert_called_once_with(goal,10.1,ttl=15.)
+        item.exploration.exclude_goal.assert_called_once_with(goal,11.7,ttl=15.)
         self.assertEqual(item.auto.phase,'RUNNING');self.assertEqual(item.auto.reason,'REPLANNING_REAR_BLOCKED')
         msg=item.velocity.publish.call_args.args[0]
         self.assertEqual((msg.linear.x,msg.linear.y,msg.angular.z),(0.,0.,0.))

@@ -84,6 +84,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             def pending(self):return [{'messageId':'event-1'}]
         worker=object.__new__(StepWorker)
         worker.store=Store();worker.sent={};worker.cfg={'heartbeat_sec':10**12}
+        worker.outbox_wakeup=asyncio.Event()
         async def send(event):
             self.assertIn(event['messageId'],worker.sent)
             raise asyncio.CancelledError()

@@ -76,7 +76,7 @@ async def main():
                   "### Input", "", "| Field | Bắt buộc | Kiểu/giới hạn |", "|---|---|---|", *fields(st["input_schema"]), "",
                   "### Output", "", "| Field | Bắt buộc | Kiểu/giới hạn |", "|---|---|---|", *fields(st["output_schema"]), ""]
         if kind == "EXECUTE_SENSING":
-            lines += ["Metrics theo task_type: ROBOT_HEALTH cần sensors_ready/battery_raw/battery_percent(null); SIDE_CLEARANCE cần left_m/right_m/left_fresh/right_fresh; CROWD_DENSITY cần count>=0; RESTRICTED_AREA_INTRUSION cần intrusion_detected. health thực còn có age_sec và metadata chẩn đoán. captured_at là lúc tạo kết quả; age_sec của sample là từ lúc Pi nhận mẫu, không phải cam kết đồng hồ cảm biến độc lập.", ""]
+            lines += ["Metrics theo task_type: ROBOT_HEALTH cần sensors_ready/battery_raw/battery_percent (ước tính 0..100 hoặc null khi chưa có mẫu hợp lệ/cấu hình pin); SIDE_CLEARANCE cần left_m/right_m/left_fresh/right_fresh; CROWD_DENSITY cần count>=0; RESTRICTED_AREA_INTRUSION cần intrusion_detected. health thực còn có age_sec và metadata chẩn đoán. captured_at là lúc tạo kết quả; age_sec của sample là từ lúc Pi nhận mẫu, không phải cam kết đồng hồ cảm biến độc lập.", ""]
         if kind == "CHECK_CONDITION":
             lines += ["Biểu thức SAFE_EXPR_V1: var lấy JSON pointer; eq/ne; gt/ge/lt/le; and/or/not; add. Không dùng chuỗi Python hoặc eval. SUCCESS với value=false là tính thành công nhưng điều kiện không đúng.", ""]
         if kind == "SET_CONTEXT":

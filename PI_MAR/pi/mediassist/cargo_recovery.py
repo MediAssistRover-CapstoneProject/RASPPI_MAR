@@ -3,7 +3,7 @@ import asyncio
 import math
 import time
 from .contracts import StepError
-from .footprint import body_clear, NAVIGATION_PADDING_M
+from .footprint import body_clear, cached_body_clear, NAVIGATION_PADDING_M
 
 
 def wrap(a):return math.atan2(math.sin(a),math.cos(a))
@@ -12,6 +12,12 @@ def wrap(a):return math.atan2(math.sin(a),math.cos(a))
 def turn_options(current,target):
     delta=wrap(target-current)
     return (0.,) if abs(delta)<=.10 else (delta,delta-math.copysign(2*math.pi,delta))
+
+
+def turn_in_direction(current,target,preferred_delta):
+    short=wrap(target-current)
+    if abs(short)<=.10 or preferred_delta==0 or short*preferred_delta>=0:return short
+    return short-math.copysign(2*math.pi,short)
 
 
 def blocked_motion_reason(state):
@@ -28,8 +34,9 @@ def blocked_motion_reason(state):
     return reason if all(type(v) in (int,float) and abs(v)<.005 for v in applied) else None
 
 
-def maneuver_points(origin,distance,yaw,lateral=0.,turn_delta=None):
-    if not (abs(distance)<=.100000001 and abs(lateral)<=.100000001 and math.hypot(distance,lateral)<=.141422):
+def maneuver_points(origin,distance,yaw,lateral=0.,turn_delta=None,extended=False):
+    max_axis,max_length=(.200000001,.200000001) if extended else (.100000001,.141422)
+    if not (abs(distance)<=max_axis and abs(lateral)<=max_axis and math.hypot(distance,lateral)<=max_length):
         raise StepError('CARGO_ESCAPE_DISTANCE_INVALID')
     x,y,a=origin['x_m'],origin['y_m'],origin['yaw_rad']
     end=(x-distance*math.cos(a)-lateral*math.sin(a),y-distance*math.sin(a)+lateral*math.cos(a),a)
@@ -42,32 +49,6 @@ def maneuver_points(origin,distance,yaw,lateral=0.,turn_delta=None):
     return points
 
 
-def cached_body_clear(grid,pose,extent):
-    """Fast free bounding boxes on an immutable saved grid; exact SAT near walls."""
-    from array import array
-    raw=grid['data'];w,h=grid['width'],grid['height']
-    if not isinstance(raw,bytes):return body_clear(grid,pose,extent)
-    cache=grid.get('_cargo_blocked_prefix')
-    if cache is None or cache[0] is not raw or cache[1:3]!=(w,h):
-        prefix=array('I',[0])*((w+1)*(h+1));stride=w+1
-        for row in range(h):
-            count=0;off=(row+1)*stride;above=row*stride
-            for col in range(w):
-                count+=not 0<=raw[row*w+col]<=25
-                prefix[off+col+1]=prefix[above+col+1]+count
-        cache=(raw,w,h,prefix);grid['_cargo_blocked_prefix']=cache
-    prefix=cache[3];r=grid['resolution'];ox,oy,a=grid['origin'];c,s=math.cos(a),math.sin(a)
-    cy,sy=math.cos(pose['yaw_rad']),math.sin(pose['yaw_rad']);points=[]
-    for x,y in ((extent['front'],extent['left']),(-extent['rear'],extent['left']),(-extent['rear'],-extent['right']),(extent['front'],-extent['right'])):
-        dx=pose['x_m']+cy*x-sy*y-ox;dy=pose['y_m']+sy*x+cy*y-oy
-        points.append(((c*dx+s*dy)/r,(-s*dx+c*dy)/r))
-    x0=math.floor(min(x for x,y in points));x1=math.floor(max(x for x,y in points))+1
-    y0=math.floor(min(y for x,y in points));y1=math.floor(max(y for x,y in points))+1
-    if 0<=x0<x1<=w and 0<=y0<y1<=h:
-        stride=w+1
-        count=prefix[y1*stride+x1]-prefix[y0*stride+x1]-prefix[y1*stride+x0]+prefix[y0*stride+x0]
-        if count==0:return dict(clear=True,kind='clear',cell=None)
-    return body_clear(grid,pose,extent)
 
 
 def maneuver_clear(grid,points,extent,obstacles,zones=None):
@@ -85,7 +66,7 @@ def maneuver_clear(grid,points,extent,obstacles,zones=None):
     return True
 
 
-def padding_escape_clear(grid,points,extent,obstacles,zones=None):
+def padding_escape_clear(grid,points,extent,obstacles,zones=None,*,padding=None):
     """Leave an existing padding overlap, never a physical/map/keepout collision.
 
     Only translation away from every initial contact is allowed until the full
@@ -93,9 +74,11 @@ def padding_escape_clear(grid,points,extent,obstacles,zones=None):
     cargo through the padding. Unknown cells and map edges are not relaxed.
     """
     from .navigation_zones import body_gap
-    pad=NAVIGATION_PADDING_M+.005
+    from .footprint import overlap
+    pad=NAVIGATION_PADDING_M+.005 if padding is None else padding
+    if type(pad) not in (int,float) or not math.isfinite(pad) or pad<0:return False
     padded={k:v+pad for k,v in extent.items()}
-    radius=math.hypot(max(extent['front'],extent['rear']),max(extent['left'],extent['right']))+pad
+    radius=math.hypot(max(extent['front'],extent['rear'])+pad,max(extent['left'],extent['right'])+pad)
     r=grid['resolution'];ox,oy,a=grid['origin'];c,s=math.cos(a),math.sin(a)
     local=[((x-ox)*c+(y-oy)*s, -(x-ox)*s+(y-oy)*c) for x,y,_ in points]
     bounds=(math.floor((min(x for x,y in local)-radius)/r),math.ceil((max(x for x,y in local)+radius)/r),
@@ -109,6 +92,30 @@ def padding_escape_clear(grid,points,extent,obstacles,zones=None):
                   ((col,row),(col+1,row),(col+1,row+1),(col,row+1))]
             polygons.append(poly)
     polygons.extend([[(x,y)] for x,y in obstacles])
+    # Padding may already overlap an obstacle at the starting pose. Sampled
+    # distances alone cannot prove that a thin obstacle misses a body corner
+    # between samples. The convex hull of this fixed-yaw translation's body
+    # corners covers the physical body continuously, without extra samples.
+    # Later turns retain the ordinary padded checks once the overlap is left.
+    vertices=[];initial_yaw=points[0][2]
+    for x,y,yaw in points:
+        if abs(wrap(yaw-initial_yaw))>1e-6:break
+        ca,sa=math.cos(yaw),math.sin(yaw)
+        vertices.extend((x+ca*dx-sa*dy,y+sa*dx+ca*dy) for dx,dy in
+                        ((extent['front'],extent['left']),(-extent['rear'],extent['left']),
+                         (-extent['rear'],-extent['right']),(extent['front'],-extent['right'])))
+    vertices=sorted(set(vertices))
+    def half_hull(sequence):
+        result=[]
+        for p in sequence:
+            while len(result)>1:
+                a,b=result[-2:]
+                if (b[0]-a[0])*(p[1]-a[1])-(b[1]-a[1])*(p[0]-a[0])>0.:break
+                result.pop()
+            result.append(p)
+        return result
+    swept=half_hull(vertices)[:-1]+half_hull(reversed(vertices))[:-1]
+    if any(overlap(swept,polygon) for polygon in polygons):return False
     initial=None;previous=None;clean=False;initial_yaw=points[0][2]
     for x,y,yaw in points:
         pose=dict(x_m=x,y_m=y,yaw_rad=yaw)
@@ -119,7 +126,7 @@ def padding_escape_clear(grid,points,extent,obstacles,zones=None):
         near={i:body_gap(pose,extent,p) for i,p in enumerate(polygons)
               if min(math.hypot(px-x,py-y) for px,py in p)<=radius+r*1.42}
         if any(gap<=.001 for gap in near.values()):return False
-        contacts={i for i,gap in near.items() if gap<=pad}
+        contacts={i for i in near if body_gap(pose,padded,polygons[i])<=1e-8}
         if initial is None:
             initial=contacts;previous={i:near[i] for i in initial}
             if not initial:return False # ordinary full-padding validation owns this case
@@ -385,7 +392,7 @@ class CargoRecovery:
         extent=self.worker['mapping']['autonomy']['footprint']
         return maneuver_clear(self._cargo_saved_grid(),sweep,extent,())
 
-    def _cargo_clear(self,origin,distance,yaw,lateral=0.,turn_delta=None):
+    def _cargo_clear(self,origin,distance,yaw,lateral=0.,turn_delta=None,extended=False):
         from .autonomous_mapping import scan_view
         from .geometry_diagnostics import planar_transform
         from rclpy.time import Time
@@ -401,7 +408,7 @@ class CargoRecovery:
             view=scan_view(scan,transform,profile)
         except Exception as exc:raise StepError('CARGO_ESCAPE_SCAN_NOT_READY') from exc
         if not view.get('valid') or 'obstacle_points' not in view:raise StepError('CARGO_ESCAPE_SCAN_NOT_READY')
-        points=maneuver_points(origin,distance,yaw,lateral,turn_delta)
+        points=maneuver_points(origin,distance,yaw,lateral,turn_delta,extended=extended)
         if distance>0:
             from .rear_scan import rear_clearance
             if rear_clearance(scan,transform[:3],motion.get('rear_stop_distance_m',.3))!='CLEAR':
@@ -473,6 +480,13 @@ class CargoRecovery:
         from nav2_msgs.action import Spin
         _,pose=self._cargo_pose();delta=wrap(yaw-pose['yaw_rad']) if turn_delta is None else turn_delta
         if abs(delta)<=.10:return
+        # A disabled lease confirms command ownership, not stopped wheels.
+        # Finish the translation before checking a turn from the actual pose.
+        await self._wait_stationary()
+        _,pose=self._cargo_pose()
+        delta=(wrap(yaw-pose['yaw_rad']) if turn_delta is None
+               else turn_in_direction(pose['yaw_rad'],yaw,turn_delta))
+        if abs(delta)<=.10:return
         clear,_=self._cargo_clear(pose,0.,yaw,turn_delta=delta)
         if not clear:raise StepError('CARGO_ESCAPE_TURN_BLOCKED')
         await self._wait_navigation_server(self.spin,'FINAL_ALIGNMENT_UNAVAILABLE')
@@ -504,15 +518,21 @@ class CargoRecovery:
 
     async def _plan_with_cargo_recovery_once(self,p,endpoint_id,meta,force_escape=False):
         runtime=getattr(self,'worker',{}).get('navigation_runtime',{})
+        extended=(runtime.get('map_yaml') and (runtime.get('full_footprint_search')
+                                               or runtime.get('controller')=='HOLONOMIC_DWB')
+                  and runtime.get('geometry',{}).get('profile')=='cargo' and 'endpoint_group_id' not in p)
         if not force_escape:
             try:
-                if 'endpoint_group_id' in p:return await self._plan(p,endpoint_id,meta)
+                if (extended or runtime.get('geometry',{}).get('profile')=='bare'
+                        or 'endpoint_group_id' in p):return await self._plan(p,endpoint_id,meta)
                 return await self._wait_obstacle_path(p,endpoint_id,meta)
             except StepError as exc:
-                if (exc.code!='PATH_UNAVAILABLE' or runtime.get('geometry',{}).get('profile')!='cargo'
+                if (exc.code!='PATH_UNAVAILABLE' or runtime.get('geometry',{}).get('profile') not in ('bare','cargo')
                         or 'endpoint_group_id' in p):raise
         elif runtime.get('geometry',{}).get('profile') not in ('bare','cargo'):raise StepError('NAV_GATE_BLOCKED')
-        if getattr(self,'cargo_escape_used',False):raise StepError('CARGO_ESCAPE_LIMIT_REACHED')
+        if getattr(self,'cargo_escape_used',False):
+            if extended and not force_escape:return await self._wait_obstacle_path(p,endpoint_id,meta,blocked=True)
+            raise StepError('CARGO_ESCAPE_LIMIT_REACHED')
         await self._wait_stationary()
         _,origin=self._cargo_pose();target=self.cfg['endpoints'][endpoint_id]
         bearing=math.atan2(target['y_m']-origin['y_m'],target['x_m']-origin['x_m'])
@@ -537,6 +557,7 @@ class CargoRecovery:
         offset_counts={};probe_limit=len(near)+4
         for distance,lateral,yaw in candidates:
             if time.monotonic()>deadline or probes>=probe_limit:break
+            await asyncio.sleep(0)
             if offset_counts.get((distance,lateral),0)>=2:continue
             if not (distance or lateral) and abs(wrap(yaw-origin['yaw_rad']))<=.15:continue
             for delta in turn_options(origin['yaw_rad'],yaw):
@@ -555,14 +576,79 @@ class CargoRecovery:
                     raise
                 selected=(distance,lateral,yaw,delta);break
             if selected is not None:break
+        staged=selected is None and extended
+        if staged:
+            selected=await self._probe_extended_cargo_escape(p,endpoint_id,meta)
+            if selected is None and not force_escape:
+                return await self._wait_obstacle_path(p,endpoint_id,meta,blocked=True)
         if selected is None:raise StepError('NAV_RECOVERY_NO_CLEAR_MANEUVER' if force_escape else 'PATH_UNAVAILABLE')
+        try:return await self._execute_cargo_escape(p,endpoint_id,meta,selected,staged)
+        except StepError as exc:
+            if not extended or exc.code not in ('PATH_UNAVAILABLE','NAV_RECOVERY_NO_CLEAR_MANEUVER',
+                                                'CARGO_REVERSE_BLOCKED','CARGO_ESCAPE_TURN_BLOCKED'):raise
+            self.node.get_logger().warning('CARGO_ESCAPE_STOPPED reason='+exc.code)
+            await self._wait_stationary()
+            return await self._wait_obstacle_path(p,endpoint_id,meta,blocked=True)
+
+    async def _probe_extended_cargo_escape(self,p,endpoint_id,meta):
+        """Test wider straight escapes and both turn directions before moving."""
+        _,origin=self._cargo_pose();heading=origin['yaw_rad']
+        target=self.cfg['endpoints'][endpoint_id]
+        bearing=math.atan2(target['y_m']-origin['y_m'],target['x_m']-origin['x_m'])
+        turns=[bearing]+[heading+offset*math.pi/4 for offset in (1,-1,2,-2,3,-3,4)]
+        directions=[(d/.10,l/.10) for d,l in self._cargo_offsets() if math.isclose(math.hypot(d,l),.10)]
+        # A different starting yaw may unlock the path in a doorway without a
+        # translation. Then probe every 16 cm direction before going farther.
+        candidates=[(0.,0.,yaw) for yaw in turns if abs(wrap(yaw-heading))>.10]
+        candidates.extend((r*d,r*l,heading) for r in (.16,.20) for d,l in directions)
+        candidates.extend((r*d,r*l,yaw) for yaw in turns for d,l in directions for r in (.16,.20))
+        deadline=time.monotonic()+6.;probes=0;tested=set()
+        for distance,lateral,yaw in candidates:
+            if time.monotonic()>=deadline or probes>=16:break
+            await asyncio.sleep(0)
+            for delta in turn_options(heading,yaw):
+                if time.monotonic()>=deadline:return None
+                clear,points=self._cargo_clear(origin,distance,yaw,lateral=lateral,turn_delta=delta,extended=True)
+                if not clear:continue
+                x,y,a=points[-1];key=(round(x,4),round(y,4),round(math.cos(a),4),round(math.sin(a),4))
+                if key in tested:break
+                remaining=deadline-time.monotonic()
+                if remaining<=0.:return None
+                tested.add(key);probes+=1
+                try:
+                    await asyncio.wait_for(self._plan(p,endpoint_id,meta,
+                        start_override=dict(x_m=x,y_m=y,yaw_rad=a),probe=True),remaining)
+                except asyncio.TimeoutError:return None
+                except StepError as exc:
+                    if exc.code in ('PATH_UNAVAILABLE','NAVIGATION_PATH_INTERSECTS_KEEPOUT',
+                                    'ENDPOINT_FOOTPRINT_NOT_CLEAR'):break
+                    raise
+                return distance,lateral,yaw,delta
+        return None
+
+    async def _execute_cargo_escape(self,p,endpoint_id,meta,selected,staged):
         distance,lateral,yaw,delta=selected
-        self.node.get_logger().info('CARGO_ESCAPE_SELECTED distance_m='+str(distance)+' lateral_m='+str(lateral)+' turn_rad='+str(delta))
         self.cargo_escape_used=True
-        if distance or lateral:await self._cargo_reposition(distance,lateral,p)
-        # Keep the selected direction even when the safe route is >180 degrees.
-        _,actual=self._cargo_pose();short=wrap(yaw-actual['yaw_rad'])
-        actual_delta=short if abs(short)<=.10 or delta==0 or short*delta>=0 else short-math.copysign(2*math.pi,short)
-        await self._cargo_rotate(yaw,p,turn_delta=actual_delta)
-        # Commit a fresh route from the actual pose, never the virtual probe.
+        label='CARGO_EXTENDED_ESCAPE_SELECTED' if staged else 'CARGO_ESCAPE_SELECTED'
+        self.node.get_logger().info(label+' distance_m='+str(distance)+
+            ' lateral_m='+str(lateral)+' turn_rad='+str(delta))
+        if staged and (distance or lateral):
+            distance*=.5;lateral*=.5
+            await self._cargo_reposition(distance,lateral,p)
+            await self._wait_stationary()
+            try:return await self._plan(p,endpoint_id,meta)
+            except StepError as exc:
+                if exc.code!='PATH_UNAVAILABLE':raise
+            _,actual=self._cargo_pose()
+            remaining=turn_in_direction(actual['yaw_rad'],yaw,delta)
+            clear,_=self._cargo_clear(actual,distance,yaw,lateral=lateral,turn_delta=remaining)
+            if not clear:raise StepError('NAV_RECOVERY_NO_CLEAR_MANEUVER')
+            await self._cargo_reposition(distance,lateral,p)
+            await self._wait_stationary()
+        elif distance or lateral:
+            await self._cargo_reposition(distance,lateral,p)
+        # Keep the selected turn direction and commit from the actual pose.
+        _,actual=self._cargo_pose()
+        remaining=turn_in_direction(actual['yaw_rad'],yaw,delta)
+        await self._cargo_rotate(yaw,p,turn_delta=remaining)
         return await self._plan(p,endpoint_id,meta)

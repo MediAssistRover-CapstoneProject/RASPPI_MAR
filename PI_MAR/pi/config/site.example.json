@@ -4,6 +4,73 @@
   "allow_insecure_localhost": false,
   "state_path": "./state/robot.sqlite3",
   "max_speed_mps": 0.15,
+  "battery": {
+    "enabled": false,
+    "profile_id": "samsung58e-2s2p-voltage-v1",
+    "series_cells": 2,
+    "parallel_cells": 2,
+    "nominal_cell_voltage_v": 3.7,
+    "nominal_cell_capacity_mah": 5330,
+    "voltage_gain": 1,
+    "voltage_offset_v": 0,
+    "valid_min_cell_v": 2.5,
+    "valid_max_cell_v": 4.3,
+    "stale_after_sec": 60,
+    "median_samples": 5,
+    "minimum_samples": 3,
+    "filter_time_constant_sec": 15,
+    "curve_calibrated": false,
+    "cell_voltage_curve": [
+      [
+        3,
+        0
+      ],
+      [
+        3.3,
+        5
+      ],
+      [
+        3.5,
+        10
+      ],
+      [
+        3.6,
+        20
+      ],
+      [
+        3.68,
+        30
+      ],
+      [
+        3.73,
+        40
+      ],
+      [
+        3.78,
+        50
+      ],
+      [
+        3.84,
+        60
+      ],
+      [
+        3.92,
+        70
+      ],
+      [
+        4,
+        80
+      ],
+      [
+        4.1,
+        90
+      ],
+      [
+        4.2,
+        100
+      ]
+    ]
+  },
   "capabilities": [
     "sensors"
   ],

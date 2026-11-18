@@ -26,6 +26,239 @@ def message():return {'messageType':'MAPPING_CONTROL','robotId':R,'transportSess
     'commandId':'55555555-5555-4555-8555-555555555555','sequenceNo':1,'issuedAt':NOW.isoformat(),
     'expiresAt':(NOW+timedelta(milliseconds=750)).isoformat(),'linearX':.05,'angularZ':0.,'durationMs':400}
 STATE={'session_id':S,'job_id':J,'state':'MAPPING','session_open':True}
+
+
+class OverlayTests(unittest.IsolatedAsyncioTestCase):
+    def test_end_on_candidate_requires_associated_anchors_and_stationary_depth_proof(self):
+        from mediassist.patrol_fall import PatrolFallObserver
+        observer=object.__new__(PatrolFallObserver);observer.camera_moving=Mock(return_value=False)
+        observer.patient_location=Mock(return_value={'xM':1.,'yM':2.,'floorHeightM':.2})
+        person=dict(image_width=640,image_height=480,bbox=[.2,.2,.6,.6],
+                    keypoints=[dict(x=.4,y=.4),dict(x=.5,y=.6)],keypoint_roles=['hip','ankle'])
+        candidate=dict(reason='END_ON_LOWER_BODY',confidence=.55,ground_confirmation_required=True,
+                       visual_review_eligible=False,person=person,track_id=3)
+        original=dict(suspected_fall=False,algorithm='test',floor_candidate=candidate,
+                      overlay={'detections':[dict(track_id=3,state='PERSON'),dict(track_id=4,state='PERSON')]})
+        approved,position=observer.observation_location(None,original,(640,480),None,(S,1))
+        self.assertTrue(approved['suspected_fall']);self.assertFalse(original['suspected_fall'])
+        self.assertEqual(approved['detection_kind'],'PERSON_ON_FLOOR');self.assertIsNotNone(position)
+        self.assertEqual([d['state'] for d in approved['overlay']['detections']],['PERSON_ON_FLOOR','PERSON'])
+        self.assertEqual(original['overlay']['detections'][0]['state'],'PERSON')
+        self.assertTrue(observer.patient_location.call_args.kwargs['stationary'])
+        self.assertFalse(observer.visual_floor_review(approved,None,False))
+        for change in ({'keypoint_roles':['ankle','hip']}, {'keypoints':[dict(x=.1,y=.4),dict(x=.5,y=.6)]}):
+            observer.patient_location.reset_mock()
+            invalid={**original,'floor_candidate':{**candidate,'person':{**person,**change}}}
+            self.assertEqual(observer.observation_location(None,invalid,(640,480),None,(S,1)),(None,None))
+            observer.patient_location.assert_not_called()
+        observer.patient_location.return_value=None
+        self.assertEqual(observer.observation_location(None,original,(640,480),None,(S,1)),(None,None))
+        observer.patient_location.reset_mock()
+        self.assertEqual(observer.observation_location(None,original,(640,480),None,(S,1),moving=True),(None,None))
+        observer.patient_location.assert_not_called()
+
+    def test_depth_failures_identify_missing_anchor_overlap_and_intrinsics(self):
+        import numpy as np
+        from mediassist.fall_depth import measure_person
+        header=SimpleNamespace(frame_id='camera_optical',stamp=SimpleNamespace(sec=1,nanosec=0))
+        rgb=SimpleNamespace(header=header,width=160,height=120)
+        values=np.full((120,160),1000,dtype='<u2')
+        depth=SimpleNamespace(header=header,width=160,height=120,encoding='16UC1',is_bigendian=False,
+                              step=320,data=values.tobytes())
+        def info(focal=100.):return SimpleNamespace(header=header,width=160,height=120,binning_x=0,binning_y=0,
+            roi=SimpleNamespace(x_offset=0,y_offset=0,width=0,height=0),distortion_model='',d=[],
+            k=[focal,0.,80.,0.,100.,60.,0.,0.,1.])
+        pair=(rgb,depth,info(),info());points=[dict(x=.4,y=.5),dict(x=.6,y=.5)]
+        diagnostics={};self.assertIsNotNone(measure_person(pair,points,{'rgb_rectified':False},diagnostics))
+        for invalid,expected in (([points[0],points[0]],'DEPTH_ANCHORS_OVERLAP'),
+                                 ([dict(x=1.,y=.5),points[1]],'DEPTH_KEYPOINT_INVALID')):
+            self.assertIsNone(measure_person(pair,invalid,{'rgb_rectified':False},diagnostics))
+            self.assertEqual(diagnostics['reason'],expected)
+        values[58:63,62:67]=0;depth.data=values.tobytes()
+        self.assertIsNone(measure_person(pair,points,{'rgb_rectified':False},diagnostics))
+        self.assertEqual(diagnostics['reason'],'DEPTH_KEYPOINT_UNAVAILABLE');self.assertEqual(diagnostics['anchor_index'],0)
+        self.assertIsNone(measure_person((rgb,depth,info(),info(120.)),points,{'rgb_rectified':False},diagnostics))
+        self.assertEqual(diagnostics['reason'],'DEPTH_INTRINSICS_MISMATCH')
+
+    def test_end_on_projection_needs_two_low_anchors_and_retains_normal_span_guard(self):
+        from mediassist.fall_depth import project_person,configuration
+        transform=SimpleNamespace(translation=SimpleNamespace(x=0.,y=0.,z=.5),
+                                  rotation=SimpleNamespace(x=-.5,y=.5,z=-.5,w=.5))
+        measurement=([(0.,.3,1.),(0.,.35,1.7)],0)
+        diagnostics={}
+        self.assertIsNone(project_person(measurement,transform,0.,diagnostics=diagnostics))
+        self.assertEqual(diagnostics['reason'],'DEPTH_BODY_SPAN_INVALID')
+        position=project_person(measurement,transform,0.,end_on=True)
+        self.assertAlmostEqual(position['xM'],1.);self.assertAlmostEqual(position['yM'],0.)
+        self.assertAlmostEqual(position['floorHeightM'],.2)
+        hips=([(0.,.3,1.),(.2,.35,1.1)],0)
+        midpoint=project_person(hips,transform,0.,hip_midpoint=True)
+        self.assertAlmostEqual(midpoint['xM'],1.05)
+        self.assertAlmostEqual(midpoint['yM'],-.1)
+        self.assertAlmostEqual(midpoint['floorHeightM'],.2)
+        for points,expected in (([(0.,.05,1.),(0.,.05,1.5)],'PERSON_NOT_NEAR_FLOOR'),
+                ([(0.,.3,1.),(0.,.3,1.1)],'DEPTH_BODY_SPAN_INVALID'),
+                ([(0.,.2,1.),(0.,.45,1.7)],'PERSON_NOT_NEAR_FLOOR'),
+                ([(0.,.7,1.),(0.,.7,1.7)],'DEPTH_BELOW_FLOOR')):
+            self.assertIsNone(project_person((points,0),transform,0.,end_on=True,diagnostics=diagnostics))
+            self.assertEqual(diagnostics['reason'],expected)
+        config=dict(enabled=True,registered_depth_verified=True,depth_topic='/depth',rgb_info_topic='/rgb_info',depth_info_topic='/depth_info')
+        self.assertEqual(configuration(config)['end_on_max_height_m'],.30)
+        for value in (True,.1,.46,float('nan')):
+            with self.assertRaises(StepError):configuration({**config,'end_on_max_height_m':value})
+
+    def test_end_on_candidate_requires_base_floor_transform_and_fresh_map_context(self):
+        from mediassist.patrol_fall import PatrolFallObserver
+        observer=object.__new__(PatrolFallObserver);observer.camera_moving=Mock(return_value=False)
+        observer.config={'depth':{'rgb_rectified':False,'floor_z_m':0.,'end_on_max_height_m':.30}}
+        transform=SimpleNamespace(translation=SimpleNamespace(x=0.,y=0.,z=.5),
+                                  rotation=SimpleNamespace(x=-.5,y=.5,z=-.5,w=.5))
+        calls=[]
+        def lookup(target,source,stamp):calls.append((target,source,stamp));return SimpleNamespace(transform=transform)
+        observer.adapter=SimpleNamespace(cfg={'ros':{'base_frame':'base_footprint','map_frame':'map'}},
+            worker={'navigation_session':{'session_id':S,'map_id':'map-id','map_asset_hash':'hash'}},
+            tf_buffer=SimpleNamespace(lookup_transform=lookup))
+        observer.stationary_revision=Mock(return_value=(S,1))
+        rgb=SimpleNamespace(header=SimpleNamespace(frame_id='camera_optical',stamp='capture-time'))
+        result=dict(detection_kind='PERSON_ON_FLOOR',_depth_only_candidate=True,
+                    person=dict(image_width=640,image_height=480,keypoints=[{},{}]))
+        modules={'rclpy.time':SimpleNamespace(Time=SimpleNamespace(from_msg=lambda v:v)),
+                 'tf2_ros':SimpleNamespace(TransformException=RuntimeError)}
+        with patch.dict(sys.modules,modules),patch('mediassist.patrol_fall.measure_person',return_value=([(0.,.3,1.),(0.,.35,1.7)],0)):
+            position=observer.patient_location((rgb,None,None,None),result,(640,480),'captured',(S,1))
+            self.assertIsNotNone(position)
+            self.assertEqual(calls,[('base_footprint','camera_optical','capture-time'),('map','camera_optical','capture-time')])
+            observer.stationary_revision.return_value=(S,2)
+            self.assertIsNone(observer.patient_location((rgb,None,None,None),result,(640,480),'captured',(S,1)))
+            self.assertEqual(observer.location_reason,'NAVIGATION_CONTEXT_CHANGED')
+            observer.adapter.cfg['ros']['base_frame']='base_link'
+            self.assertIsNone(observer.patient_location((rgb,None,None,None),result,(640,480),'captured',(S,1)))
+            self.assertEqual(observer.location_reason,'BASE_FLOOR_FRAME_UNAVAILABLE')
+
+    def test_edge_boxes_survive_every_metadata_validation_hop(self):
+        from mediassist.media_runtime import overlay_value,overlay_packet
+        value=dict(status='OK',width=640,height=480,captured_at=datetime.now(timezone.utc).isoformat(),
+            detections=[dict(track_id=1,bbox=[.00025,.2,.99975,.4],confidence=.9,state='PERSON')])
+        clean=overlay_value(value)
+        packet=json.loads(overlay_packet(clean,S,1))
+        self.assertEqual(len(packet['detections']),1)
+        self.assertLessEqual(sum(packet['detections'][0]['bbox'][::2]),1.000001)
+        self.assertEqual(overlay_value(clean),clean)
+
+    def test_static_floor_review_separates_missing_pose_from_person_above_floor(self):
+        from mediassist.patrol_fall import PatrolFallObserver
+        observer=object.__new__(PatrolFallObserver)
+        observer.config={'depth':{'near_floor_max_height_m':.45}}
+        result={'detection_kind':'PERSON_ON_FLOOR'}
+        self.assertIsNone(observer.patient_location(None,result,(640,480),None,None))
+        self.assertFalse(observer.ground_valid(result,None))
+        self.assertEqual(observer.location_reason,'LOCALIZATION_NOT_READY')
+        self.assertIsNone(observer.patient_location(None,result,(640,480),None,(S,1)))
+        self.assertEqual(observer.location_reason,'DEPTH_PAIR_UNAVAILABLE')
+        self.assertFalse(observer.ground_valid(result,{'floorHeightM':.7}))
+        self.assertEqual(observer.location_reason,'PERSON_NOT_NEAR_FLOOR')
+        self.assertTrue(observer.ground_valid(result,{'floorHeightM':.2}))
+
+    def test_latest_boxes_are_bounded_fresh_and_session_scoped(self):
+        from mediassist.media_runtime import overlay_packet
+        now=time.time()
+        box=dict(track_id=1,bbox=[.1,.2,.3,.4],confidence=.95,state='PERSON')
+        value=dict(status='OK',width=640,height=480,captured_at=datetime.fromtimestamp(now,timezone.utc).isoformat(),
+                   detections=[{**box,'track_id':i} for i in range(8)])
+        packet=overlay_packet(value,S,7,now)
+        self.assertLessEqual(len(packet),1200)
+        self.assertEqual(json.loads(packet)['media_session_id'],S)
+        self.assertEqual(json.loads(packet)['seq'],7)
+        self.assertEqual(json.loads(overlay_packet({**value,'detections':[]},S,8,now))['detections'],[])
+        delayed={**value,'captured_at':datetime.fromtimestamp(now-2,timezone.utc).isoformat()}
+        self.assertEqual(json.loads(overlay_packet(delayed,S,9,now))['seq'],9)
+        for change in ({'captured_at':datetime.fromtimestamp(now-3.1,timezone.utc).isoformat()},
+                       {'detections':[{**box,'bbox':[.9,.1,.5,.2]}]},
+                       {'detections':[{**box,'confidence':float('nan')}]}, {'detections':[box]*9}):
+            with self.subTest(change=change),self.assertRaises(ValueError):overlay_packet({**value,**change},S,9,now)
+
+    async def test_slow_overlay_transport_cannot_accumulate_a_retry_queue(self):
+        from mediassist.media_bridge import Bridge
+        value=dict(status='OK',width=640,height=480,captured_at=datetime.now(timezone.utc).isoformat(),detections=[])
+        bridge=object.__new__(Bridge);bridge.source=SimpleNamespace(latest_overlay=lambda:(1,value))
+        attempts=[]
+        async def blocked(*a,**k):attempts.append(k);await asyncio.Future()
+        task=asyncio.create_task(bridge.overlays(SimpleNamespace(local_participant=SimpleNamespace(publish_data=blocked)),S))
+        try:
+            await asyncio.sleep(.85)
+            self.assertEqual(len(attempts),1)
+            self.assertFalse(attempts[0]['reliable'])
+            self.assertEqual(attempts[0]['topic'],'mar.ai.overlay.v1')
+            self.assertFalse(task.done())
+        finally:
+            task.cancel();await asyncio.gather(task,return_exceptions=True)
+
+    async def test_assist_audio_reservation_does_not_pause_camera_overlay(self):
+        from mediassist.patrol_fall import PatrolFallObserver
+        observer=object.__new__(PatrolFallObserver)
+        observer.config=dict(rate_hz=4,min_available_memory_mb=512,cooldown_sec=60,request_timeout_sec=.5,token_file='unused')
+        observer.monitoring_session=S;observer.work=None;observer.camera={}
+        observer.monitor_counts=dict(no_frame=0,submitted=0,ok=0,failed=0,dropped=0)
+        observer.monitor_health=Mock();observer.current_revision=Mock(return_value=None)
+        observer.camera_moving=Mock(return_value=False);observer.provider_outcome=Mock();observer.state=Mock()
+        observer.analyze=Mock(return_value={'suspected_fall':False,'overlay':{'detections':[]}})
+        observer.be=SimpleNamespace(request=Mock());seen=[]
+        def display(result=None,status='OK'):
+            if status=='OK':
+                seen.append(result)
+                if len(seen)==2:raise asyncio.CancelledError()
+        observer.display_overlay=display
+        class Capture:
+            depth=None
+            preview=SimpleNamespace(take_sample_with_header=lambda _:((b'',640,480,1920,'rgb8',datetime.now(timezone.utc).isoformat(),time.monotonic()),None))
+            async def set_enabled(self,enabled):pass
+        worker=SimpleNamespace(connection_ready=True,shutting_down=False,session_fault=False,staff_qr=None,active=None)
+        with patch('mediassist.patrol_fall.Capture',return_value=Capture()),\
+             patch('mediassist.patrol_fall.enough_memory',return_value=True),\
+             patch('mediassist.media_runtime.audio_reserved',return_value=True),\
+             patch('mediassist.patrol_fall.read_token',return_value='test'),\
+             patch('mediassist.patrol_fall.encode_jpeg',return_value=dict(jpeg=b'x',width=640,height=480,captured_at=NOW.isoformat())):
+            with self.assertRaises(asyncio.CancelledError):await asyncio.wait_for(observer.monitor(worker),2)
+        self.assertEqual(observer.analyze.call_count,2)
+        observer.be.request.assert_not_called()
+
+    async def test_fall_report_rejection_is_visible_without_secrets_or_state_flapping(self):
+        from mediassist.patrol_fall import PatrolFallObserver
+        observer=object.__new__(PatrolFallObserver)
+        observer.config=dict(rate_hz=4,min_available_memory_mb=512,cooldown_sec=60,request_timeout_sec=.5,token_file='unused')
+        observer.monitoring_session=S;observer.monitor_state=None;observer.work=None;observer.camera={}
+        observer.monitor_counts=dict(no_frame=0,submitted=0,ok=0,failed=0,dropped=0)
+        observer.monitor_health=Mock();observer.current_revision=Mock(return_value=None)
+        observer.camera_moving=Mock(return_value=False);observer.provider_outcome=Mock()
+        observer.patient_location=Mock(return_value=None);observer.ground_valid=Mock(return_value=True)
+        observer.location_reason='LOCALIZATION_NOT_READY'
+        observer.analyze=Mock(return_value=dict(suspected_fall=True,confidence=.9,algorithm='test'))
+        observer.be=SimpleNamespace(request=Mock(side_effect=StepError('NAVIGATION_SESSION_HTTP_422','private-token')))
+        seen=[]
+        def display(result=None,status='OK'):
+            if status=='OK':
+                seen.append(result)
+                if len(seen)==3:raise asyncio.CancelledError()
+        observer.display_overlay=display
+        class Capture:
+            depth=None
+            preview=SimpleNamespace(take_sample_with_header=lambda _:((b'',640,480,1920,'rgb8',datetime.now(timezone.utc).isoformat(),time.monotonic()),None))
+            async def set_enabled(self,enabled):pass
+        worker=SimpleNamespace(connection_ready=True,shutting_down=False,session_fault=False,staff_qr=None,active=None)
+        with patch('mediassist.patrol_fall.Capture',return_value=Capture()),\
+             patch('mediassist.patrol_fall.enough_memory',return_value=True),\
+             patch('mediassist.media_runtime.audio_reserved',return_value=False),\
+             patch('mediassist.patrol_fall.read_token',return_value='test'),\
+             patch('mediassist.patrol_fall.encode_jpeg',return_value=dict(jpeg=b'x',width=640,height=480,captured_at=NOW.isoformat())),\
+             self.assertLogs(level='INFO') as logs:
+            with self.assertRaises(asyncio.CancelledError):await asyncio.wait_for(observer.monitor(worker),2)
+        output='\n'.join(logs.output)
+        self.assertIn('FALL_MONITOR_REPORT_RETRY',output)
+        self.assertIn('code=NAVIGATION_SESSION_HTTP_422',output)
+        self.assertNotIn('private-token',output)
+        self.assertEqual(output.count('FALL_MONITOR_STATE REPORT_PENDING'),1)
+        self.assertEqual(observer.be.request.call_count,1)
+
 class MappingTests(unittest.IsolatedAsyncioTestCase):
     def test_upload_refreshes_once_after_http_auth_rejection(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -116,8 +349,16 @@ class MappingTests(unittest.IsolatedAsyncioTestCase):
         manager.lock=threading.Lock();manager.last_preview=0;manager.last_sent=0;manager.revision=3
         manager.grid=({'width':2,'height':2,'resolution':.05,'origin':[0.,0.,0.],
                        'frame_id':'map','captured_at':NOW.isoformat(),'data':bytes([255,0,50,100])},time.monotonic())
+        from mediassist.footprint import cached_body_clear
+        from mediassist.contracts import canonical
+        cached_body_clear(manager.grid[0],dict(x_m=.05,y_m=.05,yaw_rad=0.),
+                          dict(front=.01,rear=.01,left=.01,right=.01))
         with patch.dict(sys.modules,{'rclpy.time':SimpleNamespace(Time=lambda **kwargs:kwargs)}):
             payload=await manager.preview()
+        packet={'robotId':R,'transportSessionId':T,'messageType':'MAP_PREVIEW','payload':payload}
+        self.assertEqual(json.loads(canonical(packet)),packet)
+        self.assertEqual(set(payload),{'width','height','resolution','origin','frame_id','captured_at',
+                                      'revision','mapping_session_id','pose','encoding','data'})
         self.assertEqual(lookup.call_args.args,('map','base_footprint',{'nanoseconds':round(NOW.timestamp()*1e9)}))
         self.assertEqual(set(payload['pose']['value']),{'x_m','y_m','yaw_rad'})
         self.assertEqual(payload['mapping_session_id'],S)

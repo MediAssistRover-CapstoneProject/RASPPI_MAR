@@ -11,7 +11,7 @@ sys.path[:0] = [str(ROOT/'pi'), str(ROOT/'tools')]
 from configure_navigation_geometry import tune
 from mediassist.contracts import StepError
 from mediassist.footprint import body_clear
-from mediassist.motion_braking import limit_velocity
+from mediassist.motion_braking import limit_velocity,swept_turn_clear
 from mediassist.navigation_geometry import session_geometry
 from mediassist.navigation_setup import nav2_params, footprint_rectangle
 
@@ -31,6 +31,26 @@ def fixtures():
 
 
 class CargoGeometryTests(unittest.TestCase):
+    def test_turn_sweep_includes_expanded_corners_without_rejecting_distant_hits(self):
+        profile=dict(vehicle='rigid',footprint=BARE,stop_margin_m=.02,
+                     scan_max_age_sec=.4,lidar_stop_distance_m=.05,speed_mps=.25)
+        for yaw in (.1,.3,.8):
+            for point,blocked in (((.128,.105),True),((.20,.20),False)):
+                view=dict(valid=True,nearest_lidar_m=math.hypot(*point),
+                          obstacle_points=[point],rotation_clear=False)
+                actual,reason=limit_velocity((0.,0.,yaw),view,.05,profile)
+                if blocked:
+                    self.assertEqual(actual,(0.,0.,0.))
+                    self.assertEqual(reason,'TURN_ENVELOPE_BLOCKED')
+                else:
+                    self.assertEqual(actual,(0.,0.,yaw));self.assertIsNone(reason)
+            radius=math.hypot(BARE['front']+.02,BARE['left']+.02)
+            travel=radius*yaw*(.05+.35+yaw/2.4)
+            bound=travel/max(1,math.ceil(travel/.01))/2.
+            sample_corner=(BARE['front']+.02+.99*bound,BARE['left']+.02+.99*bound)
+            self.assertGreater(math.hypot(*sample_corner),radius+bound)
+            self.assertFalse(swept_turn_clear((0.,0.,yaw),[sample_corner],BARE,.02,.05))
+
     def test_mapping_and_hardware_base_unchanged_across_repeated_sessions(self):
         cfg, hw = fixtures()
         before = copy.deepcopy((cfg, hw))
@@ -135,7 +155,36 @@ class CargoGeometryTests(unittest.TestCase):
         for name in ('global_costmap', 'local_costmap'):
             costmap = params[name][name]['ros__parameters']
             self.assertEqual(json.loads(costmap['footprint']), polygon)
-            self.assertEqual(costmap['footprint_padding'], .02)
+            self.assertEqual(costmap['footprint_padding'], .01)
+
+    def test_holonomic_inflation_weight_uses_cost_units_without_changing_motion_bounds(self):
+        base = {'amcl': {'ros__parameters': {}}, 'velocity_smoother': {'ros__parameters': {}},
+                'planner_server': {'ros__parameters': {'GridBased': {}}}}
+        for name in ('global_costmap', 'local_costmap'):
+            base[name] = {name: {'ros__parameters': {'inflation_layer': {}}}}
+        controller = {'controller_server': {'ros__parameters': {
+            'FollowPath': {'plugin': 'dwb_core::DWBLocalPlanner', 'critics': ['BaseObstacle'],
+                           'BaseObstacle.scale': .02}, 'progress_checker': {}, 'general_goal_checker': {}}}}
+        local = base['local_costmap']['local_costmap']['ros__parameters']
+        for resolution in (.05, .025, .1):
+            with self.subTest(resolution=resolution):
+                local['resolution'] = resolution
+                before = copy.deepcopy((base, controller))
+                params = nav2_params(base, controller, footprint_rectangle(**BARE), .6, .8,
+                    mecanum=True, fast_navigation=True, footprint_planner=True,
+                    position_then_spin=True, holonomic_move=True, reverse_limit=.15)
+                follow = params['controller_server']['ros__parameters']['FollowPath']
+                # The real Humble critic applies resolution * configured scale.
+                self.assertAlmostEqual(resolution * follow['ObstacleFootprint.scale'], .02)
+                self.assertIn('ObstacleFootprint', follow['critics'])
+                self.assertEqual((follow['min_vel_x'], follow['min_vel_y'], follow['max_vel_y']),
+                                 (-.15, -.15, .15))
+                self.assertEqual(params['velocity_smoother']['ros__parameters']['min_velocity'],
+                                 [-.15, -.15, -.8])
+                self.assertEqual((base, controller), before)
+        mapping = nav2_params(base, controller, footprint_rectangle(**BARE), .6, .8,
+                              mecanum=True, fast_mapping=True)
+        self.assertEqual(mapping['controller_server']['ros__parameters']['FollowPath']['ObstacleFootprint.scale'], 1.)
 
     def test_session_generator_writes_consistent_private_runtime_without_changing_base(self):
         import json
@@ -145,7 +194,9 @@ class CargoGeometryTests(unittest.TestCase):
         configured, _ = tune(cfg, hw, .10, .15)
         configured.update(robot_id='robot', enabled_step_types=['WAIT'])
         hw.update(capabilities=[], ros={'map_frame': 'map'})
-        hw['motion'].update(allow_strafe=True, max_angular_speed_rps=.8)
+        hw['motion'].update(allow_strafe=True, allow_reverse=True, max_reverse_speed_mps=.15,
+                            max_angular_speed_rps=.8)
+        hw['navigation']['max_speed_mps'] = .4
         hw['navigation']['planning_timeout_sec'] = 8.
         before = copy.deepcopy((configured, hw))
         descriptor = dict(sessionId='session', mapId='map', mapAssetHash='a'*64, expiresAt='2099-01-01T00:00:00Z')
@@ -166,25 +217,47 @@ class CargoGeometryTests(unittest.TestCase):
             if path.as_posix().endswith('/navigation/config/nav2_controller_dwb.yaml'):
                 return json.dumps(controller)
             return read_text(path, *args, **kwargs)
-        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ):
-            with patch.object(runner, 'ROOT', Path(folder)), patch.object(runner, 'load', return_value=(configured, hw)), \
-                 patch.object(runner, 'SessionClient', return_value=client), \
-                 patch.object(runner, 'verify_bundle', return_value=({'map.yaml': b'image: map.pgm\n'}, {'asset_hash': 'a'*64, 'frame_id': 'map'})), \
-                 patch.object(runner, 'validate_profile', return_value={'endpoints': {}}), \
-                 patch.object(runner, 'nav_parameters', side_effect=lambda params, hardware: params), \
-                 patch.object(Path, 'is_file', return_value=True), patch.object(Path, 'read_text', new=read):
-                root, _, _ = runner.prepare(Path(folder)/'base.json', 'session')
-            runtime = json.loads((root/'worker.json').read_text())
-            hardware = json.loads((root/'hardware.json').read_text())
-            import yaml
-            params = yaml.safe_load((root/'nav2.yaml').read_text())
-            self.assertFalse(runtime['mapping']['enabled'])
-            self.assertTrue(runtime['navigation_runtime']['full_footprint_search'])
-            extent = runtime['mapping']['autonomy']['footprint']
-            self.assertAlmostEqual(extent['rear'], .204)
-            self.assertEqual(extent, hardware['motion']['lidar_braking']['footprint'])
-            for name in ('global_costmap', 'local_costmap'):
-                self.assertEqual(json.loads(params[name][name]['ros__parameters']['footprint']), footprint_rectangle(**extent))
+        for policy in ('FORWARD_PATH', 'HOLONOMIC'):
+            with self.subTest(policy=policy), tempfile.TemporaryDirectory() as folder, patch.dict(os.environ):
+                with patch.object(runner, 'ROOT', Path(folder)), patch.object(runner, 'load', return_value=(configured, hw)), \
+                     patch.object(runner, 'SessionClient', return_value=client), \
+                     patch.object(runner, 'verify_bundle', return_value=({'map.yaml': b'image: map.pgm\n'}, {'asset_hash': 'a'*64, 'frame_id': 'map'})), \
+                     patch.object(runner, 'validate_profile', return_value={'endpoints': {}}), \
+                     patch.object(runner, 'nav_parameters', side_effect=lambda params, hardware: params), \
+                     patch.object(Path, 'is_file', return_value=True), patch.object(Path, 'read_text', new=read):
+                    options = {} if policy == 'FORWARD_PATH' else {'travel_policy': policy}
+                    root, _, _ = runner.prepare(Path(folder)/'base.json', 'session', **options)
+                runtime = json.loads((root/'worker.json').read_text())
+                hardware = json.loads((root/'hardware.json').read_text())
+                import yaml
+                params = yaml.safe_load((root/'nav2.yaml').read_text())
+                self.assertFalse(runtime['mapping']['enabled'])
+                nav = runtime['navigation_runtime']
+                self.assertEqual(nav['travel_policy'], policy)
+                forward = policy == 'FORWARD_PATH'
+                self.assertEqual(nav['controller'], 'REGULATED_PURSUIT' if forward else 'HOLONOMIC_DWB')
+                self.assertEqual(nav['forward_only'], forward)
+                follow = params['controller_server']['ros__parameters']['FollowPath']
+                if forward:
+                    self.assertEqual(follow['plugin'], 'nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController')
+                    self.assertFalse(follow['allow_reversing'])
+                    self.assertTrue(follow['use_rotate_to_heading'])
+                    self.assertTrue(follow['use_collision_detection'])
+                    self.assertEqual(follow['desired_linear_vel'], .4)
+                else:
+                    self.assertIn('ObstacleFootprint', follow['critics'])
+                    self.assertEqual(follow['max_vel_y'], .15)
+                    self.assertEqual(follow['min_vel_x'], -.15)
+                    self.assertEqual(follow['max_vel_x'], .4)
+                smoother = params['velocity_smoother']['ros__parameters']
+                self.assertEqual(smoother['max_velocity'], [.4, 0. if forward else .15, .8])
+                self.assertEqual(hardware['motion']['allow_strafe'], hw['motion']['allow_strafe'])
+                self.assertEqual(hardware['motion']['max_reverse_speed_mps'], .15)
+                extent = runtime['mapping']['autonomy']['footprint']
+                self.assertAlmostEqual(extent['rear'], .204)
+                self.assertEqual(extent, hardware['motion']['lidar_braking']['footprint'])
+                for name in ('global_costmap', 'local_costmap'):
+                    self.assertEqual(json.loads(params[name][name]['ros__parameters']['footprint']), footprint_rectangle(**extent))
         self.assertEqual((configured, hw), before)
 
 

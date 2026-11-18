@@ -57,6 +57,9 @@ class RosAdapter(CargoRecovery):
         self.lease = self.node.create_publisher(String, config["ros"]["lease"], 10)
         self.lock = threading.Lock()
         self.samples, self.goal, self.lease_speed, self.goal_feedback = {}, None, None, None
+        from .battery import BatteryEstimator
+        self.battery = BatteryEstimator(config.get('battery'))
+        self.battery_telemetry_enabled = False
         self.latest_navigation_path=None
         self.navigation_guidance_path = None
         self.navigation_guidance_tracking = False
@@ -95,6 +98,8 @@ class RosAdapter(CargoRecovery):
             logging.exception("ROS executor stopped unexpectedly")
 
     def _sample(self, key, value):
+        if key == 'battery' and getattr(self, 'battery', None) is not None:
+            self.battery.update(value)
         with self.lock: self.samples[key] = (value, time.monotonic())
 
     def _scan_sample(self,msg):
@@ -137,11 +142,13 @@ class RosAdapter(CargoRecovery):
                 speed=min(speed,.15)
         runtime=getattr(self,'worker',{}).get('navigation_runtime',{})
         pursuit=runtime.get('controller')=='REGULATED_PURSUIT'
+        holonomic=(runtime.get('controller')=='HOLONOMIC_DWB'
+                   and self.cfg['motion'].get('allow_strafe') is True)
         (x,y,z),fresh=self.navigation_velocity();msg=Twist()
         requested_input=(x,y,z)
         if fresh:
-            # MOVE follows the chassis heading. Mapping has its own holonomic loop.
-            y=0.
+            if not holonomic or rotation_only:y=0.
+            if holonomic and rotation_only:x=0.
             if getattr(self,'zones',None) is not None:
                 requested_speed=speed
                 zone_pose=state.get('map_pose')
@@ -156,26 +163,33 @@ class RosAdapter(CargoRecovery):
             # The norm, not each component, is capped for diagonal Mecanum travel.
             if x<0.:
                 forward_only=runtime.get('forward_only',False)
-                x=max(x,-self.cfg['motion'].get('max_reverse_speed_mps',0.)) if not forward_only and self.cfg['motion'].get('allow_reverse') is True else 0.
+                reverse_allowed=not forward_only and self.cfg['motion'].get('allow_reverse') is True
+                if not reverse_allowed:x=0.
+                elif not holonomic:x=max(x,-self.cfg['motion'].get('max_reverse_speed_mps',0.))
             if self.cfg['motion'].get('allow_strafe') is not True:y=0.
             scale=min(1.,min(speed,self.cfg['max_speed_mps'])/max(math.hypot(x,y),1e-9))
             limit=self.cfg['motion']['max_angular_speed_rps']
-            if pursuit and abs(x)>.01 and not rotation_only:
+            if holonomic:
+                scale=min(scale,limit/max(abs(z),1e-9))
+                if x<0.:scale=min(scale,self.cfg['motion'].get('max_reverse_speed_mps',0.)/(-x))
+            elif pursuit and abs(x)>.01 and not rotation_only:
                 scale=min(scale,limit/max(abs(z),1e-9))
             msg.linear.x=x*scale;msg.linear.y=y*scale
-            # A speed-zone clamp must preserve RPP curvature. Reducing only X
-            # while retaining yaw makes the robot turn harder at the boundary.
-            turn=z*scale if pursuit and abs(x)>.01 and not rotation_only else z
+            # Keep the entire DWB trajectory, including reverse and lateral
+            # direction, when a hardware/job/zone ceiling is lower than Nav2's.
+            # RPP retains its existing forward-arc scaling.
+            turn=z*scale if holonomic or pursuit and abs(x)>.01 and not rotation_only else z
             msg.angular.z=max(-limit,min(turn,limit))
             ramp=getattr(self,'navigation_resume_ramp',None)
             if ramp is not None:
                 requested=(msg.linear.x,msg.linear.y,msg.angular.z)
                 resumed=ramp.update(requested,time.monotonic())
-                if pursuit or rotation_only:
+                if pursuit or rotation_only or holonomic:
                     # Nav2 already regulates braking and curvature. A resume-only
                     # ramp must never retain a faster old command near a goal or
                     # independently lag yaw and translation through a corner.
-                    axis=0 if abs(requested[0])>.01 and not rotation_only else 2
+                    axis=max(range(2),key=lambda i:abs(requested[i])) if (
+                        math.hypot(*requested[:2])>.01 and not rotation_only) else 2
                     want,limited=requested[axis],resumed[axis]
                     factor=min(1.,abs(limited/want)) if abs(want)>1e-9 and want*limited>0 else 0.
                     msg.linear.x,msg.linear.y,msg.angular.z=(v*factor for v in requested)
@@ -195,15 +209,29 @@ class RosAdapter(CargoRecovery):
         # Preserve RPP's curvature during translation. Wheels already turn;
         # small yaw is a steering correction, not a tiny stationary motor drive.
         # Only a deliberate in-place turn needs the minimum turn command.
-        if not (pursuit and abs(msg.linear.x)>.01 and not rotation_only):msg.angular.z=navigation_yaw(msg.angular.z)
-        msg.linear.y=0.
+        translating=math.hypot(msg.linear.x,msg.linear.y)
+        if not ((pursuit and translating>.01 or holonomic and translating>1.e-9)
+                and not rotation_only):
+            msg.angular.z=navigation_yaw(msg.angular.z)
+        if not holonomic or rotation_only:msg.linear.y=0.
         if rotation_only:msg.linear.x=0.
         # A resume ramp may retain a previous higher output while decelerating.
         # A zone cap must also bound the final command after that ramp.
-        lower=0. if runtime.get('forward_only',False) else -speed
-        msg.linear.x=max(lower,min(msg.linear.x,speed))
+        if holonomic:
+            reverse_allowed=(not runtime.get('forward_only',False)
+                             and self.cfg['motion'].get('allow_reverse') is True)
+            if msg.linear.x<0. and not reverse_allowed:msg.linear.x=0.
+            ceiling=max(0.,min(speed,self.cfg['max_speed_mps']))
+            scale=min(1.,ceiling/max(math.hypot(msg.linear.x,msg.linear.y),1e-9),
+                      self.cfg['motion']['max_angular_speed_rps']/max(abs(msg.angular.z),1e-9))
+            if msg.linear.x<0.:
+                scale=min(scale,self.cfg['motion'].get('max_reverse_speed_mps',0.)/(-msg.linear.x))
+            msg.linear.x*=scale;msg.linear.y*=scale;msg.angular.z*=scale
+        else:
+            lower=0. if runtime.get('forward_only',False) else -speed
+            msg.linear.x=max(lower,min(msg.linear.x,speed))
         if (not rotation_only and runtime.get('geometry',{}).get('profile')=='cargo'
-                and abs(msg.linear.x)<=.01 and msg.angular.z):
+                and math.hypot(msg.linear.x,msg.linear.y)<=.01 and msg.angular.z):
             pose=(state or {}).get('map_pose',{})
             if pose.get('fresh') and not self._cargo_map_allows_turn(pose['value'],msg.angular.z):
                 self.node.get_logger().warning('CARGO_TURN_BLOCKED_BY_MAP; stop and select another approach')
@@ -244,7 +272,11 @@ class RosAdapter(CargoRecovery):
         now = time.monotonic()
         data = {key: {"value": v if not isinstance(v, float) or math.isfinite(v) else None,
                       "age_sec": max(0, now - at)} for key, (v, at) in snapshot.items()}
-        # Keep the MQTT telemetry contract unchanged; diagnostics stay on the local ROS topic/file.
+        if getattr(self, 'battery_telemetry_enabled', False) and getattr(self, 'battery', None) is not None:
+            battery = self.battery.snapshot()
+            if battery is not None:
+                data['battery'] = battery
+        # Localization diagnostics stay on the local ROS topic/file.
         localization=data.pop('localization_status',None)
         try:
             from rclpy.time import Time
@@ -553,7 +585,9 @@ class RosAdapter(CargoRecovery):
         from nav2_msgs.action import ComputePathToPose
         plan_started=time.monotonic()
         self.navigation_plan_receipt=None
-        position_only=getattr(self,'worker',{}).get('navigation_runtime',{}).get('arrival_mode')=='POSITION_ONLY'
+        runtime=getattr(self,'worker',{}).get('navigation_runtime',{})
+        position_only=runtime.get('arrival_mode')=='POSITION_ONLY'
+        holonomic=runtime.get('controller')=='HOLONOMIC_DWB'
         # Position-only validates the terminal footprint against the actual
         # plan tangent below, rather than an unused saved endpoint heading.
         if not position_only:self._check_endpoint_footprint(endpoint_id)
@@ -574,15 +608,17 @@ class RosAdapter(CargoRecovery):
             # the one separate arrival Spin owns that orientation.
             actual=start_override if start_override is not None else current['value'];target=self.cfg['endpoints'][endpoint_id]
             dx,dy=target['x_m']-actual['x_m'],target['y_m']-actual['y_m']
-            self.approach_headings[endpoint_id]=math.atan2(dy,dx) if math.hypot(dx,dy)>.10 else actual['yaw_rad']
+            self.approach_headings[endpoint_id]=(actual['yaw_rad'] if holonomic or math.hypot(dx,dy)<=.10
+                                                 else math.atan2(dy,dx))
         goal = ComputePathToPose.Goal()
         goal.goal = self._pose(endpoint_id)
         goal.use_start, goal.planner_id = False, self.cfg["navigation"]["planner_id"]
         saved_yaw=self.cfg['endpoints'][endpoint_id]['yaw_rad']
         approach_yaw=self.approach_headings.get(endpoint_id,saved_yaw)
-        alternative_heading=(not probe and getattr(self,'worker',{}).get('navigation_runtime',{}).get('full_footprint_search')
+        alternative_heading=(getattr(self,'worker',{}).get('navigation_runtime',{}).get('full_footprint_search')
                              and abs(math.atan2(math.sin(saved_yaw-approach_yaw),math.cos(saved_yaw-approach_yaw)))>.1)
-        attempts=3 if alternative_heading else 2
+        attempts=1 if probe else 2
+        if alternative_heading:attempts+=1
         if start_override is not None:
             from geometry_msgs.msg import PoseStamped
             goal.start=PoseStamped();goal.start.header=goal.goal.header
@@ -610,12 +646,12 @@ class RosAdapter(CargoRecovery):
                     alternative_heading=False
                     self.approach_headings[endpoint_id]=saved_yaw
                     goal.goal=self._pose(endpoint_id)
-                    self.node.get_logger().warning('PATH_REPLAN_ALTERNATE_APPROACH')
+                    if not probe:self.node.get_logger().warning('PATH_REPLAN_ALTERNATE_APPROACH')
                     sent=self.planner.send_goal_async(goal);received=False
                     continue
                 # Wait for a new costmap update once. Never clear obstacles or
                 # remove a keepout merely to manufacture a successful route.
-                if attempt==attempts-1 or probe:raise StepError("PATH_UNAVAILABLE")
+                if attempt==attempts-1:raise StepError("PATH_UNAVAILABLE")
                 self.node.get_logger().warning('PATH_REPLAN_WAITING_FOR_COSTMAP_UPDATE')
                 await asyncio.sleep(1.)
                 await self._prerequisites(p)
@@ -627,7 +663,9 @@ class RosAdapter(CargoRecovery):
                 q=v.pose.orientation
                 yaw=math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))
                 return (v.pose.position.x,v.pose.position.y,yaw)
-            if position_only or getattr(self,'worker',{}).get('navigation_runtime',{}).get('controller')=='REGULATED_PURSUIT':
+            if holonomic and position_only:
+                self._check_endpoint_footprint(endpoint_id,self.approach_headings[endpoint_id])
+            elif not holonomic and (position_only or runtime.get('controller')=='REGULATED_PURSUIT'):
                 terminal_yaw=waypoint(path.poses[-1])[2]
                 self.approach_headings[endpoint_id]=terminal_yaw
                 self._check_endpoint_footprint(endpoint_id,terminal_yaw)
@@ -961,12 +999,18 @@ class RosAdapter(CargoRecovery):
             return fresh(key) and type(v) in (int, float) and 0.02 <= v <= 4.0
         us100_ready = (not self.cfg["motion"].get("us100_required", True)
                        or (range_ok("left") and range_ok("right")))
+        battery = data.get('battery', {})
         return {"sensors_ready": us100_ready and fresh("scan") and data["scan"]["value"] is True,
                 "left_m": data.get("left", {}).get("value"), "right_m": data.get("right", {}).get("value"),
                 "left_fresh": range_ok("left"), "right_fresh": range_ok("right"),
                 "left_age_sec": data.get("left", {}).get("age_sec"), "right_age_sec": data.get("right", {}).get("age_sec"),
-                "battery_age_sec": data.get("battery", {}).get("age_sec"),
-                "battery_raw": data.get("battery", {}).get("value"), "battery_percent": None, "battery_unit": "UNVERIFIED_UINT16"}
+                "battery_age_sec": battery.get('age_sec'),
+                "battery_raw": battery.get('value'), "battery_percent": battery.get('percent'),
+                "battery_unit": battery.get('unit', 'UNVERIFIED_UINT16'),
+                **({'battery_' + key: battery.get(key) for key in
+                   ('voltage_v', 'estimate_method', 'estimate_status', 'profile_id', 'curve_calibrated',
+                    'series_cells', 'parallel_cells', 'nominal_capacity_mah', 'nominal_voltage_v')}
+                   if battery.get('unit') == 'MILLIVOLT' else {})}
 
     async def execute(self, kind, p, meta):
         if kind == "MOVE": return await self._move(p, meta)

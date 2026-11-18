@@ -11,6 +11,8 @@ def number(value, low, high, label):
 
 def validate_config(cfg):
     try:
+        from .battery import configuration as battery_configuration
+        battery_configuration(cfg.get('battery'))
         if not isinstance(cfg["robot_id"], str) or not cfg["robot_id"]:
             raise StepError("INVALID_CONFIG", "robot_id")
         # Higher translation is opt-in on M1 Mecanum; other chassis keep their cap.

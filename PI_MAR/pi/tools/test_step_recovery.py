@@ -4,6 +4,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from uuid import uuid4
 from pathlib import Path
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -72,6 +73,47 @@ class RecoveryTests(unittest.TestCase):
         migrated=StepStore(target,'robot-test')
         try:self.assertEqual(migrated.pending(),[{'messageId':'old-event'}])
         finally:migrated.close()
+
+    def test_terminal_move_settlement_preserves_stop_evidence_and_original_outbox(self):
+        for outcome in ('CANCELLED','FAILED'):
+            with self.subTest(outcome=outcome):
+                step=dict(self.step,operationKey='job:MOVE:'+outcome,jobStepId='move-'+outcome,stepType='MOVE')
+                self.store.accept(step)
+                ack=self.store.emit('COMMAND_ACK',{'commandType':'EXECUTE_STEP','commandId':'command-'+outcome},step,'command-'+outcome)
+                error=self.store.emit('STEP_ERROR',{'errorCode':'PHYSICAL_STOP_UNCONFIRMED','physicalStopConfirmed':True},step,'command-'+outcome)
+                self.store.finish(step,'RECOVERY_REQUIRED',{'errorCode':'PHYSICAL_STOP_UNCONFIRMED','physicalStopConfirmed':True})
+                candidate=next(c for c in self.store.stopped_move_settlements() if c['jobStepId']==step['jobStepId'])
+                receipt=dict(candidate,receiptId=str(uuid4()),robotId='robot-test',status=outcome,physicalStopConfirmed=True)
+                if outcome=='FAILED':receipt.update(reconciliationOutcome='CONFIRM_FAILED',reconciledAt='2026-11-17T07:12:32Z')
+                self.store.settle_cancelled_move(candidate,receipt)
+                previous=self.store.previous(step)
+                self.assertEqual(previous['status'],outcome)
+                self.assertEqual(previous['result']['errorCode'],'PHYSICAL_STOP_UNCONFIRMED')
+                self.assertEqual(previous['result']['previousStatus'],'RECOVERY_REQUIRED')
+                self.assertEqual(previous['result']['settlement'],receipt)
+                for event in (ack,error):
+                    row=self.store.db.execute('SELECT body,acked,superseded_by FROM worker_outbox WHERE message_id=?',(event['messageId'],)).fetchone()
+                    self.assertEqual(json.loads(row[0]),event)
+                    self.assertEqual(row[1],0)
+                    self.assertEqual(row[2],receipt['receiptId'])
+        self.assertFalse(self.store.blocked())
+
+    def test_failed_move_settlement_requires_explicit_reconciliation_and_matching_stopped_move(self):
+        step=dict(self.step,operationKey='job:MOVE:1',jobStepId='move',stepType='MOVE')
+        self.store.accept(step)
+        self.store.emit('COMMAND_ACK',{'commandType':'EXECUTE_STEP','commandId':'command-move'},step,'command-move')
+        self.store.finish(step,'RECOVERY_REQUIRED',{'physicalStopConfirmed':True})
+        candidate=self.store.stopped_move_settlements()[0]
+        receipt=dict(candidate,receiptId=str(uuid4()),robotId='robot-test',status='FAILED',physicalStopConfirmed=True,
+                     reconciliationOutcome='CONFIRM_FAILED',reconciledAt='2026-11-17T07:12:32Z')
+        for change in ({'reconciliationOutcome':None},{'reconciledAt':None},{'reconciledAt':'invalid'},
+                       {'physicalStopConfirmed':False},{'jobId':'foreign'},{'status':'SUCCEEDED'}):
+            with self.subTest(change=change),self.assertRaises(StepError):
+                self.store.settle_cancelled_move(candidate,{**receipt,**change})
+        self.assertTrue(self.store.blocked())
+        self.store.finish(step,'RECOVERY_REQUIRED',{'physicalStopConfirmed':False})
+        with self.assertRaisesRegex(StepError,'CANCEL_SETTLEMENT_LOCAL_STATE_CHANGED'):
+            self.store.settle_cancelled_move(candidate,receipt)
 
 
 if __name__=='__main__':unittest.main()

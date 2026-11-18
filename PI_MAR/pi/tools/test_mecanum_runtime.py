@@ -56,9 +56,10 @@ class MecanumTests(unittest.TestCase):
             self.assertGreater(msg.linear.y,0);self.assertAlmostEqual(math.hypot(msg.linear.x,msg.linear.y),.18)
         with patch('mediassist.ros_adapter.time.monotonic',return_value=10.5):
             self.assertEqual(a.navigation_velocity(),((0.,0.,0.),False))
-    def test_front_wall_does_not_cancel_clear_lateral_escape_but_side_wall_stops_it(self):
+    def test_front_wall_holds_diagonal_but_keeps_explicit_clear_lateral_escape(self):
         cfg=frontier.profile();view={'front_m':.05,'lateral_left_m':1.,'lateral_right_m':.05}
-        self.assertEqual(nav2_assist((.1,.1,.2),view,cfg),(0.,.1,.2))
+        self.assertEqual(nav2_assist((.1,.1,.2),view,cfg),(0.,0.,0.))
+        self.assertEqual(nav2_assist((0.,.1,0.),view,cfg),(0.,.1,0.))
         self.assertEqual(nav2_assist((0.,-.1,0.),view,cfg),(0.,0.,0.))
         x,y,_=nav2_assist((1.,1.,0.),{**view,'front_m':1.},cfg)
         self.assertAlmostEqual(math.hypot(x,y),cfg['speed_mps'])

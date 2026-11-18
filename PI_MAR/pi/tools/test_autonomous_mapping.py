@@ -18,21 +18,58 @@ def settings():
 
 class AutonomyTests(unittest.TestCase):
     def test_turn_veto_does_not_finish_nav2_mapping_with_clear_front(self):
-        self.start()
-        self.current(.1,view={**CLEAR,'rotation_clear':False},gate={'reason':'TURN_ENVELOPE_BLOCKED'},hold=True)
-        self.assertEqual(self.auto.phase,'RUNNING')
+        for reason in ('TURN_ENVELOPE_BLOCKED','TURN_SWEEP_SLOWDOWN','LIDAR_BRAKING_STOP'):
+            self.setUp();self.start()
+            self.assertEqual(self.current(.1,view={**CLEAR,'rotation_clear':False},gate={'reason':reason},hold=True),(0.,0.))
+            self.assertEqual(self.auto.phase,'RUNNING')
         from mediassist.autonomous_mapping import nav2_assist
         command=nav2_assist((.1,0.,.3),{**CLEAR,'rotation_clear':False},self.auto.cfg,.01)
-        self.assertGreater(command[0],0.);self.assertEqual(command[2],0.)
+        # A legacy sector-only view cannot prove the requested partial arc.
+        # Holding it is safe; stripping yaw would drive a different trajectory.
+        self.assertEqual(command,(0.,0.,0.))
+
+    def test_nav2_limits_preserve_translation_direction_and_curvature(self):
+        from mediassist.autonomous_mapping import nav2_assist
+        cfg=settings();cfg.update(speed_mps=.3,angular_rps=.3,stop_margin_m=.02,
+                                  reverse_enabled=True,max_reverse_mps=.05)
+        sector={**CLEAR,'front_m':.04,'back_m':3.,'lateral_left_m':3.,'lateral_right_m':3.}
+        raw={**sector,'front_m':3.,'nearest_lidar_m':3.,'obstacle_points':[]}
+        cases=[((.12,.12,.2),sector),((.1,.1,.8),raw),((-.2,.1,.4),raw)]
+        for desired,view in cases:
+            with self.subTest(desired=desired,raw='obstacle_points' in view):
+                actual=nav2_assist(desired,view,cfg,.05)
+                ratios=[a/b for a,b in zip(actual,desired) if b]
+                self.assertGreater(min(ratios),0.)
+                self.assertLessEqual(max(ratios),1.)
+                for ratio in ratios:self.assertAlmostEqual(ratio,ratios[0])
+                self.assertLessEqual(math.hypot(*actual[:2]),cfg['speed_mps'])
+                self.assertLessEqual(abs(actual[2]),cfg['angular_rps'])
+                if desired[0]<0:self.assertLessEqual(abs(actual[0]),cfg['max_reverse_mps'])
+
+    def test_nav2_diagonal_escape_uses_actual_swept_body_and_hard_stops(self):
+        from mediassist.autonomous_mapping import nav2_assist
+        cfg=settings();cfg.update(speed_mps=.18,angular_rps=1.2,stop_margin_m=.02,
+            reverse_enabled=True,max_reverse_mps=.05,include_points=True,
+            footprint=dict(front=.109,rear=.104,left=.086,right=.086))
+        desired=(-.012,-.04,0.)
+        # The point is just beyond the front face. This diagonal moves away;
+        # the old along/cross bounding rectangle falsely treated it as contact.
+        view={**CLEAR,'nearest_lidar_m':.14,'obstacle_points':[(.13,-.05)]}
+        self.assertEqual(nav2_assist(desired,view,cfg,.05),desired)
+        for changed,age in (({**view,'valid':False},.05),(view,.41),
+                            ({**view,'nearest_lidar_m':.04},.05),
+                            ({**view,'obstacle_points':[(.1,0.)]},.05)):
+            with self.subTest(view=changed,age=age):
+                self.assertEqual(nav2_assist(desired,changed,cfg,age),(0.,0.,0.))
 
     def test_near_rear_still_allows_forward_at_the_independent_gate(self):
         from mediassist.motion_braking import limit_velocity
-        cfg=settings();cfg['include_points']=True
+        cfg=settings();cfg.update(include_points=True,stop_margin_m=.02)
         view=dict(valid=True,nearest_lidar_m=.27,rotation_clear=False,obstacle_points=[(-.27,0.),(1.,0.)])
         forward,_=limit_velocity((.1,0.,.3),view,.01,cfg)
-        reverse,_=limit_velocity((-.1,0.,0.),view,.01,cfg)
-        self.assertGreater(forward[0],0.);self.assertEqual(forward[2],0.)
-        self.assertEqual(reverse[0],0.)
+        reverse,_=limit_velocity((-.2,0.,0.),view,.01,cfg)
+        self.assertGreater(forward[0],0.);self.assertGreater(forward[2],0.)
+        self.assertLess(reverse[0],0.);self.assertLess(abs(reverse[0]),.2)
     def setUp(self):
         self.auto=AutoMapper(settings())
         self.message=dict(action='START',runId=RUN,maxDurationSec=180,stopOnReturn=False)
@@ -232,6 +269,33 @@ class MappingIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item.auto.reason,'ROBOT_FOOTPRINT_NOT_CLEAR_IN_MAP')
         self.assertEqual(item.velocity.publish.call_args.args[0].linear.x,0.)
         self.assertFalse(item.adapter.lease_message.call_args.args[0])
+
+    async def test_unknown_under_body_waits_for_new_map_mid_run_but_has_a_bounded_stop(self):
+        from unittest.mock import Mock,patch
+        from mediassist.frontier_mapping import FrontierWorker
+        item,_=self.manager()
+        item.auto.cfg['exploration_mode']='frontier'
+        options=dict(action='START',runId=RUN,maxDurationSec=180,stopOnReturn=False)
+        item.auto.accept(options,10.,POSE,.9);item.auto_selected=True
+        item.exploration=FrontierWorker(item.auto.cfg)
+        item.exploration.poll=Mock(return_value=({'state':'BLOCKED',
+            'reason':'ROBOT_FOOTPRINT_NOT_CLEAR_IN_MAP','seed_block_kind':'unknown'},None))
+        item.auto_status=Mock(return_value={})
+        def twist():return SimpleNamespace(linear=SimpleNamespace(x=0.,y=0.,z=0.),angular=SimpleNamespace(x=0.,y=0.,z=0.))
+        renew_at=10.
+        for now,expected in ((70.,'WAITING_FOR_MAP_AROUND_BODY'),(77.9,'WAITING_FOR_MAP_AROUND_BODY'),
+                             (78.1,'ROBOT_FOOTPRINT_NOT_CLEAR_IN_MAP')):
+            while renew_at<now:
+                renew_at=min(now,renew_at+.5)
+                item.auto.accept({**options,'action':'RENEW'},renew_at,POSE,.9)
+            item.grid=({},now);item.auto_scan=(CLEAR,now)
+            with patch('mediassist.mapping.time.monotonic',return_value=now),patch.dict(sys.modules,{
+                    'geometry_msgs.msg':SimpleNamespace(Twist=twist)}):
+                await item.tick(True,True)
+            self.assertEqual(item.auto.reason,expected)
+            sent=item.velocity.publish.call_args.args[0]
+            self.assertEqual((sent.linear.x,sent.linear.y,sent.angular.z),(0.,0.,0.))
+        self.assertEqual(item.auto.phase,'STOPPED')
 
 
 if __name__=='__main__':unittest.main()

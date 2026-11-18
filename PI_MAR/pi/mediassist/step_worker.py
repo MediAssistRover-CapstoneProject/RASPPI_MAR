@@ -26,6 +26,7 @@ class StepWorker:
         self.staff_qr = None
         self.navigation_audio = {}
         self.voice_publisher=None
+        self.cancel_settlement_at=0.
         from .voice_runtime import enabled,StatePublisher
         if enabled(cfg):
             try:self.voice_publisher=StatePublisher(cfg)
@@ -39,15 +40,18 @@ class StepWorker:
     def advertised_capabilities(self):
         from .staff_qr import CAPABILITIES
         values=[value for value in self.hardware['capabilities']
-                if value not in CAPABILITIES and value not in (COMMISSIONING_UNLOCK_CAPABILITY, 'PATROL_FALL')]
+                if value not in CAPABILITIES and value not in (COMMISSIONING_UNLOCK_CAPABILITY, 'PATROL_FALL', 'continuous-fall-v1')]
         if self.cfg.get('allow_commissioning_unlock') is True:
             values.append(COMMISSIONING_UNLOCK_CAPABILITY)
         if self.cfg.get('navigation_session') and 'MOVE' in self.cfg.get('enabled_step_types',[]) and 'move-start-commit-v1' not in values:
             values.append('move-start-commit-v1')
         if self.staff_qr is not None:
             values.extend(CAPABILITIES)
-        if getattr(self.adapter, 'patrol_fall_observer', None) is not None:
+        observer = getattr(self.adapter, 'patrol_fall_observer', None)
+        if observer is not None:
             values.append('PATROL_FALL')
+            if observer.config.get('mode') == 'CONTINUOUS':
+                values.append('continuous-fall-v1')
         return values
 
     def status(self):
@@ -243,6 +247,9 @@ class StepWorker:
                     status,error="RECOVERY_REQUIRED","PHYSICAL_STOP_UNCONFIRMED"
             if step["stepType"]=="CONTROL_HARDWARE" and physical_started and status!="SUCCEEDED":
                 status="RECOVERY_REQUIRED"
+            if (step['stepType']=='MOVE' and stop_confirmed is True and status=='RECOVERY_REQUIRED'
+                    and error in ('CONNECTION_LOST','BE_ACK_TIMEOUT')):
+                status='FAILED'
             if getattr(self.adapter,"motion_uncertain",False):
                 status,error="RECOVERY_REQUIRED","PHYSICAL_STOP_UNCONFIRMED"
             result={"status":status,"result":data,"errorCode":error,
@@ -266,8 +273,10 @@ class StepWorker:
             stopped=(await self.adapter.stop()) is True
         except Exception:
             stopped=False
+        stopped_failure = stopped and (reason=='PROCESS_SHUTDOWN'
+            or reason=='CONNECTION_LOST' and step['stepType']=='MOVE')
         status=("CANCELLED" if reason=="CANCELLED" and stopped else
-                "FAILED" if reason=="PROCESS_SHUTDOWN" and stopped else "RECOVERY_REQUIRED")
+                "FAILED" if stopped_failure else "RECOVERY_REQUIRED")
         result={"status":status,"errorCode":reason,"physicalStopConfirmed":stopped}
         self.last_result=result
         self.store.finish(step,status,result)
@@ -406,15 +415,23 @@ class StepWorker:
             or message.get("accepted") is not True
             or message.get("robotId")!=self.cfg["robot_id"] or message.get("contract")!=CONTRACT):
             raise StepError("HELLO_REJECTED")
+        version = message.get('batteryTelemetryVersion')
+        self.adapter.battery_telemetry_enabled = type(version) is int and version == 1
 
     async def connected(self, ws):
         async def send(value):
             async with self.send_lock:
                 await ws.send(canonical(value))
         self.sent.clear()
+        self.adapter.battery_telemetry_enabled = False
         unlock_policy = self.cfg['unlock_policy']
         self.staff_qr = None
-        if unlock_policy == 'STAFF_VERIFIED':
+        mapping_enabled = self.cfg['mapping']['enabled']
+        if unlock_policy == 'STAFF_VERIFIED' and mapping_enabled:
+            unlock_policy = 'DISABLED'
+            self.adapter.staff_unlock_ready = False
+            logging.info('STAFF_UNLOCK_DISABLED: mapping mode')
+        elif unlock_policy == 'STAFF_VERIFIED':
             try:
                 from .staff_qr import StaffQrScanner
                 if await self.adapter.probe_staff_unlock():
@@ -552,9 +569,55 @@ class StepWorker:
                         'pose':dict(xM=value['x_m'],yM=value['y_m'],yawRad=value['yaw_rad'])},qos=0)
             await asyncio.sleep(.2 if self.active and self.active.get('stepType')=='MOVE' else .5)
 
+    async def settle_cancelled_moves(self):
+        if self.active is not None or self.task and not self.task.done():
+            return
+        if time.monotonic()<self.cancel_settlement_at:
+            return
+        candidates=self.store.stopped_move_settlements()
+        if not candidates:
+            return
+        self.cancel_settlement_at=time.monotonic()+30.
+        from .navigation_session import SessionClient
+        try:
+            client=SessionClient(self.cfg)
+        except (StepError,OSError,ValueError,TypeError,KeyError) as error:
+            logging.warning('CANCEL_SETTLEMENT_PENDING code=%s',getattr(error,'code',type(error).__name__))
+            return
+        for candidate in candidates[:16]:
+            try:
+                path=('/api/v1/pi/jobs/'+candidate['jobId']+'/operations/'
+                      +candidate['jobStepId']+'/settlement')
+                body={key:candidate[key] for key in ('commandId','operationKey')}
+                raw=await asyncio.to_thread(client.request,path,body=body)
+                receipt=json.loads(raw)
+                self.store.settle_cancelled_move(candidate,receipt)
+                logging.info('TERMINAL_MOVE_SETTLED job=%s step=%s status=%s',
+                             candidate['jobId'],candidate['jobStepId'],receipt['status'])
+            except (StepError,OSError,ValueError,TypeError,KeyError) as error:
+                code=getattr(error,'code',type(error).__name__)
+                logging.warning('CANCEL_SETTLEMENT_PENDING step=%s code=%s',candidate['jobStepId'],code)
+                if code!='NAVIGATION_SESSION_HTTP_422':
+                    break
+        if not self.store.blocked() and not self.store.pending():
+            self.session_fault=False
+
+    async def fall_monitor_loop(self, observer):
+        while True:
+            try:
+                await observer.monitor(self)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logging.warning('FALL_MONITOR_RETRY code=%s', getattr(error, 'code', type(error).__name__))
+            await asyncio.sleep(3.)
+
     async def run(self):
         from .navigation_guidance import prepare_navigation_audio
         navigation_audio = asyncio.create_task(prepare_navigation_audio(self))
+        observer = getattr(self.adapter, 'patrol_fall_observer', None)
+        fall_monitor = (asyncio.create_task(self.fall_monitor_loop(observer))
+                        if observer is not None and observer.config.get('mode') == 'CONTINUOUS' else None)
         delay=1
         # Local USB input keeps its 20 Hz loop across broker connect/backoff.
         # It does not depend on a BE mapping session or a transport lease.
@@ -564,6 +627,7 @@ class StepWorker:
         try:
             while True:
                 try:
+                    await self.settle_cancelled_moves()
                     async with MqttSession(self.cfg) as session:
                         connected=asyncio.create_task(self.connected(session))
                         mapping=local_mapping or asyncio.create_task(self.mapping_loop(session))
@@ -597,6 +661,9 @@ class StepWorker:
         finally:
             navigation_audio.cancel()
             await asyncio.gather(navigation_audio, return_exceptions=True)
+            if fall_monitor is not None:
+                fall_monitor.cancel()
+                await asyncio.gather(fall_monitor, return_exceptions=True)
             if local_mapping:
                 self.inhibit_manual()
                 local_mapping.cancel()
