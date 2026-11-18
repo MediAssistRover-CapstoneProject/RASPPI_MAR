@@ -114,8 +114,6 @@ def load(path):
         raise StepError("INVALID_ENABLED_STEPS")
     if type(cfg.get("staff_face_enabled", False)) is not bool:
         raise StepError("INVALID_STAFF_FACE_CONFIG")
-    if type(cfg.get("staff_face_enabled", False)) is not bool:
-        raise StepError("INVALID_STAFF_FACE_CONFIG")
     commissioning_unlock = cfg.get("allow_commissioning_unlock", False)
     if type(commissioning_unlock) is not bool or commissioning_unlock and (
             cfg["unlock_policy"] != "STAFF_VERIFIED"

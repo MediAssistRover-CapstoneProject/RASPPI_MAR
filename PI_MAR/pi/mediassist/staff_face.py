@@ -65,7 +65,12 @@ class StaffFaceScanner(StaffQrScanner):
                     await asyncio.sleep(.15)
                     continue
                 if self.preview is None:
-                    await self.set_preview(True)
+                    try:
+                        await self.set_preview(True)
+                    except Exception as exc:
+                        logging.info('STAFF_FACE_CAMERA_RETRY code=%s', type(exc).__name__)
+                        await asyncio.sleep(1)
+                        continue
                 if self.hint_task is not None and self.hint_task.done():
                     await self.stop_hint()
                 if time.monotonic() >= next_hint and self.hint_task is None:
@@ -77,8 +82,13 @@ class StaffFaceScanner(StaffQrScanner):
                     await asyncio.sleep(.1)
                     continue
                 last_frame = sample[6]
-                frame = await asyncio.to_thread(encode_jpeg, sample, {
-                    'max_width': 960, 'max_height': 720, 'jpeg_quality': 85, 'max_jpeg_bytes': 512 * 1024})
+                try:
+                    frame = await asyncio.to_thread(encode_jpeg, sample, {
+                        'max_width': 960, 'max_height': 720, 'jpeg_quality': 85, 'max_jpeg_bytes': 512 * 1024})
+                except Exception as exc:
+                    logging.info('STAFF_FACE_FRAME_RETRY code=%s', type(exc).__name__)
+                    await asyncio.sleep(1)
+                    continue
                 if frame is None or self.window(session) != window:
                     await asyncio.sleep(.1)
                     continue

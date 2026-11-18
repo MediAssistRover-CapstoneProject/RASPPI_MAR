@@ -43,19 +43,28 @@ class FaceScannerTests(unittest.IsolatedAsyncioTestCase):
         self.session.staff_face_scan = None
         self.assertIsNone(self.scanner.window(self.session))
 
-    async def exercise(self, result, seconds=.3):
+    async def exercise(self, result, seconds=.3, encode_failure=False, open_failure=False):
         scanner = self.scanner
         scanner.preview = None
         scanner.hint_task = None
         scanner.stop_hint = AsyncMock()
         scanner.play_hint = AsyncMock()
         preview = N(take_sample=lambda age: (b'pixels', 100, 100, 300, 'bgr8', 'now', time.monotonic()))
-        async def set_preview(enabled): scanner.preview = preview if enabled else None
+        failed_open = False
+        async def set_preview(enabled):
+            nonlocal failed_open
+            if enabled and open_failure and not failed_open:
+                failed_open = True
+                raise RuntimeError('camera unavailable')
+            scanner.preview = preview if enabled else None
         scanner.set_preview = AsyncMock(side_effect=set_preview)
         scanner.client = N(request=Mock(return_value=result))
-        with patch('mediassist.staff_face.encode_jpeg', return_value={'jpeg': b'jpeg'}):
+        with patch('mediassist.staff_face.encode_jpeg',
+                   side_effect=[ValueError('invalid frame'), {'jpeg': b'jpeg'}] if encode_failure else None,
+                   return_value={'jpeg': b'jpeg'}):
             task = asyncio.create_task(scanner.run(self.session))
             await asyncio.sleep(seconds)
+            self.assertFalse(task.done(), 'Scanner stopped unexpectedly')
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         self.assertIsNone(scanner.preview)
@@ -70,6 +79,14 @@ class FaceScannerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_mismatch_rate_limited(self):
         request = await self.exercise(b'{"verified":false,"reason":"NO_MATCH"}', .5)
+        self.assertEqual(request.call_count, 1)
+
+    async def test_encoder_recovers_without_sending_invalid_frame(self):
+        request = await self.exercise(b'{"verified":true}', 1.4, encode_failure=True)
+        self.assertEqual(request.call_count, 1)
+
+    async def test_camera_open_recovers(self):
+        request = await self.exercise(b'{"verified":true}', 1.4, open_failure=True)
         self.assertEqual(request.call_count, 1)
 
 
