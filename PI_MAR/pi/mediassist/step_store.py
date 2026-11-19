@@ -152,6 +152,53 @@ class StepStore:
         return [json.loads(r[0]) for r in self.db.execute(
             "SELECT body FROM worker_outbox WHERE acked=0 AND superseded_by IS NULL ORDER BY seq LIMIT 100")]
 
+    def reissue_operator_reconciliations(self):
+        """Publish offline operator receipts with this runtime's HELLO identity.
+
+        Old envelopes remain immutable audit records. Execution receipts are never
+        reissued: only a matching, locally reconciled cancellation may cross the
+        CLI/runtime process boundary without asserting a physical stop.
+        """
+        pending = self.db.execute(
+            "SELECT message_id,body FROM worker_outbox "
+            "WHERE acked=0 AND superseded_by IS NULL ORDER BY seq").fetchall()
+        receipts = [json.loads(r[0]) for r in self.db.execute('SELECT body FROM worker_outbox')]
+        reissued = 0
+        with self.db:
+            for old_mid, raw in pending:
+                old = json.loads(raw)
+                payload = old.get('payload', {})
+                if (old.get('messageType') != 'OPERATOR_RECONCILED'
+                        or old.get('producerSessionId') == self.session
+                        or old.get('robotId') != self.robot_id
+                        or set(payload) != {'reason', 'status'} or payload.get('status') != 'CANCELLED'):
+                    continue
+                row = self.db.execute('SELECT body,status,result FROM worker_steps WHERE step_id=?',
+                                      (old.get('jobStepId'),)).fetchone()
+                if not row or row[1] != 'CANCELLED':
+                    continue
+                step, result = json.loads(row[0]), json.loads(row[2]) if row[2] else {}
+                if (result.get('source') != 'LOCAL_OPERATOR' or result.get('reason') != payload.get('reason')
+                        or not isinstance(payload.get('reason'), str) or not payload['reason'].strip()
+                        or any(old.get(key) != step.get(key) for key in ('jobId', 'jobStepId', 'operationKey'))):
+                    continue
+                if not any(receipt.get('messageType') == 'COMMAND_ACK'
+                           and receipt.get('robotId') == self.robot_id
+                           and all(receipt.get(key) == step.get(key) for key in ('jobId', 'jobStepId', 'operationKey'))
+                           and receipt.get('correlationId') == old.get('correlationId')
+                           and receipt.get('payload', {}).get('commandType') == 'EXECUTE_STEP'
+                           and receipt.get('payload', {}).get('commandId') == old.get('correlationId')
+                           and receipt.get('payload', {}).get('accepted') is True for receipt in receipts):
+                    continue
+                mid = str(uuid.uuid4())
+                self.sequence += 1
+                envelope = {**old, 'messageId':mid, 'producerSessionId':self.session,
+                            'sequenceNo':self.sequence, 'occurredAt':utcnow()}
+                self.db.execute('INSERT INTO worker_outbox(message_id,body) VALUES(?,?)', (mid, canonical(envelope)))
+                self.db.execute('UPDATE worker_outbox SET superseded_by=? WHERE message_id=?', (mid, old_mid))
+                reissued += 1
+        return reissued
+
     def ack(self, mid):
         with self.db:
             self.db.execute("UPDATE worker_outbox SET acked=1 WHERE message_id=?", (mid,))

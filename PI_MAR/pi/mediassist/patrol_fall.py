@@ -611,7 +611,9 @@ class PatrolFallObserver:
                 qr = getattr(worker, 'staff_qr', None)
                 # ASSIST reserves microphone/speakers, not the shared RGB feed.
                 # Keep camera analysis available during a staff SOS video call.
-                priority = qr is not None and qr.preview is not None
+                face = getattr(worker, 'staff_face', None)
+                priority = ((qr is not None and qr.preview is not None)
+                            or (face is not None and face.preview is not None))
                 checkpoint = bool(worker.active and worker.active.get('stepType') == 'EXECUTE_SENSING'
                                   and worker.active.get('params', {}).get('fall_detection'))
                 permitted = (worker.connection_ready and not worker.shutting_down and not worker.session_fault

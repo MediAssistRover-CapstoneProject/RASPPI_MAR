@@ -642,6 +642,7 @@ class StepWorker:
             await asyncio.sleep(3.)
 
     async def run(self):
+        self.store.reissue_operator_reconciliations()
         from .navigation_guidance import prepare_navigation_audio
         navigation_audio = asyncio.create_task(prepare_navigation_audio(self))
         observer = getattr(self.adapter, 'patrol_fall_observer', None)
