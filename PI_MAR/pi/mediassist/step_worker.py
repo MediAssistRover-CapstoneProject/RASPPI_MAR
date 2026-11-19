@@ -114,9 +114,18 @@ class StepWorker:
             self.receipt(command,False,errorCode='PROCESS_SHUTDOWN')
             return
         if command["commandType"] == "CANCEL_STEP":
+            self.store.cancel_operation(command['jobId'], command['jobStepId'])
             step=self.active
             if not step or step["jobStepId"]!=command["jobStepId"] or step["jobId"]!=command["jobId"]:
-                self.receipt(command,False,errorCode="STEP_NOT_ACTIVE")
+                previous=self.store.cancellation_state(command['jobId'],command['jobStepId'])
+                if previous is None:
+                    # A cancel can overtake an unaccepted execute. The durable tombstone prevents it starting later.
+                    self.receipt(command,True,status='CANCELLED',physicalStopConfirmed=True)
+                else:
+                    saved,status,result=previous
+                    safe=status in ('CANCELLED','SUCCEEDED','FAILED','TIMED_OUT') and result.get('physicalStopConfirmed') is True
+                    self.receipt(command,safe,saved,status=status,physicalStopConfirmed=safe,
+                                 **({} if safe else {'errorCode':'STOP_NOT_CONFIRMED'}))
                 return
             self.stop_reason="CANCELLED"
             self.task.cancel()
@@ -128,6 +137,9 @@ class StepWorker:
                          physicalStopConfirmed=result.get("physicalStopConfirmed",False))
             return
         step=command["step"]
+        if self.store.cancelled(step['jobId'],step['jobStepId']):
+            self.receipt(command,False,step,errorCode='OPERATION_CANCELLED')
+            return
         if command.get("commissioningUnlock") is True:
             step = {**step, "commissioningUnlock": True}
         previous=self.store.previous(step)

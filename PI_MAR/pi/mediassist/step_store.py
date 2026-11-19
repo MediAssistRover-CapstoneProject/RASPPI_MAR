@@ -14,6 +14,9 @@ class StepStore:
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.executescript("""
           CREATE TABLE IF NOT EXISTS worker_identity(robot_id TEXT PRIMARY KEY);
+          CREATE TABLE IF NOT EXISTS cancelled_operations(
+            job_id TEXT NOT NULL, step_id TEXT NOT NULL, requested_at TEXT NOT NULL,
+            PRIMARY KEY(job_id,step_id));
           CREATE TABLE IF NOT EXISTS worker_steps(
             operation TEXT PRIMARY KEY, step_id TEXT UNIQUE NOT NULL,
             job_id TEXT NOT NULL, hash TEXT NOT NULL, body TEXT NOT NULL,
@@ -86,14 +89,21 @@ class StepStore:
     def remember_command(self, command, event):
         with self.db:
             self.db.execute("INSERT INTO worker_commands VALUES(?,?,?)",
-                (command["commandId"],digest(command),event["messageId"]))
+                (command["commandId"],self.command_digest(command),event["messageId"]))
+
+    @staticmethod
+    def command_digest(command):
+        if command.get('commandType') == 'CANCEL_STEP':
+            return digest({key: value for key, value in command.items()
+                           if key not in ('expiresAt', 'transportSessionId')})
+        return digest(command)
 
     def cached_command(self, command):
         row = self.db.execute("SELECT hash,ack_id FROM worker_commands WHERE command_id=?",
                               (command["commandId"],)).fetchone()
         if not row:
             return None
-        if row[0] != digest(command):
+        if row[0] != self.command_digest(command) and row[0] != digest(command):
             raise StepError("COMMAND_ID_CONFLICT")
         with self.db:
             self.db.execute("UPDATE worker_outbox SET acked=0 WHERE message_id=?", (row[1],))
@@ -109,9 +119,25 @@ class StepStore:
         return None
 
     def accept(self, step):
+        if self.cancelled(step['jobId'], step['jobStepId']):
+            raise StepError('OPERATION_CANCELLED')
         with self.db:
             self.db.execute("INSERT INTO worker_steps VALUES(?,?,?,?,?,?,NULL)",
                 (step["operationKey"],step["jobStepId"],step["jobId"],digest(step),canonical(step),"ACCEPTED"))
+
+    def cancel_operation(self, job_id, step_id):
+        with self.db:
+            self.db.execute('INSERT OR IGNORE INTO cancelled_operations VALUES(?,?,?)',
+                            (job_id, step_id, utcnow()))
+
+    def cancelled(self, job_id, step_id):
+        return self.db.execute('SELECT 1 FROM cancelled_operations WHERE job_id=? AND step_id=?',
+                               (job_id, step_id)).fetchone() is not None
+
+    def cancellation_state(self, job_id, step_id):
+        row = self.db.execute('SELECT body,status,result FROM worker_steps WHERE job_id=? AND step_id=?',
+                              (job_id, step_id)).fetchone()
+        return (json.loads(row[0]), row[1], json.loads(row[2]) if row[2] else {}) if row else None
 
     def set_running(self, step):
         with self.db:
