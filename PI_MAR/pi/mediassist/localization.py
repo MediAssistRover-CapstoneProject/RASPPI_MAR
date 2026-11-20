@@ -110,7 +110,9 @@ class QualityGate:
             if not math.isfinite(support) or support<c['min_particle_support']:reasons.append('PARTICLES_NOT_CONVERGED')
             metrics['particle_support']=support if math.isfinite(support) else None
         for key in ('pose_age_sec','scan_age_sec','tf_pose_age_sec','tf_error','amcl_tf_error',
-                    'scan_tf_error','footprint_kind','footprint_cell'):
+                    'scan_tf_error','raw_scan_age_sec','scan_receive_age_sec','scan_received_count',
+                    'scan_queue_length','transformable_scan_count',
+                    'footprint_kind','footprint_cell'):
             if key in sample:metrics[key]=sample[key]
         if sample.get('scan_tf_error') and 'scan_match' not in sample:
             reasons=[r for r in reasons if r not in ('SCAN_MATCH_LOW','KNOWN_FRACTION_LOW','VALID_BEAMS_LOW')]

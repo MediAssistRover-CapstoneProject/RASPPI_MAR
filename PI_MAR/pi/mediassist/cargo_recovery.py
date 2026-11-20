@@ -145,6 +145,27 @@ def padding_escape_clear(grid,points,extent,obstacles,zones=None,*,padding=None)
 
 
 class CargoRecovery:
+    def _localization_progress(self,state,now):
+        """Reset consecutive recovery attempts only after verified, sustained travel."""
+        quality=state.get('localization',{})
+        sample=getattr(self,'odom_pose_sample',None)
+        good=(quality.get('ready') is True and quality.get('reason')=='LOCALIZED'
+              and state.get('map_pose',{}).get('fresh') is True and sample is not None
+              and len(sample[0])>=2 and all(math.isfinite(v) for v in sample[0][:2])
+              and 0<=now-sample[1]<=.5)
+        if not good:
+            self.localization_progress_anchor=None
+            return
+        anchor=getattr(self,'localization_progress_anchor',None)
+        if anchor is None:
+            self.localization_progress_anchor=(now,tuple(sample[0][:2]))
+            return
+        if (now-anchor[0]>=2. and math.dist(anchor[1],sample[0][:2])>=.15
+                and getattr(self,'localization_recovery_attempts',0)>0):
+            self.node.get_logger().info('NAV_RECOVERY_BUDGET_RESET: fresh localization and odometry confirm progress')
+            self.localization_recovery_attempts=0
+            self.localization_progress_anchor=(now,tuple(sample[0][:2]))
+
     async def _wait_localization_recovery(self,endpoint_id,reason,seconds,attempt):
         """Pause this accepted MOVE; keep its identity/deadline and never reset AMCL."""
         if not await self.stop():raise StepError('GOAL_STOP_UNCONFIRMED')
@@ -392,7 +413,7 @@ class CargoRecovery:
         extent=self.worker['mapping']['autonomy']['footprint']
         return maneuver_clear(self._cargo_saved_grid(),sweep,extent,())
 
-    def _cargo_clear(self,origin,distance,yaw,lateral=0.,turn_delta=None,extended=False):
+    def _cargo_scan_view(self):
         from .autonomous_mapping import scan_view
         from .geometry_diagnostics import planar_transform
         from rclpy.time import Time
@@ -408,6 +429,11 @@ class CargoRecovery:
             view=scan_view(scan,transform,profile)
         except Exception as exc:raise StepError('CARGO_ESCAPE_SCAN_NOT_READY') from exc
         if not view.get('valid') or 'obstacle_points' not in view:raise StepError('CARGO_ESCAPE_SCAN_NOT_READY')
+        return scan,transform,view,age,profile
+
+    def _cargo_clear(self,origin,distance,yaw,lateral=0.,turn_delta=None,extended=False):
+        scan,transform,view,age,profile=self._cargo_scan_view()
+        motion=self.cfg['motion']
         points=maneuver_points(origin,distance,yaw,lateral,turn_delta,extended=extended)
         if distance>0:
             from .rear_scan import rear_clearance
@@ -418,7 +444,8 @@ class CargoRecovery:
             # braking gate cannot begin. Search another direction instead.
             from .motion_braking import limit_velocity
             length=math.hypot(distance,lateral)
-            initial=(-.05*distance/length,.05*lateral/length,0.)
+            # The braking gate allows a padding-only escape at <= .045 m/s.
+            initial=(-.04*distance/length,.04*lateral/length,0.)
             limited,_=limit_velocity(initial,view,age,profile)
             if math.hypot(limited[0],limited[1])<.005:return False,points
         c,s=math.cos(origin['yaw_rad']),math.sin(origin['yaw_rad'])
@@ -447,8 +474,14 @@ class CargoRecovery:
         ux,uy=-distance/length,lateral/length
         _,origin=self._cargo_pose();sample=getattr(self,'odom_pose_sample',None)
         if sample is None or len(sample[0])<3 or time.monotonic()-sample[1]>.5:raise StepError('STALE_ODOM')
-        odom_origin=sample[0];started=time.monotonic();speed=min(.05,p['max_speed_mps'])
+        # Inherit the accepted MOVE ceiling; geometry, hardware and live braking
+        # determine the achievable speed of this short adjustment.
+        requested=self.worker.get('navigation_runtime',{}).get('escape_speed_mps',p['max_speed_mps'])
+        if type(requested) not in (int,float) or not math.isfinite(requested) or not 0<requested<=.8:
+            raise StepError('INVALID_CARGO_ESCAPE_SPEED')
+        odom_origin=sample[0];started=time.monotonic();speed=min(requested,p['max_speed_mps'],self.cfg.get('max_speed_mps',requested))
         if ux<0:speed=min(speed,self.cfg['motion'].get('max_reverse_speed_mps',.1)/(-ux))
+        last_speed=0.;last_at=started-.05
         self.clear_navigation_velocity()
         try:
             while True:
@@ -460,7 +493,7 @@ class CargoRecovery:
                 travelled=ux*bx+uy*by
                 if travelled<-.01 or abs(-uy*bx+ux*by)>.025:raise StepError('CARGO_ESCAPE_DIRECTION_INVALID')
                 if travelled>=length-.005:return
-                if time.monotonic()-started>length/max(speed,.01)+2.:raise StepError('CARGO_REVERSE_BLOCKED')
+                if time.monotonic()-started>length/max(min(speed,.04),.01)+2.:raise StepError('CARGO_REVERSE_BLOCKED')
                 if abs(wrap(pose['yaw_rad']-origin['yaw_rad']))>.15:raise StepError('CARGO_ESCAPE_HEADING_CHANGED')
                 remaining=max(0.,length-travelled)/length
                 clear,_=self._cargo_clear(pose,distance*remaining,pose['yaw_rad'],lateral=lateral*remaining)
@@ -468,7 +501,17 @@ class CargoRecovery:
                 cap=speed
                 if getattr(self,'zones',None) is not None:cap=self.zones.directional_cap(state['map_pose'],speed,(ux*speed,uy*speed,0.))
                 if cap<=0.:raise StepError('CARGO_REVERSE_BLOCKED_BY_ZONE')
-                speed_now=min(speed,cap)
+                # One continuous odometry-bounded adjustment, with smooth start
+                # and endpoint braking. Live LiDAR still owns every output.
+                now=time.monotonic();dt=max(0.,min(.1,now-last_at));last_at=now
+                speed_now=min(speed,cap,last_speed+.25*dt,
+                              math.sqrt(1.2*max(0.,length-travelled-.005)))
+                _,_,view,scan_age,profile=self._cargo_scan_view()
+                from .motion_braking import limit_velocity,padding_escape_contacts
+                contacts=padding_escape_contacts(view['obstacle_points'],(ux,uy),profile['footprint'],profile['stop_margin_m'])
+                if contacts:speed_now=min(speed_now,.04)
+                limited,_=limit_velocity((ux*speed_now,uy*speed_now,0.),view,scan_age,profile)
+                speed_now=min(speed_now,math.hypot(*limited[:2]));last_speed=speed_now
                 if ux and abs(ux*speed_now)<.005:raise StepError('CARGO_REVERSE_BLOCKED')
                 msg=Twist();msg.linear.x=ux*speed_now;msg.linear.y=uy*speed_now
                 self.navigation_velocity_output.publish(msg)

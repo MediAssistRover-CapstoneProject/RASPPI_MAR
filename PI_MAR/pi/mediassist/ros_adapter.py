@@ -894,6 +894,7 @@ class RosAdapter(CargoRecovery):
                     path_reported_at=time.monotonic()
                 state = self.telemetry()
                 context_ready=self._navigation_context(allow_localization_pause=True,state=state)
+                self._localization_progress(state,time.monotonic())
                 self.navigation_diagnostic(state,'TRACKING' if context_ready and state['map_pose']['fresh'] else 'HOLD_LOCALIZATION')
                 if getattr(self,'localization_required',False) and (not context_ready or not state['map_pose']['fresh']):
                     self.hold_navigation_velocity()
@@ -977,6 +978,7 @@ class RosAdapter(CargoRecovery):
         self.cargo_escape_used=False
         self.cargo_arrival_reposition_used=False
         self.localization_recovery_attempts=0
+        self.localization_progress_anchor=None
         self.navigation_localization_wait=None
         self.navigation_obstacle_wait=None
         self.navigation_plan_reported_signature=None

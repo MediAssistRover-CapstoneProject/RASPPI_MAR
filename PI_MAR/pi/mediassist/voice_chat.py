@@ -27,12 +27,13 @@ from .contracts import StepError
 from .speech import SpeechPlayer,audio_device
 from .store import utcnow
 from .voice_capture import recording_cue
-from .voice_client import MAX_WAV, VoiceClient
+from .voice_client import MAX_WAV, VoiceClient, VoiceHTTPS
 from .voice_actions import VoiceActions,words
 
 INTRO='Xin chào, bạn cần MAR giúp gì không?'
 GOODBYE='Phiên trò chuyện đã kết thúc. Khi cần hỗ trợ, hãy gọi MAR.'
 HISTORY_LOCK=threading.RLock()
+_PROFILE_CURRENT=object()
 
 
 def goodbye(text):
@@ -47,6 +48,17 @@ def serialized(method):
     return call
 
 
+class _CachedPCM:
+    """Only the two public greeting/farewell utterances may live in this cache."""
+    def __init__(self,raw):
+        self.buffer=io.BytesIO(raw);self.length=len(raw);self.response=self
+
+    def read(self,size):return self.buffer.read(size)
+    def isclosed(self):return self.buffer.closed or self.buffer.tell()==self.length
+    def close(self):self.buffer.close()
+    def abort(self):self.close()
+
+
 class AiClient:
     def __init__(self,path):
         path=Path(path);self.config=json.loads(path.read_text())
@@ -58,11 +70,74 @@ class AiClient:
         self.token=Path(self.config['token_file']).read_text().strip()
         if len(self.token)<20 or any(c.isspace() for c in self.token):raise StepError('VOICE_AI_TOKEN_INVALID')
         context=ssl.create_default_context(cafile=self.config['ca_file']);context.minimum_version=ssl.TLSVersion.TLSv1_2
-        self.opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect(),urllib.request.HTTPSHandler(context=context))
+        self.opener=VoiceHTTPS(self.base,context)
+        self.profile=None
+        self.public_audio={}
+        self.public_pcm={}
+        self.supports_stream=False
+        self._health=None;self._health_at=0.
+
+    def close(self):
+        self.opener.close()
+        self.public_audio.clear()
+        self.public_pcm.clear()
+
+    def cancel_pending(self):
+        self.opener.abort_pending()
+
+    def speech_profile(self,profile):
+        if (not isinstance(profile,dict) or not isinstance(profile.get('voice'),str)
+                or not isinstance(profile.get('instructions'),str)
+                or not isinstance(profile.get('revision'),str)
+                or not 1<=len(profile['revision'])<=128
+                or type(profile.get('speedMultiplier')) not in (int,float)
+                or not math.isfinite(profile['speedMultiplier'])
+                or not .25<=profile['speedMultiplier']<=4):
+            raise StepError('VOICE_SPEECH_PROFILE_INVALID')
+        value={key:profile[key] for key in ('voice','speedMultiplier','instructions','revision')}
+        if value!=self.profile:
+            self.public_audio.clear()
+            self.public_pcm.clear()
+        self.profile=value
+
+    def prewarm(self,text=INTRO):
+        if text not in (INTRO,GOODBYE):
+            raise StepError('VOICE_PREWARM_PUBLIC_PHRASE_REQUIRED')
+        if not self.supports_stream:
+            self.synthesize(text)
+            return
+        profile=dict(self.profile) if self.profile else None
+        key=(text,json.dumps(profile,sort_keys=True,ensure_ascii=False))
+        if key in self.public_pcm:return
+        response,_=self.open_speech_stream(text,profile)
+        try:
+            audio=bytearray()
+            while True:
+                block=response.read(8192)
+                if not block:break
+                audio.extend(block)
+                if len(audio)>MAX_WAV:raise StepError('VOICE_AUDIO_TOO_LARGE')
+            if not audio or len(audio)%2:raise StepError('VOICE_AI_STREAM_FORMAT_INVALID')
+            if self.profile==profile:
+                self.public_pcm[key]=bytes(audio)
+                while len(self.public_pcm)>2:self.public_pcm.pop(next(iter(self.public_pcm)))
+        finally:response.close()
+
+    def cached_speech(self,text):
+        key=(text,json.dumps(self.profile,sort_keys=True,ensure_ascii=False))
+        return self.public_audio.get(key)
+
+    def health(self):
+        if self._health is None or time.monotonic()-self._health_at>=30:
+            value=self.request('/health')
+            self.supports_stream=value.get('speech_stream') is True
+            self._health=value;self._health_at=time.monotonic()
+        return dict(self._health)
 
     def request(self,path,body=None):
+        request_id=str(uuid.uuid4());started=time.monotonic()
         req=urllib.request.Request(self.base+path,data=None if body is None else json.dumps(body,ensure_ascii=False).encode(),
-            headers={'Authorization':'Bearer '+self.token,'Content-Type':'application/json'})
+            headers={'Authorization':'Bearer '+self.token,'Content-Type':'application/json','X-Request-ID':request_id})
         try:
             with self.opener.open(req,timeout=25) as r:raw=r.read(65537)
         except urllib.error.HTTPError as e:
@@ -71,6 +146,8 @@ class AiClient:
         if len(raw)>65536:raise StepError('VOICE_AI_RESPONSE_TOO_LARGE')
         result=json.loads(raw)
         if not isinstance(result,dict):raise StepError('VOICE_AI_INVALID_RESPONSE')
+        logging.info('VOICE_AI_HTTP request_id=%s path=%s roundtrip_ms=%d',request_id,path.split('?',1)[0],
+                     round((time.monotonic()-started)*1000))
         return result
 
     def ask(self,session_id,text,history,destinations=None,hospital_information_id=None):
@@ -85,8 +162,9 @@ class AiClient:
         return result
 
     def speech_request(self, path, body, content_type, limit):
+        request_id=str(uuid.uuid4());started=time.monotonic()
         req = urllib.request.Request(self.base+path, data=body, headers={
-            'Authorization': 'Bearer '+self.token, 'Content-Type': content_type})
+            'Authorization': 'Bearer '+self.token, 'Content-Type': content_type,'X-Request-ID':request_id})
         try:
             with self.opener.open(req, timeout=12) as response:
                 raw = response.read(limit+1)
@@ -97,6 +175,8 @@ class AiClient:
             raise StepError('VOICE_AI_SPEECH_UNREACHABLE') from None
         if not raw or len(raw)>limit:
             raise StepError('VOICE_AI_INVALID_SPEECH')
+        logging.info('VOICE_AI_SPEECH_HTTP request_id=%s path=%s roundtrip_ms=%d bytes=%d',
+                     request_id,path.split('?',1)[0],round((time.monotonic()-started)*1000),len(raw))
         return raw, mime
 
     def transcribe(self, raw, language):
@@ -114,16 +194,45 @@ class AiClient:
         return text
 
     def synthesize(self, text):
-        body = json.dumps({'text': text, 'language': 'vi'}, ensure_ascii=False).encode()
+        profile=dict(self.profile) if self.profile else None
+        key=(text,json.dumps(profile,sort_keys=True,ensure_ascii=False))
+        if key in self.public_audio:
+            return self.public_audio[key]
+        body = json.dumps({'text': text, 'language': 'vi','speech_profile':profile}, ensure_ascii=False).encode()
         raw, mime = self.speech_request('/api/robot/speech/synthesize', body, 'application/json', MAX_WAV)
         if mime not in ('audio/wav', 'audio/x-wav') or not raw.startswith(b'RIFF'):
             raise StepError('VOICE_AI_INVALID_SPEECH')
+        if text in (INTRO,GOODBYE) and self.profile==profile:
+            self.public_audio[key]=raw
+            while len(self.public_audio)>2:
+                self.public_audio.pop(next(iter(self.public_audio)))
         return raw
 
-    def detect_wake(self,pcm):
+    def open_speech_stream(self,text,profile_snapshot=_PROFILE_CURRENT):
+        profile=(dict(self.profile) if self.profile else None) if profile_snapshot is _PROFILE_CURRENT else profile_snapshot
+        cached=self.public_pcm.get((text,json.dumps(profile,sort_keys=True,ensure_ascii=False)))
+        if cached:return _CachedPCM(cached),'cache-'+str(uuid.uuid4())
+        body=json.dumps({'text':text,'language':'vi','speech_profile':profile},ensure_ascii=False).encode()
+        request_id=str(uuid.uuid4())
+        req=urllib.request.Request(self.base+'/api/robot/speech/synthesize/stream',data=body,headers={
+            'Authorization':'Bearer '+self.token,'Content-Type':'application/json','X-Request-ID':request_id})
+        try:
+            response=self.opener.open(req,timeout=12)
+        except urllib.error.HTTPError as error:
+            raise StepError('VOICE_AI_SPEECH_HTTP_'+str(error.code)) from None
+        except OSError:
+            raise StepError('VOICE_AI_SPEECH_UNREACHABLE') from None
+        if (response.headers.get_content_type()!='audio/pcm'
+                or response.headers.get('X-Audio-Format')!='pcm_s16le_24000_mono'):
+            response.abort()
+            raise StepError('VOICE_AI_STREAM_FORMAT_INVALID')
+        return response,request_id
+
+    def detect_wake(self,pcm,request_id=None):
+        request_id=request_id or str(uuid.uuid4());started=time.monotonic()
         req=urllib.request.Request(self.base+'/api/robot/wake',data=pcm,headers={
             'Authorization':'Bearer '+self.token,'Content-Type':'application/octet-stream',
-            'X-Audio-Format':'pcm_s16le_16000_mono'})
+            'X-Audio-Format':'pcm_s16le_16000_mono','X-Request-ID':request_id})
         try:
             with self.opener.open(req,timeout=8) as response:raw=response.read(4097)
         except urllib.error.HTTPError as error:raise StepError('VOICE_WAKE_HTTP_'+str(error.code)) from None
@@ -133,6 +242,9 @@ class AiClient:
         if not isinstance(value,dict) or type(value.get('detected')) is not bool:raise StepError('VOICE_WAKE_INVALID_RESPONSE')
         if value.get('phrase')!=self.config.get('wake',{}).get('phrase','M A'):
             raise StepError('VOICE_WAKE_PHRASE_MISMATCH')
+        logging.info('VOICE_WAKE_RESULT request_id=%s detected=%s reason=%s roundtrip_ms=%d queue_ms=%s decode_ms=%s',
+                     request_id,value['detected'],value.get('reason','UNKNOWN'),
+                     round((time.monotonic()-started)*1000),value.get('queue_ms'),value.get('decode_ms'))
         return value['detected']
 
 
@@ -262,7 +374,9 @@ class TurnCapture:
     KEEP_TAIL = 4
 
     def __init__(self, detector, max_seconds):
+        from .voice_wake import PcmConditioner
         self.detector = detector
+        self.conditioner=PcmConditioner()
         self.max_frames = int(max_seconds / self.FRAME_SEC)
         self.noise = deque(maxlen=40)
         self.lead = deque(maxlen=10)
@@ -271,6 +385,7 @@ class TurnCapture:
         self.voiced = self.quiet = 0
 
     def push(self, block):
+        block=self.conditioner.process(block)
         level = rms(block)
         speech = self.detector.is_speech(block, 16000)
         if not speech:
@@ -364,6 +479,97 @@ async def listen(player,start_timeout=8,max_seconds=15):
     return raw.getvalue()
 
 
+async def play_stream(player,ai,text,on_playback_start=None):
+    """Feed one complete neural utterance into ALSA with bounded PCM buffering.
+
+    The provider is asked for the whole sentence once. Network reads are small
+    and backpressured by ALSA; a partial utterance is never replayed as fallback.
+    """
+    if not player.cfg.get('enabled'):
+        raise StepError('SPEECH_NOT_ENABLED')
+    executable=shutil.which('aplay')
+    if not executable:
+        raise StepError('VOICE_ALSA_TOOLS_MISSING')
+    response=None;proc=None;begun=False;received=0;request_id=None
+    started=time.monotonic();prefix=bytearray();remainder=b''
+    try:
+        opening=asyncio.create_task(asyncio.to_thread(ai.open_speech_stream,text))
+        try:
+            response,request_id=await asyncio.shield(opening)
+        except asyncio.CancelledError:
+            # to_thread cannot cancel a blocking socket open. Keep ownership of
+            # its eventual response and dispose it even if no headers arrived
+            # before the workflow preempted this voice task.
+            def discard(task):
+                try:task.result()[0].abort()
+                except BaseException:pass
+            opening.add_done_callback(discard)
+            cancel=getattr(ai,'cancel_pending',None)
+            if cancel:cancel()
+            raise
+        # 120 ms at 24 kHz/16 bit. Do not wait for the complete WAV/utterance.
+        while len(prefix)<5760:
+            block=await asyncio.to_thread(response.read, min(4096,5760-len(prefix)))
+            if not block:break
+            prefix.extend(block)
+        if not prefix or len(prefix)%2:
+            raise StepError('VOICE_AI_STREAM_FORMAT_INVALID')
+
+        def scale(block):
+            nonlocal remainder,received
+            received+=len(block)
+            if received>MAX_WAV:raise StepError('VOICE_AUDIO_TOO_LARGE')
+            block=remainder+block
+            remainder=block[-1:] if len(block)%2 else b''
+            aligned=block[:len(block)-len(remainder)]
+            samples=array.array('h',aligned)
+            if sys.byteorder!='little':samples.byteswap()
+            for index,value in enumerate(samples):samples[index]=round(value*.70)
+            if sys.byteorder!='little':samples.byteswap()
+            return samples.tobytes()
+
+        async with player.lock:
+            with tempfile.TemporaryFile() as diagnostic:
+                proc=await asyncio.create_subprocess_exec(executable,'-q','-D',audio_device(player.cfg),
+                    '-t','raw','-f','S16_LE','-r','24000','-c','1',
+                    stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.DEVNULL,stderr=diagnostic)
+                async def feed():
+                    nonlocal begun
+                    block=bytes(prefix);prefix.clear()
+                    while block:
+                        pcm=scale(block)
+                        if pcm:
+                            if not begun:
+                                begun=True
+                                if on_playback_start:on_playback_start()
+                            proc.stdin.write(pcm)
+                            await asyncio.wait_for(proc.stdin.drain(),3)
+                        block=await asyncio.to_thread(response.read,4096)
+                    if remainder:raise StepError('VOICE_AI_STREAM_FORMAT_INVALID')
+                    proc.stdin.close()
+                    await proc.wait()
+                    if proc.returncode:
+                        raise StepError('AUDIO_PLAYBACK_FAILED','aplay exited '+str(proc.returncode))
+                try:
+                    await asyncio.wait_for(feed(),75)
+                finally:
+                    await stop_process(proc)
+        logging.info('VOICE_TTS_STREAM request_id=%s completed=true bytes=%d elapsed_ms=%d',
+                     request_id,received,round((time.monotonic()-started)*1000))
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        logging.warning('VOICE_TTS_STREAM request_id=%s completed=false started=%s code=%s',
+                        request_id,begun,getattr(error,'code',type(error).__name__))
+        failure=StepError('VOICE_TTS_STREAM_INTERRUPTED' if begun else 'VOICE_TTS_STREAM_UNAVAILABLE')
+        failure.playback_started=begun
+        raise failure from error
+    finally:
+        prefix.clear()
+        if response is not None:
+            response.close() if response.response.isclosed() else response.abort()
+
+
 async def say(player,text,log_transcripts=True,ai=None):
     if log_transcripts:print('MAR:',text,flush=True)
     text = text[:500]
@@ -377,6 +583,15 @@ async def say(player,text,log_transcripts=True,ai=None):
         first_audio = time.monotonic()
 
     if ai is not None:
+        if getattr(ai,'supports_stream',False) and not ai.cached_speech(text):
+            try:
+                await play_stream(player,ai,text,audio_started)
+                logging.info('VOICE_TTS_TIMING engine=ai-stream first_audio_ms=%d played_ms=%d chars=%d',
+                             round((first_audio-started)*1000),round((time.monotonic()-first_audio)*1000),len(text))
+                return
+            except StepError as error:
+                if getattr(error,'playback_started',False):raise
+                logging.info('VOICE_TTS_FALLBACK code=%s',error.code)
         try:
             audio = await asyncio.to_thread(ai.synthesize,text)
         except StepError as error:
@@ -445,16 +660,35 @@ async def run_chat(worker,config_path,start_now=False,once=False,max_turns=10):
 
 
 async def conversation(worker,config_path,start_now=True,once=True,max_turns=10,
-                       initial_catalog=None,before_dispatch=None,log_transcripts=True,start_timeout=8):
+                       initial_catalog=None,before_dispatch=None,log_transcripts=True,start_timeout=8,
+                       ai_client=None,be_client=None):
+    ai=ai_client;be=be_client
+    try:
+        if ai is None:ai=AiClient(config_path)
+        if be is None:be=VoiceClient(worker)
+        return await _conversation(worker,config_path,start_now,once,max_turns,initial_catalog,
+                                   before_dispatch,log_transcripts,start_timeout,ai,be)
+    finally:
+        for client,owned in ((ai,ai_client is None),(be,be_client is None)):
+            close=getattr(client,'close',None)
+            if owned and callable(close):close()
+
+
+async def _conversation(worker,config_path,start_now=True,once=True,max_turns=10,
+                        initial_catalog=None,before_dispatch=None,log_transcripts=True,start_timeout=8,
+                        ai_client=None,be_client=None):
     """Called only while the CLI or managed voice daemon owns controller_lock."""
-    ai=AiClient(config_path);be=VoiceClient(worker);player=SpeechPlayer(worker['speech']);history=History(be,ai.marker)
+    ai=ai_client or AiClient(config_path);be=be_client or VoiceClient(worker);player=SpeechPlayer(worker['speech']);history=History(be,ai.marker)
     actions=VoiceActions(be,ai.config,ai.marker,before_dispatch)
     stt_language=ai.config.get('stt_language','auto')
     if stt_language not in ('vi','en','auto'):raise StepError('VOICE_LANGUAGE_UNSUPPORTED')
     # History is independent of MQTT and motor execution.
-    health, _ = await asyncio.gather(asyncio.to_thread(ai.request, '/health'),
+    health_method=getattr(ai,'health',None)
+    health, _ = await asyncio.gather(asyncio.to_thread(health_method if callable(health_method) else ai.request,
+                                                     *(() if callable(health_method) else ('/health',))),
                                      asyncio.to_thread(history.recover))
     if health.get('state')!='READY':raise StepError('VOICE_AI_NOT_READY')
+    ai.supports_stream=health.get('speech_stream') is True
     speech_ai = ai if health.get('direct_speech') is True else None
     async def speak(text):
         await say(player,text,log_transcripts,speech_ai)
@@ -468,6 +702,13 @@ async def conversation(worker,config_path,start_now=True,once=True,max_turns=10,
         try:
             catalog=initial_catalog if initial_catalog is not None else await asyncio.to_thread(actions.conversation_catalog)
             initial_catalog=None
+            profile=catalog.get('speechProfile')
+            if profile is None and speech_ai is not None:
+                try:profile=await asyncio.to_thread(be.speech_profile)
+                except (StepError,OSError) as error:
+                    logging.info('VOICE_SPEECH_PROFILE_FALLBACK code=%s',getattr(error,'code',type(error).__name__))
+            if profile is not None and speech_ai is not None:
+                speech_ai.speech_profile(profile)
             candidates=catalog.get('endpoints',[])[:100]
             hospital_information_id=catalog.get('navigationSession',{}).get('hospitalInformationId')
             await speak(INTRO)

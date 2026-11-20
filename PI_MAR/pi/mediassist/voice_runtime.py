@@ -122,12 +122,42 @@ class VoiceRuntime:
             await asyncio.gather(task,return_exceptions=True)
 
     async def run(self):
-        from .voice_chat import controller_lock,wait_for_wake,conversation,AiClient
-        from .voice_actions import VoiceActions
-        from .voice_client import VoiceClient
-        config=Path(self.options['config_file']);idle_since=None
+        from .voice_chat import controller_lock
+        config=Path(self.options['config_file'])
+        # One HTTP pool per companion, shared by wake and its conversation.
+        # Reopen only after local configuration changes, while no capture runs.
+        self.ai_client=None;self.be_client=None;self.config_revision=None;self.prewarm_task=None
         # Own the wake listener and chat for the lifetime of the companion.
         with controller_lock():
+            try:
+                await self.run_available(config)
+            finally:
+                for client in (self.ai_client,self.be_client):
+                    if client is not None:client.close()
+                if self.prewarm_task is not None:
+                    self.prewarm_task.cancel()
+                    await asyncio.gather(self.prewarm_task,return_exceptions=True)
+
+    async def prepare_audio(self,ai,be):
+        """Warm only the public greeting while the wake listener keeps recording."""
+        try:
+            health,profile=await asyncio.gather(asyncio.to_thread(ai.health),
+                                               asyncio.to_thread(be.speech_profile))
+            if health.get('state')!='READY' or health.get('direct_speech') is not True:return
+            ai.supports_stream=health.get('speech_stream') is True
+            ai.speech_profile(profile)
+            await asyncio.to_thread(ai.prewarm)
+            logging.info('VOICE_PREWARM_READY profile=%s stream=%s',profile['revision'],ai.supports_stream)
+        except asyncio.CancelledError:raise
+        except Exception as error:
+            logging.info('VOICE_PREWARM_DEFERRED code=%s',getattr(error,'code',type(error).__name__))
+
+    async def run_available(self,config):
+        from .voice_chat import wait_for_wake,conversation,AiClient
+        from .voice_actions import VoiceActions
+        from .voice_client import VoiceClient
+        idle_since=None
+        try:
             while True:
                 try:
                     self.handoff=False
@@ -136,14 +166,30 @@ class VoiceRuntime:
                     if idle_since is None:idle_since=time.monotonic()
                     if time.monotonic()-idle_since<self.options['idle_settle_sec']:
                         await asyncio.sleep(.1);continue
-                    # Loading a config is local; cloud requests start only after wake.
-                    ai=AiClient(config);settings=ai.config
+                    revision=(config.stat().st_mtime_ns,config.stat().st_size)
+                    if self.ai_client is None or revision!=self.config_revision:
+                        if self.prewarm_task is not None:
+                            self.prewarm_task.cancel()
+                            await asyncio.gather(self.prewarm_task,return_exceptions=True)
+                        if self.ai_client is not None:self.ai_client.close()
+                        self.ai_client=AiClient(config);self.config_revision=revision
+                        self.prewarm_task=None
+                    if self.be_client is None:self.be_client=VoiceClient(self.worker)
+                    ai=self.ai_client;settings=ai.config
+                    if self.prewarm_task is None:
+                        self.prewarm_task=asyncio.create_task(self.prepare_audio(ai,self.be_client))
                     self.report('WAIT_WAKE')
                     woke,_=await self.guarded(wait_for_wake(self.worker,ai))
                     idle_since=None
                     if not woke:continue
+                    # The live catalog supplies the current profile. An older
+                    # background warm-up must never replace it after wake.
+                    if self.prewarm_task is not None and not self.prewarm_task.done():
+                        ai.cancel_pending()
+                        self.prewarm_task.cancel()
+                        await asyncio.gather(self.prewarm_task,return_exceptions=True)
                     self.report('CHECK_WAKE')
-                    actions=VoiceActions(VoiceClient(self.worker),settings,config.parent/'voice-chat-session.json')
+                    actions=VoiceActions(self.be_client,settings,config.parent/'voice-chat-session.json')
                     checked,catalog=await self.guarded(asyncio.to_thread(actions.catalog))
                     if not checked:continue
                     # Check the whole BE job, not only the currently active Pi
@@ -155,13 +201,15 @@ class VoiceRuntime:
                     self.report('CHATTING')
                     await self.guarded(conversation(self.worker,config,max_turns=self.options['max_turns'],
                         initial_catalog=catalog,before_dispatch=self.submitting,log_transcripts=False,
-                        start_timeout=self.options['start_timeout_sec']))
+                        start_timeout=self.options['start_timeout_sec'],ai_client=ai,be_client=self.be_client))
                     self.report('WAIT_ROBOT_IDLE');await asyncio.sleep(1)
                 except asyncio.CancelledError:raise
                 except Exception as error:
                     # AI/DNS/USB errors never terminate the motion stack.
                     logging.warning('VOICE_RETRY code=%s',getattr(error,'code',type(error).__name__))
                     idle_since=None;self.report('RETRY');await asyncio.sleep(10)
+        finally:
+            self.report('STOPPED')
 
 
 async def run_daemon(worker):

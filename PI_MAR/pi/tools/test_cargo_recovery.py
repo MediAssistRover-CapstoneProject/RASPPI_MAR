@@ -150,6 +150,43 @@ class SweepTests(unittest.TestCase):
 
 
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_retry_budget_resets_only_after_continuous_verified_translation(self):
+        a=CargoRecovery();a.node=Mock();a.localization_recovery_attempts=2
+        ready={'localization':{'ready':True,'reason':'LOCALIZED'},'map_pose':{'fresh':True}}
+        for at,x in ((10.,0.),(11.,.20)):
+            a.odom_pose_sample=((x,0.,0.),at);a._localization_progress(ready,at)
+        self.assertEqual(a.localization_recovery_attempts,2)
+        a._localization_progress({**ready,'localization':{'ready':False}},11.1)
+        for at,x in ((12.,.20),(14.,.21)):
+            a.odom_pose_sample=((x,0.,0.),at);a._localization_progress(ready,at)
+        self.assertEqual(a.localization_recovery_attempts,2)
+        a.odom_pose_sample=((.38,0.,0.),14.1);a._localization_progress(ready,14.1)
+        self.assertEqual(a.localization_recovery_attempts,0)
+
+    async def test_translation_accelerates_in_clear_space_and_brakes_at_its_measured_endpoint(self):
+        a=CargoRecovery();clock=[0.];position=[0.];commands=[]
+        a.worker={'navigation_runtime':{}}
+        a.cfg={'motion':{'allow_reverse':True,'max_reverse_speed_mps':.15}}
+        a.clear_navigation_velocity=Mock();a.lease_message=Mock();a.stop=AsyncMock(return_value=True)
+        a._cargo_pose=lambda:({},dict(x_m=position[0],y_m=0.,yaw_rad=0.))
+        a._cargo_clear=lambda *args,**kw:(True,[])
+        view=dict(valid=True,nearest_lidar_m=10.,obstacle_points=[],rotation_clear=True)
+        a._cargo_scan_view=lambda:(None,None,view,.05,PROFILE)
+        a.navigation_velocity_output=N(publish=lambda msg:commands.append(msg.linear.x))
+        a.odom_pose_sample=((0.,0.,0.),0.)
+        async def advance(delay):
+            position[0]+=commands[-1]*delay;clock[0]+=delay
+            a.odom_pose_sample=((position[0],0.,0.),clock[0])
+        twist=lambda:N(linear=N(x=0.,y=0.),angular=N(z=0.))
+        with patch('mediassist.cargo_recovery.time.monotonic',side_effect=lambda:clock[0]), \
+                patch('mediassist.cargo_recovery.asyncio.sleep',side_effect=advance), \
+                patch.dict(sys.modules,{'geometry_msgs.msg':N(Twist=twist)}):
+            await a._cargo_translate(-.10,0.,{'max_speed_mps':.35})
+        self.assertGreater(max(commands),.10);self.assertLessEqual(max(commands),.35)
+        self.assertTrue(.095<=position[0]<.105)
+        self.assertTrue(all(b-a<=.0125001 for a,b in zip(commands,commands[1:])))
+        a.stop.assert_awaited_once()
+
     def adapter(self):
         a=CargoRecovery()
         a.worker={'navigation_runtime':{'map_yaml':'saved-map.yaml','geometry':{'profile':'cargo'}}}

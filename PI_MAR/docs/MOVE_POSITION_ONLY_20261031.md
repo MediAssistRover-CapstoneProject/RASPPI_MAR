@@ -1,5 +1,42 @@
 # Saved-map MOVE: position-only tracking
 
+## Production snapshot and next measurement — 2026-11-19
+
+The older dated notes below describe earlier configurations. The stopped Pi at
+`192.168.1.137` currently has a MOVE ceiling of **0.35 m/s**, a yaw ceiling of
+**0.8 rad/s** shared by navigation, Spin/recovery and final LiDAR braking, and
+**0.01 m** extra footprint padding. Per-job, zone, curvature and braking limits
+can reduce actual output below those ceilings. Generate a new navigation session
+after changing the stopped base profile; an old generated `nav2.yaml` is unchanged.
+
+Routine MOVE faces the path using RPP; the current rotate-to-heading threshold
+is 0.75 rad and lookahead is bounded to 0.28–0.50 m. Lateral/reverse translation
+is reserved for a collision-checked recovery; mapping has a separate controller.
+Recovery translation inherits the accepted MOVE ceiling, accelerates smoothly
+and brakes to its short odometry-bounded endpoint. A padding-only escape remains
+capped at 0.04 m/s, and fresh scan/map/TF checks apply on every output.
+
+The current stopped mapping profile is bare: front 0.109 m, rear 0.104 m,
+left/right 0.086 m from base_footprint. The cargo profile adds 8 cm behind the
+body (rear 0.184 m); choose bare/cargo to match the physically fitted robot.
+Padding is extra clearance, not the body's size.
+
+The earlier school log had repeated stale scan/TF evidence and missed controller
+cycles. It predates these changes: its 1.2 rad/s turns do not establish the new
+0.8 rad/s setting's measured behavior. No physical motion was commanded during
+the voice deployment or subsequent MOVE code review.
+
+Next run should compare raw_scan_age_sec, scan_receive_age_sec,
+scan_received_count, transformable_scan_count, scan_tf_error and tf_pose_age_sec
+with NAV_MOTION before changing freshness thresholds or controller frequency.
+Raw scans arriving steadily with unavailable historical TF indicate a transform
+or timestamp issue; simultaneous receive/count gaps indicate a source/scheduling
+gap. Current diagnostics distinguish these cases without accepting stale data.
+Subsequent path display reports are asynchronous; they do not require a new BE
+ACK for every controller tick. The initial plan still requires its normal ACK.
+
+## Historical configuration — 2026-10-31
+
 `tools/navigation_session.zsh` defaults to POSITION_ONLY. One map/session can
 receive successive single-stop or multi-stop Jobs; completing a MOVE does not
 restart localization or close the session. A changed map or process restart

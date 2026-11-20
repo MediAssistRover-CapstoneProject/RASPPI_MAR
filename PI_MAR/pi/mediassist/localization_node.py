@@ -76,6 +76,8 @@ class LocalizationNode:
 
     def on_scan(self,msg):
         self.scan=msg;self.scans.append(msg)
+        self.scan_received_at=time.monotonic()
+        self.scan_received_count=getattr(self,'scan_received_count',0)+1
 
     def on_pose(self,msg):
         if msg.header.frame_id==self.hw['ros']['map_frame'] and self.seconds(msg.header.stamp)>=self.boot_ros:self.pose=msg
@@ -191,6 +193,15 @@ class LocalizationNode:
             p=self.pose.pose.pose;s.update(amcl_pose=dict(x_m=p.position.x,y_m=p.position.y,yaw_rad=yaw(p.orientation)),
                                          covariance=list(self.pose.pose.covariance),pose_age_sec=ros-self.seconds(self.pose.header.stamp))
         if self.scan is None:return s
+        # Record raw acquisition independently of map TF. Otherwise a missing
+        # transform and a LiDAR publication gap look like the same stale scan.
+        newest_age=ros-self.seconds(self.scan.header.stamp)
+        s['raw_scan_age_sec']=newest_age
+        received=getattr(self,'scan_received_at',None)
+        if received is not None:s['scan_receive_age_sec']=max(0.,now-received)
+        s['scan_received_count']=getattr(self,'scan_received_count',0)
+        s['scan_queue_length']=len(self.scans)
+        s['transformable_scan_count']=0
         # Current TF transports the last AMCL correction with odometry.
         try:
             transform=self.tf.lookup_transform(self.hw['ros']['map_frame'],self.hw['ros']['base_frame'],Time())
@@ -226,6 +237,7 @@ class LocalizationNode:
                 sensor=self.tf.lookup_transform(self.hw['ros']['map_frame'],scan.header.frame_id,Time.from_msg(scan.header.stamp))
             except Exception as exc:
                 s['scan_tf_error']=type(exc).__name__;continue
+            s['transformable_scan_count']+=1
             from .geometry_diagnostics import planar_transform,scan_points
             try:
                 transform=planar_transform(sensor.transform);points=[]

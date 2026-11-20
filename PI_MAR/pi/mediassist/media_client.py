@@ -61,4 +61,9 @@ class MediaClient:
 
     def close(self):
         self.stop.set()
-        if self.response is not None:self.response.close()
+        response=self.response
+        if response is not None:
+            # SSE can be blocked in readline. Abort the socket instead of
+            # waiting for a quiet event stream before releasing its HTTP lease.
+            getattr(response,'abort',response.close)()
+        self.http.close()

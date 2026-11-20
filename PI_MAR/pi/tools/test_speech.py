@@ -383,4 +383,131 @@ class VoiceNavigationConfirmationTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(message,str(caught.exception))
 
 
+class VoicePipelineLatencyTests(unittest.IsolatedAsyncioTestCase):
+    def test_noise_floor_ignores_speech_and_loud_non_speech_cannot_wake(self):
+        import array,math
+        from mediassist.voice_wake import WakeSegmenter,PcmConditioner,FRAME_BYTES
+        detector=N(speaking=False)
+        detector.is_speech=lambda frame,rate:detector.speaking
+        segmenter=WakeSegmenter({'noise_filter_enabled':False},detector)
+        def tone(amplitude):
+            return array.array('h',[round(amplitude*math.sin(2*math.pi*1000*i/16000)) for i in range(480)]).tobytes()
+        for _ in range(50):self.assertIsNone(segmenter.push(tone(700)))
+        floor=segmenter.noise_floor
+        for _ in range(3):self.assertIsNone(segmenter.push(tone(12000)))
+        detector.speaking=True
+        for _ in range(4):self.assertIsNone(segmenter.push(tone(1000)))
+        self.assertFalse(segmenter.frames)
+        for _ in range(8):self.assertIsNone(segmenter.push(tone(5000)))
+        for _ in range(6):self.assertIsNone(segmenter.push(tone(1500)))
+        self.assertAlmostEqual(segmenter.noise_floor,floor,delta=.001)
+        detector.speaking=False
+        result=None
+        for _ in range(22):result=segmenter.push(bytes(FRAME_BYTES)) or result
+        self.assertIsInstance(result,bytes)
+        conditioner=PcmConditioner()
+        dc=array.array('h',[2000]*480).tobytes()
+        for _ in range(5):clean=conditioner.process(dc)
+        self.assertLess(max(abs(value) for value in array.array('h',clean)),5)
+
+    async def test_wake_keeps_one_microphone_open_during_inference_and_reaps_it(self):
+        import threading
+        from mediassist.voice_wake import wait_phrase,WakeSegmenter
+        first_started=threading.Event();second_captured=threading.Event();calls=[]
+        class Segmenter:
+            valid_number=staticmethod(WakeSegmenter.valid_number)
+            def __init__(self,_):self.count=0
+            def push(self,frame):
+                self.count+=1
+                if self.count==2:second_captured.set()
+                return bytes(9600)
+            def reset(self):pass
+        class Source:
+            def __init__(self):self.reads=0
+            async def readexactly(self,size):
+                self.reads+=1
+                if self.reads==2:
+                    self.assert_ready=await asyncio.to_thread(first_started.wait,1)
+                    if not self.assert_ready:raise AssertionError('capture stopped during inference')
+                elif self.reads>2:await asyncio.Future()
+                return bytes(size)
+        def detect(pcm,request_id):
+            calls.append(request_id)
+            if len(calls)==1:
+                first_started.set()
+                if not second_captured.wait(1):raise AssertionError('second candidate was not captured')
+                return False
+            return True
+        proc=N(stdout=Source());player=N(cfg={'device':'test'},lock=asyncio.Lock())
+        ai=N(detect_wake=detect,cancel_pending=Mock())
+        with patch('mediassist.voice_wake.WakeSegmenter',Segmenter),\
+             patch('mediassist.voice_wake.shutil.which',return_value='/usr/bin/arecord'),\
+             patch('mediassist.voice_wake.asyncio.create_subprocess_exec',new=AsyncMock(return_value=proc)) as spawned,\
+             patch('mediassist.voice_chat.stop_process',new=AsyncMock()) as stopped:
+            await asyncio.wait_for(wait_phrase(player,ai,{}),2)
+        self.assertEqual(len(calls),2);self.assertNotEqual(*calls)
+        spawned.assert_awaited_once();stopped.assert_awaited_once_with(proc)
+        ai.cancel_pending.assert_not_called()
+        self.assertFalse(player.lock.locked())
+
+    async def test_cancel_before_stream_headers_disposes_late_response_without_playback(self):
+        import threading
+        from mediassist.voice_chat import play_stream
+        started=threading.Event();release=threading.Event();disposed=asyncio.Event()
+        loop=asyncio.get_running_loop()
+        response=N(abort=Mock(side_effect=lambda:loop.call_soon_threadsafe(disposed.set)))
+        def opening(_):
+            started.set();release.wait(2)
+            return response,'request'
+        ai=N(open_speech_stream=opening,cancel_pending=Mock())
+        player=N(cfg={'enabled':True,'device':'test'})
+        with patch('mediassist.voice_chat.shutil.which',return_value='/usr/bin/aplay'),\
+             patch('mediassist.voice_chat.asyncio.create_subprocess_exec',new=AsyncMock()) as spawned:
+            task=asyncio.create_task(play_stream(player,ai,'Câu hoàn chỉnh.'))
+            self.assertTrue(await asyncio.to_thread(started.wait,1))
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):await task
+            release.set()
+            await asyncio.wait_for(disposed.wait(),1)
+        response.abort.assert_called_once();spawned.assert_not_awaited()
+        ai.cancel_pending.assert_called_once()
+
+    async def test_partly_played_stream_is_not_repeated_through_wav_fallback(self):
+        from mediassist.voice_chat import say
+        failure=StepError('VOICE_TTS_STREAM_INTERRUPTED');failure.playback_started=True
+        ai=N(supports_stream=True,cached_speech=Mock(return_value=None),synthesize=Mock())
+        player=N(cfg={},speak=AsyncMock())
+        with patch('mediassist.voice_chat.play_stream',new=AsyncMock(side_effect=failure)):
+            with self.assertRaises(StepError):await say(player,'Câu hoàn chỉnh.',False,ai)
+        ai.synthesize.assert_not_called();player.speak.assert_not_awaited()
+
+    def test_https_reuses_only_drained_responses_and_never_replays_a_post(self):
+        import io,urllib.request,http.client
+        from email.message import Message
+        from mediassist.voice_client import VoiceHTTPS
+        class Response:
+            status=200;will_close=False
+            def __init__(self):self.body=io.BytesIO(b'abc');self.headers=Message()
+            def read(self,count=None):return self.body.read(count)
+            def isclosed(self):return self.body.tell()==3
+            def close(self):pass
+        connection=Mock(sock=None)
+        connection.getresponse.side_effect=lambda:Response()
+        pool=VoiceHTTPS('https://example.test',object())
+        with patch('mediassist.voice_client.http.client.HTTPSConnection',return_value=connection) as create:
+            for _ in range(2):
+                with pool.open(urllib.request.Request('https://example.test/a')) as response:
+                    self.assertEqual(response.read(),b'abc')
+            create.assert_called_once()
+            with pool.open(urllib.request.Request('https://example.test/a')) as response:response.read(1)
+            self.assertEqual(pool.idle,[])
+            connection.getresponse.side_effect=http.client.RemoteDisconnected('closed')
+            before=connection.request.call_count
+            with self.assertRaises(http.client.RemoteDisconnected):
+                pool.open(urllib.request.Request('https://example.test/job',data=b'{}'))
+            self.assertEqual(connection.request.call_count-before,1)
+            self.assertEqual(pool.leased,0)
+        pool.close()
+
+
 if __name__=='__main__':unittest.main(verbosity=2)
