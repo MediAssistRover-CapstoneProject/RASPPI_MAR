@@ -210,6 +210,16 @@ class VoiceClient:
     def close(self):
         self.opener.close()
 
+    def staff_question(self, text):
+        payload=json.dumps({'question':text},ensure_ascii=False).encode()
+        _,_,raw=self.request('/api/v1/pi/voice/staff-questions',payload,'application/json',timeout=8)
+        value=self.value(raw)
+        if (not isinstance(value,dict) or type(value.get('recognized')) is not bool
+                or not isinstance(value.get('code'),str)
+                or value['recognized'] and (not isinstance(value.get('answer'),str) or not value['answer'])):
+            raise StepError('VOICE_STAFF_QUESTION_INVALID_RESPONSE')
+        return value
+
     def speech_profile(self):
         headers = {'If-None-Match': '"'+self.profile['revision']+'"'} if self.profile else None
         status, _, raw = self.request('/api/v1/pi/speech/profile',timeout=8,headers=headers)

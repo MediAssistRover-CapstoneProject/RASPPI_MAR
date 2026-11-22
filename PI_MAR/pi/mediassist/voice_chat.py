@@ -41,6 +41,15 @@ def goodbye(text):
         'khong can nua','thoi khong can nua','goodbye','bye','end conversation','stop chatting','no thank you')
 
 
+def staff_question_candidate(text):
+    plain=words(text)
+    doctor='bac si' in plain or plain.startswith('bs ') or ' bs ' in plain
+    person=doctor or 'nhan vien' in plain
+    return (person and any(term in plain for term in
+            ('phong nao','o dau','truc','check in','dang o','hien o','benh vien'))
+            or 'ai dang truc' in plain or 'nhan vien nao dang truc' in plain)
+
+
 def serialized(method):
     @functools.wraps(method)
     def call(self,*args,**kwargs):
@@ -747,9 +756,23 @@ async def _conversation(worker,config_path,start_now=True,once=True,max_turns=10
                     dispatched=bool(request_id)
                     result=dict(intent='ESCORT_CONFIRMATION',confidence=1.,sources=[],end_session=bool(request_id))
                 else:
-                    result=await asyncio.to_thread(ai.ask,sid,text,turns,candidates,hospital_information_id)
+                    staff_result=None
+                    if staff_question_candidate(text):
+                        try:staff_result=await asyncio.to_thread(be.staff_question,text)
+                        except (StepError,OSError):
+                            staff_result=dict(recognized=True,code='BE_UNAVAILABLE',
+                                answer='Tôi chưa kiểm tra được ca trực hiện tại. Bạn vui lòng hỏi Phòng lễ tân.')
+                    if staff_result and staff_result['recognized']:
+                        reply=staff_result['answer']
+                        result=dict(answer=reply,speech_text=reply,intent='STAFF_DUTY_QUERY',
+                            confidence=1.,sources=[{'source':'BE_STAFF_DUTY','code':staff_result['code']}],
+                            action=None,end_session=False,answer_mode='be_staff_duty')
+                    else:
+                        result=await asyncio.to_thread(ai.ask,sid,text,turns,candidates,hospital_information_id)
                     reply=result['speech_text']
                     if result.get('action'):
+                        if result.get('answer_mode') in ('vector_store','generated','answer_cache'):
+                            await speak(reply)
                         reply=await asyncio.to_thread(actions.prepare,result['action'],sid)
                 answer_done=time.monotonic()
                 if not dispatched:
