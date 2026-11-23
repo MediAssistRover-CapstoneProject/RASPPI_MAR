@@ -45,8 +45,8 @@ def staff_question_candidate(text):
     plain=words(text)
     doctor='bac si' in plain or plain.startswith('bs ') or ' bs ' in plain
     person=doctor or 'nhan vien' in plain
-    return (person and any(term in plain for term in
-            ('phong nao','o dau','truc','check in','dang o','hien o','benh vien'))
+    return (person and (plain.startswith('co ') or any(term in plain for term in
+            ('phong nao','o dau','truc','check in','dang o','hien o','benh vien',' ten ')))
             or 'ai dang truc' in plain or 'nhan vien nao dang truc' in plain)
 
 
