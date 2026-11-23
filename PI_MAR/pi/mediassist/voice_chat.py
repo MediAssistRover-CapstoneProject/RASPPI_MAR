@@ -45,8 +45,11 @@ def staff_question_candidate(text):
     plain=words(text)
     doctor='bac si' in plain or plain.startswith('bs ') or ' bs ' in plain
     person=doctor or 'nhan vien' in plain
+    staff_navigation=(plain.startswith(('dan ','dua ','di den ','toi muon den '))
+                      and 'phong' in plain)
     return (person and (plain.startswith('co ') or any(term in plain for term in
-            ('phong nao','o dau','truc','check in','dang o','hien o','benh vien',' ten ')))
+            ('phong nao','o dau','truc','check in','dang o','hien o','benh vien',' ten '))
+            or staff_navigation)
             or 'ai dang truc' in plain or 'nhan vien nao dang truc' in plain)
 
 
@@ -706,7 +709,7 @@ async def _conversation(worker,config_path,start_now=True,once=True,max_turns=10
         start_now=False
         actions.pending=None
         sid=await asyncio.to_thread(history.start);print('VOICE_SESSION:',sid,flush=True)
-        status='COMPLETED';turns=[];dispatched=False;ended=False
+        status='COMPLETED';turns=[];dispatched=False;ended=False;awaiting_more_help=False
         writer=HistoryWriter(history,max_turns);confirmation_retries=0
         try:
             catalog=initial_catalog if initial_catalog is not None else await asyncio.to_thread(actions.conversation_catalog)
@@ -722,11 +725,11 @@ async def _conversation(worker,config_path,start_now=True,once=True,max_turns=10
             hospital_information_id=catalog.get('navigationSession',{}).get('hospitalInformationId')
             await speak(INTRO)
             for _ in range(max_turns):
-                confirming=actions.pending is not None
+                confirming=actions.pending is not None or awaiting_more_help
                 timeout=worker.get('voice_chat',{}).get('confirmation_timeout_sec',20) if confirming else start_timeout
                 raw=await listen(player,start_timeout=timeout)
                 if raw is None:
-                    if confirming and confirmation_retries<1:
+                    if confirming and not awaiting_more_help and confirmation_retries<1:
                         confirmation_retries+=1
                         logging.info('VOICE_CONFIRMATION_RETRY: no speech captured')
                         await speak('Tôi chưa nghe rõ xác nhận. Sau tiếng bíp, bạn nói xác nhận hoặc hủy.')
@@ -747,6 +750,19 @@ async def _conversation(worker,config_path,start_now=True,once=True,max_turns=10
                 if log_transcripts:print('USER:',text,flush=True)
                 request_id=None
                 ending=goodbye(text)
+                plain=words(text)
+                if awaiting_more_help:
+                    awaiting_more_help=False
+                    if plain in ('khong','khong can','khong can nua','no','no thanks','no thank you'):
+                        ending=True
+                    elif plain in ('co','vang','da','yes','ok','okay'):
+                        reply='Bạn cần tôi giúp gì?'
+                        result=dict(intent='CONTINUE_CONVERSATION',confidence=1.,sources=[],end_session=False)
+                        await speak(reply)
+                        writer.record(text,reply,result,received,'EXECUTED',None)
+                        turns.extend([dict(role='user',content=text[:1000]),dict(role='assistant',content=reply)])
+                        continue
+                staff_navigation_pending=bool(actions.pending and actions.pending.get('staff_navigation'))
                 handled=None if ending else await actions.consume(text,speak)
                 if ending:
                     actions.pending=None;reply=GOODBYE
@@ -755,6 +771,10 @@ async def _conversation(worker,config_path,start_now=True,once=True,max_turns=10
                     reply,request_id=handled
                     dispatched=bool(request_id)
                     result=dict(intent='ESCORT_CONFIRMATION',confidence=1.,sources=[],end_session=bool(request_id))
+                    if staff_navigation_pending and not request_id and actions.pending is None and plain in (
+                            'huy','huy dan duong','khong','khong dong y','khong xac nhan',
+                            'cancel','cancel navigation','no','do not proceed'):
+                        awaiting_more_help=True
                 else:
                     staff_result=None
                     if staff_question_candidate(text):
@@ -764,9 +784,17 @@ async def _conversation(worker,config_path,start_now=True,once=True,max_turns=10
                                 answer='Tôi chưa kiểm tra được ca trực hiện tại. Bạn vui lòng hỏi Phòng lễ tân.')
                     if staff_result and staff_result['recognized']:
                         reply=staff_result['answer']
+                        endpoint_id=staff_result.get('endpointId')
+                        destination=staff_result.get('destinationLabel')
+                        action=(dict(kind='NAVIGATE',endpoint_id=endpoint_id,
+                                     destination_label=destination,staff_navigation=True,
+                                     staff_question=text,
+                                     confirmation_prompt=reply+' Bạn có muốn tôi dẫn đến đó không?')
+                                if staff_result['code']=='STAFF_NAVIGATION_READY'
+                                and endpoint_id and destination else None)
                         result=dict(answer=reply,speech_text=reply,intent='STAFF_DUTY_QUERY',
                             confidence=1.,sources=[{'source':'BE_STAFF_DUTY','code':staff_result['code']}],
-                            action=None,end_session=False,answer_mode='be_staff_duty')
+                            action=action,end_session=False,answer_mode='be_staff_duty')
                     else:
                         result=await asyncio.to_thread(ai.ask,sid,text,turns,candidates,hospital_information_id)
                     reply=result['speech_text']

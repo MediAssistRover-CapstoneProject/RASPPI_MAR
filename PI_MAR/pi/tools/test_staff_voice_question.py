@@ -23,6 +23,11 @@ class StaffVoiceQuestionTests(unittest.TestCase):
             with self.subTest(question=question):
                 self.assertFalse(staff_question_candidate(question))
 
+    def test_named_staff_navigation_uses_live_duty(self):
+        self.assertTrue(staff_question_candidate('Dẫn tôi đến phòng của nhân viên Trung'))
+        self.assertTrue(staff_question_candidate('Đưa tôi đến phòng của bác sĩ Thanh'))
+        self.assertFalse(staff_question_candidate('Dẫn tôi đến phòng lễ tân'))
+
 
 if __name__ == '__main__':
     unittest.main()

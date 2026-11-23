@@ -101,7 +101,11 @@ class VoiceActions:
         body=dict(navigationSessionId=session['sessionId'],endpointId=point['endpointId'],
                   maxSpeedMps=self.speed,voiceInteractionId=interaction_id)
         self.pending=dict(body=body,key=str(uuid.uuid4()),expires=time.monotonic()+60,
-                          context=session_context(session),invited=False)
+                          context=session_context(session),invited=False,
+                          staff_navigation=action.get('staff_navigation') is True,
+                          staff_question=action.get('staff_question'))
+        if action.get('staff_navigation') is True:
+            return action['confirmation_prompt']
         return f'Bạn muốn tôi dẫn đến {destination} phải không? Hãy nói xác nhận hoặc hủy nhé.'
 
     async def consume(self,text,invite):
@@ -114,8 +118,12 @@ class VoiceActions:
         command=words(text)
         if command in ('huy','huy dan duong','khong','khong dong y','khong xac nhan','cancel','cancel navigation','no','do not proceed'):
             self.pending=None
+            if pending.get('staff_navigation'):
+                return 'Được ạ. Bạn có cần tôi giúp gì thêm không?',None
             return 'Đã hủy yêu cầu dẫn đường. Tôi chưa tạo nhiệm vụ di chuyển.',None
-        if command not in ('xac nhan','dong y','dong y dan duong','xac nhan dan duong',
+        if command=='co' and not pending.get('staff_navigation'):
+            return None
+        if command not in ('co','xac nhan','dong y','dong y dan duong','xac nhan dan duong',
                            'vang','da','dung roi','ok','okay','confirm','yes','yes confirm','go ahead','proceed'):
             return None
         if self.marker.exists():
@@ -167,6 +175,15 @@ class VoiceActions:
                 return 'Điểm đến đã bị xóa hoặc ngưng sử dụng. Tôi chưa gửi nhiệm vụ di chuyển.',None
             if catalog.get('workflowPrepared') is not True:
                 return 'Workflow dẫn đường chưa sẵn sàng. Tôi chưa gửi nhiệm vụ di chuyển.',None
+            if pending.get('staff_navigation'):
+                try:
+                    duty=await asyncio.to_thread(self.be.staff_question,pending['staff_question'])
+                except (StepError,OSError):
+                    return 'Tôi chưa kiểm tra lại được ca trực. Tôi chưa gửi nhiệm vụ di chuyển.',None
+                if (duty.get('code')!='STAFF_NAVIGATION_READY'
+                        or duty.get('endpointId')!=pending['body']['endpointId']):
+                    self.pending=None
+                    return 'Ca trực hoặc phòng của nhân viên đã thay đổi. Tôi chưa gửi nhiệm vụ di chuyển.',None
             if 'dispatch_body' not in pending:
                 pending['workflow_owns_invite']=catalog.get('workflowOwnsInvite') is True
                 pending['dispatch_body']=dict(pending['body'])

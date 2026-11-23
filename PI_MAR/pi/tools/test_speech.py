@@ -290,6 +290,42 @@ class ManagedVoiceTests(unittest.IsolatedAsyncioTestCase):
         history.close.assert_called_once_with('COMPLETED');ai.ask.assert_not_called()
         actions.return_value.consume.assert_not_called()
 
+    async def test_declined_staff_navigation_keeps_conversation_open_for_next_question(self):
+        from mediassist.voice_chat import conversation,INTRO,GOODBYE
+        ai=N(config={'stt_language':'auto'},marker=Path('unused'),
+             request=Mock(return_value={'state':'READY'}),
+             ask=Mock(return_value=dict(speech_text='Tôi đã nhận câu hỏi mới.',action=None,end_session=False)))
+        be=N(staff_question=Mock(return_value=dict(recognized=True,code='STAFF_NAVIGATION_READY',
+             answer='Nhân viên Trung đang trực tại phòng A.',
+             endpointId='44444444-4444-4444-8444-444444444444',destinationLabel='phòng A')))
+        history=Mock();history.start.return_value='session'
+        actions=Mock();actions.pending=None
+        def prepare(action,interaction):
+            actions.pending=dict(staff_navigation=True)
+            return action['confirmation_prompt']
+        async def consume(text,speak):
+            if actions.pending and text=='không':
+                actions.pending=None
+                return 'Được ạ. Bạn có cần tôi giúp gì thêm không?',None
+            return None
+        actions.prepare.side_effect=prepare;actions.consume.side_effect=consume
+        with patch('mediassist.voice_chat.VoiceActions',return_value=actions),\
+             patch('mediassist.voice_chat.History',return_value=history),\
+             patch('mediassist.voice_chat.SpeechPlayer'),\
+             patch('mediassist.voice_chat.listen',new=AsyncMock(return_value=b'pcm')),\
+             patch('mediassist.voice_chat.transcribe',new=AsyncMock(side_effect=[
+                 'Dẫn tôi đến phòng của nhân viên Trung','không','Xe lăn ở đâu?','không cần nữa'])),\
+             patch('mediassist.voice_chat.say',new=AsyncMock()) as say:
+            self.assertFalse(await conversation({'speech':{}},'unused',max_turns=4,
+                initial_catalog={'endpoints':[]},log_transcripts=False,ai_client=ai,be_client=be))
+        spoken=[call.args[1] for call in say.await_args_list]
+        self.assertEqual(spoken[0],INTRO)
+        self.assertIn('Bạn có muốn tôi dẫn',spoken[1])
+        self.assertEqual(spoken[2],'Được ạ. Bạn có cần tôi giúp gì thêm không?')
+        self.assertEqual(spoken[3],'Tôi đã nhận câu hỏi mới.')
+        self.assertEqual(spoken[4],GOODBYE)
+        ai.ask.assert_called_once()
+
 class VoiceNavigationConfirmationTests(unittest.IsolatedAsyncioTestCase):
     def catalog(self,state='READY',revision=1):
         return dict(robotAvailable=True,workflowPrepared=True,workflowOwnsInvite=False,
@@ -308,6 +344,32 @@ class VoiceNavigationConfirmationTests(unittest.IsolatedAsyncioTestCase):
         actions=VoiceActions(be,{'actions_enabled':True,'navigation_ready_timeout_sec':.5},Path(folder)/'voice.json')
         actions.catalog=Mock(return_value=self.catalog())
         return actions,be
+
+    async def test_staff_destination_decline_or_current_duty_confirmation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            actions,be=self.actions(folder)
+            endpoint=self.catalog()['endpoints'][0]['endpointId']
+            action=dict(kind='NAVIGATE',endpoint_id=endpoint,destination_label='Phòng Trung',
+                        staff_navigation=True,staff_question='Dẫn tôi đến phòng của nhân viên Trung',
+                        confirmation_prompt='Nhân viên Trung đang trực tại Phòng Trung. Bạn có muốn tôi dẫn đến đó không?')
+            self.assertIn('Bạn có muốn',actions.prepare(action,'interaction'))
+            self.assertEqual((await actions.consume('không',AsyncMock()))[0],
+                             'Được ạ. Bạn có cần tôi giúp gì thêm không?')
+            self.assertIsNone(actions.pending)
+            be.request.assert_not_called()
+
+            actions.prepare(action,'interaction')
+            be.staff_question.return_value=dict(code='STAFF_OFF_DUTY',endpointId=None)
+            reply,request=await actions.consume('có',AsyncMock())
+            self.assertIsNone(request);self.assertIn('đã thay đổi',reply)
+            be.request.assert_not_called()
+
+            actions.prepare(action,'interaction')
+            be.staff_question.return_value=dict(code='STAFF_NAVIGATION_READY',endpointId=endpoint)
+            be.request.return_value=(200,{},json.dumps({'serviceRequestId':'55555555-5555-4555-8555-555555555555'}))
+            reply,request=await actions.consume('có',AsyncMock())
+            self.assertEqual(request,'55555555-5555-4555-8555-555555555555')
+            self.assertEqual(be.request.call_count,1)
 
     async def test_same_initialized_session_survives_readiness_gap_and_post_race_once(self):
         with tempfile.TemporaryDirectory() as folder:
