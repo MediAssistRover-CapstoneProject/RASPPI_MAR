@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from .audio_lock import AudioLock
 from .be_token import NoRedirect
 from .contracts import StepError
-from .speech import SpeechPlayer,audio_device
+from .speech import SpeechPlayer,audio_device,playback_volume
 from .store import utcnow
 from .voice_capture import recording_cue
 from .voice_client import MAX_WAV, VoiceClient, VoiceHTTPS
@@ -301,11 +301,12 @@ class History:
             self.marker.unlink(missing_ok=True);self.state=None
 
     @serialized
-    def start(self):
+    def start(self,lease_supported=False):
         self.state=dict(id=str(uuid.uuid4()),producer=str(uuid.uuid4()),sequence=0,commands=0,started_at=utcnow())
         self.save()
-        self.post('/api/v1/pi/voice/interactions',self.envelope('VOICE_INTERACTION_STARTED',
-            dict(languageCode='vi-VN',startedAt=self.state['started_at']),self.state['id']))
+        payload=dict(languageCode='vi-VN',startedAt=self.state['started_at'])
+        if lease_supported:payload['leaseSupported']=True
+        self.post('/api/v1/pi/voice/interactions',self.envelope('VOICE_INTERACTION_STARTED',payload,self.state['id']))
         return self.state['id']
 
     @serialized
@@ -504,6 +505,7 @@ async def play_stream(player,ai,text,on_playback_start=None):
         raise StepError('VOICE_ALSA_TOOLS_MISSING')
     response=None;proc=None;begun=False;received=0;request_id=None
     started=time.monotonic();prefix=bytearray();remainder=b''
+    gain=playback_volume(player.cfg)/100
     try:
         opening=asyncio.create_task(asyncio.to_thread(ai.open_speech_stream,text))
         try:
@@ -534,9 +536,10 @@ async def play_stream(player,ai,text,on_playback_start=None):
             block=remainder+block
             remainder=block[-1:] if len(block)%2 else b''
             aligned=block[:len(block)-len(remainder)]
+            if gain==1:return aligned
             samples=array.array('h',aligned)
             if sys.byteorder!='little':samples.byteswap()
-            for index,value in enumerate(samples):samples[index]=round(value*.70)
+            for index,value in enumerate(samples):samples[index]=round(value*gain)
             if sys.byteorder!='little':samples.byteswap()
             return samples.tobytes()
 
@@ -610,9 +613,9 @@ async def say(player,text,log_transcripts=True,ai=None):
             logging.info('VOICE_TTS_FALLBACK code=%s',error.code)
     if audio is not None:
         source = 'ai-direct'
-        await player.play_wav(audio, volume=70, on_playback_start=audio_started)
+        await player.play_wav(audio, volume=playback_volume(player.cfg), on_playback_start=audio_started)
     else:
-        await player.speak(dict(action='SPEAK',prompt_key='VOICE_CHAT',data=dict(text=text,language_code='vi',volume=70,speed_wpm=150)),
+        await player.speak(dict(action='SPEAK',prompt_key='VOICE_CHAT',data=dict(text=text,language_code='vi',volume=playback_volume(player.cfg),speed_wpm=150)),
                            on_playback_start=audio_started)
     if first_audio is not None:
         logging.info('VOICE_TTS_TIMING engine=%s first_audio_ms=%d played_ms=%d chars=%d', source,
@@ -673,13 +676,13 @@ async def run_chat(worker,config_path,start_now=False,once=False,max_turns=10):
 
 async def conversation(worker,config_path,start_now=True,once=True,max_turns=10,
                        initial_catalog=None,before_dispatch=None,log_transcripts=True,start_timeout=8,
-                       ai_client=None,be_client=None):
+                        ai_client=None,be_client=None,history=None):
     ai=ai_client;be=be_client
     try:
         if ai is None:ai=AiClient(config_path)
         if be is None:be=VoiceClient(worker)
         return await _conversation(worker,config_path,start_now,once,max_turns,initial_catalog,
-                                   before_dispatch,log_transcripts,start_timeout,ai,be)
+                                   before_dispatch,log_transcripts,start_timeout,ai,be,history)
     finally:
         for client,owned in ((ai,ai_client is None),(be,be_client is None)):
             close=getattr(client,'close',None)
@@ -688,17 +691,20 @@ async def conversation(worker,config_path,start_now=True,once=True,max_turns=10,
 
 async def _conversation(worker,config_path,start_now=True,once=True,max_turns=10,
                         initial_catalog=None,before_dispatch=None,log_transcripts=True,start_timeout=8,
-                        ai_client=None,be_client=None):
+                         ai_client=None,be_client=None,history=None):
     """Called only while the CLI or managed voice daemon owns controller_lock."""
-    ai=ai_client or AiClient(config_path);be=be_client or VoiceClient(worker);player=SpeechPlayer(worker['speech']);history=History(be,ai.marker)
+    ai=ai_client or AiClient(config_path);be=be_client or VoiceClient(worker);player=SpeechPlayer(worker['speech'])
+    prepared_history=history is not None
+    history=history or History(be,ai.marker)
     actions=VoiceActions(be,ai.config,ai.marker,before_dispatch)
     stt_language=ai.config.get('stt_language','auto')
     if stt_language not in ('vi','en','auto'):raise StepError('VOICE_LANGUAGE_UNSUPPORTED')
     # History is independent of MQTT and motor execution.
     health_method=getattr(ai,'health',None)
-    health, _ = await asyncio.gather(asyncio.to_thread(health_method if callable(health_method) else ai.request,
-                                                     *(() if callable(health_method) else ('/health',))),
-                                     asyncio.to_thread(history.recover))
+    health_checks=[asyncio.to_thread(health_method if callable(health_method) else ai.request,
+                                    *(() if callable(health_method) else ('/health',)))]
+    if not prepared_history:health_checks.append(asyncio.to_thread(history.recover))
+    health=(await asyncio.gather(*health_checks))[0]
     if health.get('state')!='READY':raise StepError('VOICE_AI_NOT_READY')
     ai.supports_stream=health.get('speech_stream') is True
     speech_ai = ai if health.get('direct_speech') is True else None
@@ -708,7 +714,9 @@ async def _conversation(worker,config_path,start_now=True,once=True,max_turns=10
         if not start_now:await wait_for_wake(worker,ai)
         start_now=False
         actions.pending=None
-        sid=await asyncio.to_thread(history.start);print('VOICE_SESSION:',sid,flush=True)
+        sid=history.state['id'] if prepared_history else await asyncio.to_thread(history.start)
+        prepared_history=False
+        print('VOICE_SESSION:',sid,flush=True)
         status='COMPLETED';turns=[];dispatched=False;ended=False;awaiting_more_help=False
         writer=HistoryWriter(history,max_turns);confirmation_retries=0
         try:

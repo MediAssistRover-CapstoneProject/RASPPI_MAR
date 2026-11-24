@@ -16,6 +16,7 @@ class StepWorker:
         self.cfg, self.hardware, self.store, self.adapter = cfg, hardware, store, adapter
         self.task, self.active, self.last_result = None, None, None
         self.connection_ready = False
+        self.reconnect_delay_sec = 1
         self.sent = {}
         self.send_lock = asyncio.Lock()
         self.stop_reason = "CANCELLED"
@@ -41,7 +42,7 @@ class StepWorker:
     def advertised_capabilities(self):
         from .staff_qr import CAPABILITIES
         values=[value for value in self.hardware['capabilities']
-                if value not in CAPABILITIES and value not in (COMMISSIONING_UNLOCK_CAPABILITY, 'PATROL_FALL', 'continuous-fall-v1', 'staff-face-verify-v1')]
+                if value not in CAPABILITIES and value not in (COMMISSIONING_UNLOCK_CAPABILITY, 'PATROL_FALL', 'continuous-fall-v1', 'continuous-restricted-v1', 'staff-face-verify-v1')]
         if self.cfg.get('allow_commissioning_unlock') is True:
             values.append(COMMISSIONING_UNLOCK_CAPABILITY)
         if self.cfg.get('navigation_session') and 'MOVE' in self.cfg.get('enabled_step_types',[]) and 'move-start-commit-v1' not in values:
@@ -56,6 +57,7 @@ class StepWorker:
             values.append('PATROL_FALL')
             if observer.config.get('mode') == 'CONTINUOUS':
                 values.append('continuous-fall-v1')
+                if getattr(observer,'restricted_enabled',False):values.append('continuous-restricted-v1')
         return values
 
     def status(self):
@@ -201,7 +203,6 @@ class StepWorker:
         error_details = None
         physical_started=False
         stop_confirmed=None
-        guidance_task=None
         try:
             # Combined mode is sent only after mutual capability negotiation.
             # Its ONE receipt ACK commits acceptance AND STARTED on the BE before
@@ -221,11 +222,8 @@ class StepWorker:
                          round((accepted_ack_at-accepted_at)*1000),round((time.monotonic()-accepted_ack_at)*1000))
             self.store.set_running(step)
             physical_started=True
-            if (step['stepType']=='MOVE' and self.cfg.get('navigation_session')
-                    and 'INTERACT' in self.cfg.get('enabled_step_types',[])
-                    and self.cfg.get('speech',{}).get('enabled')):
-                from .navigation_guidance import run_navigation_guidance
-                guidance_task=asyncio.create_task(run_navigation_guidance(self,step))
+            # Route guidance stays on the UI. Robot announcements belong to
+            # explicit INTERACT steps before/after MOVE, including ESCORT.
             data=await asyncio.wait_for(self.adapter.perform(step),step["timeoutSec"])
             validate_result(step,data)
             status="SUCCEEDED"
@@ -240,14 +238,11 @@ class StepWorker:
             # urllib HTTPError.code is an integer, unlike StepError.code.
             if not isinstance(error,str) or not error:
                 error="STEP_EXECUTION_ERROR"
-            if error.startswith("AUDIO_") and isinstance(getattr(exc,"details",None),dict):
+            if isinstance(exc,StepError) and isinstance(exc.details,dict):
                 error_details=exc.details
             status="RECOVERY_REQUIRED" if error in ("BE_ACK_TIMEOUT","CONNECTION_LOST") else "FAILED"
             logging.warning("Step failed: %s (%s)",error,type(exc).__name__)
         finally:
-            if guidance_task is not None:
-                guidance_task.cancel()
-                await asyncio.gather(guidance_task,return_exceptions=True)
             if status!="SUCCEEDED" and self.adapter.mapping and self.adapter.mapping.active:
                 try:
                     await self.adapter.mapping.abort("ABORTED")
@@ -261,6 +256,7 @@ class StepWorker:
                     stop_confirmed=False
                 if not stop_confirmed:
                     status,error="RECOVERY_REQUIRED","PHYSICAL_STOP_UNCONFIRMED"
+                    error_details=None
             if step["stepType"]=="CONTROL_HARDWARE" and physical_started and status!="SUCCEEDED":
                 status="RECOVERY_REQUIRED"
             if (step['stepType']=='MOVE' and stop_confirmed is True and status=='RECOVERY_REQUIRED'
@@ -268,14 +264,17 @@ class StepWorker:
                 status='FAILED'
             if getattr(self.adapter,"motion_uncertain",False):
                 status,error="RECOVERY_REQUIRED","PHYSICAL_STOP_UNCONFIRMED"
+                error_details=None
+            details=None if not error else error_details or {"code":error}
             result={"status":status,"result":data,"errorCode":error,
+                    "details":details,
                     "physicalStopConfirmed":stop_confirmed,
                     "actuatorPositionVerified":False if step["stepType"]=="CONTROL_HARDWARE" else None}
             self.last_result=result
             self.store.finish(step,status,result)
             self.store.emit("STEP_RESULT" if status=="SUCCEEDED" else "STEP_ERROR",
                 {"status":status,"result":data,"errorCode":error,"retryable":False,
-                 "details":None if not error else error_details or {"code":error},
+                 "details":details,
                  "physicalStopConfirmed":stop_confirmed},step,correlation)
             self.outbox_wakeup.set()
             self.active=None
@@ -481,6 +480,9 @@ class StepWorker:
         hello=json.loads(raw)
         self.validate_hello_ack(hello)
         self.connection_ready=True
+        # Old broker/HELLO failures must not leave a recovered worker waiting
+        # the maximum backoff after its next, unrelated connection loss.
+        self.reconnect_delay_sec=1
         logging.info("BE MQTT session ready: %s",self.cfg["robot_id"])
         outgoing=asyncio.create_task(self.publish(send))
         scanner = asyncio.create_task(self.staff_qr.run(ws)) if self.staff_qr is not None else None
@@ -643,12 +645,9 @@ class StepWorker:
 
     async def run(self):
         self.store.reissue_operator_reconciliations()
-        from .navigation_guidance import prepare_navigation_audio
-        navigation_audio = asyncio.create_task(prepare_navigation_audio(self))
         observer = getattr(self.adapter, 'patrol_fall_observer', None)
         fall_monitor = (asyncio.create_task(self.fall_monitor_loop(observer))
                         if observer is not None and observer.config.get('mode') == 'CONTINUOUS' else None)
-        delay=1
         # Local USB input keeps its 20 Hz loop across broker connect/backoff.
         # It does not depend on a BE mapping session or a transport lease.
         manual = self.manual_context()
@@ -680,17 +679,15 @@ class StepWorker:
                     raise
                 except Exception as exc:
                     logging.warning("MQTT connection ended: %s; code=%s; retry in %ss",
-                        type(exc).__name__,getattr(exc,"code","NETWORK_OR_PROTOCOL"),delay)
+                        type(exc).__name__,getattr(exc,"code","NETWORK_OR_PROTOCOL"),self.reconnect_delay_sec)
                 finally:
                     await self.disconnect("CONNECTION_LOST")
                 if local_mapping and local_mapping.done():
                     local_mapping.result()
                     raise StepError('LOCAL_CONTROL_LOOP_STOPPED')
-                await asyncio.sleep(delay)
-                delay=min(delay*2,30)
+                await asyncio.sleep(self.reconnect_delay_sec)
+                self.reconnect_delay_sec=min(self.reconnect_delay_sec*2,30)
         finally:
-            navigation_audio.cancel()
-            await asyncio.gather(navigation_audio, return_exceptions=True)
             if fall_monitor is not None:
                 fall_monitor.cancel()
                 await asyncio.gather(fall_monitor, return_exceptions=True)

@@ -235,6 +235,9 @@ class WorkerAdapter(RosAdapter):
 
     async def sense_zone(self, p):
         task = p['sensing_type']
+        shared=getattr(self,'patrol_fall_observer',None)
+        if task=='RESTRICTED_ZONE' and shared is not None and getattr(shared,'restricted_enabled',False):
+            return await shared.restricted.observe(p)
         if task == 'RESTRICTED_ZONE' and self.restricted_zone_observer is not None:
             return await self.restricted_zone_observer.observe(p)
         started = time.monotonic()

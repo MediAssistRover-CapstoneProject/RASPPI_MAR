@@ -60,9 +60,13 @@ def configuration(ai, camera):
         raise StepError('INVALID_PATROL_FALL_CONFIG', 'cooldown_sec')
     if type(request_timeout) not in (int, float) or not math.isfinite(request_timeout) or not .5 <= request_timeout <= 2.:
         raise StepError('INVALID_PATROL_FALL_CONFIG', 'request_timeout_sec')
+    from .restricted_monitor import configuration as restricted_configuration
+    restricted=restricted_configuration(config.get('restricted_monitor'))
+    if restricted['enabled'] and (mode!='CONTINUOUS' or not (config.get('depth') or {}).get('enabled')):
+        raise StepError('SHARED_RESTRICTED_REQUIRES_CONTINUOUS_DEPTH')
     return {**config, 'mode': mode, 'base_url': uri.scheme + '://' + uri.netloc, 'rate_hz': rate,
             'min_available_memory_mb': memory, 'cooldown_sec': cooldown, 'request_timeout_sec': request_timeout,
-            'depth': depth_configuration(config.get('depth'))}
+            'depth': depth_configuration(config.get('depth')), 'restricted_monitor':restricted}
 
 
 def read_token(path):
@@ -164,6 +168,7 @@ class PatrolFallObserver:
         self.be = SessionClient(adapter.worker)
         self.work = None
         self.monitoring_session = str(uuid4())
+        self.monitor_worker = None
         self.monitor_state = None
         self.ground_warning_at = 0.
         self.location_reason = 'NOT_EVALUATED'
@@ -190,6 +195,9 @@ class PatrolFallObserver:
             self.overlay_string = String
             self.overlay_publisher = adapter.node.create_publisher(String, OVERLAY_TOPIC, 1)
         self.overlay_status_at = 0.
+        from .restricted_monitor import SharedRestrictedMonitor
+        self.restricted=SharedRestrictedMonitor(self)
+        self.restricted_enabled=self.restricted.enabled
 
     def display_overlay(self, result=None, status='OK'):
         """Latest-only ROS metadata. No network await or image conversion here."""
@@ -528,6 +536,11 @@ class PatrolFallObserver:
                     continue
                 successful += 1
                 self.display_overlay(result)
+                # The checkpoint owns inference while continuous observation
+                # yields. Feed that same result to its restricted-zone consumer.
+                worker = self.monitor_worker
+                if self.restricted_enabled and worker is not None and worker.active is step:
+                    self.restricted.update(worker, result, pair, size, sample[-2], revision)
                 if result['suspected_fall'] or isinstance(result.get('floor_candidate'),dict):
                     result,position=self.observation_location(pair,result,size,sample[-2],revision)
                     if result is None:continue
@@ -589,6 +602,7 @@ class PatrolFallObserver:
 
     async def monitor(self, worker):
         """Optional task; failures/reporting never become a MOVE result or stop wheels."""
+        self.monitor_worker = worker
         session = self.monitoring_session
         permitted = False
         capture = Capture(self, lambda: permitted)
@@ -689,6 +703,12 @@ class PatrolFallObserver:
                         continue
                     self.provider_outcome(started, result=result)
                     self.display_overlay(result)
+                    if self.restricted_enabled and time.monotonic()-sample[-1]<=1.5:
+                        try:self.restricted.update(worker,result,pair,size,sample[-2],live)
+                        except (StepError,ValueError,TypeError) as error:
+                            if time.monotonic()>=self.restricted.warning_at:
+                                logging.info('RESTRICTED_OBSERVATION_UNAVAILABLE code=%s',getattr(error,'code',type(error).__name__))
+                                self.restricted.warning_at=time.monotonic()+15.
                     qr = getattr(worker, 'staff_qr', None)
                     checkpoint = bool(worker.active and worker.active.get('stepType') == 'EXECUTE_SENSING'
                                       and worker.active.get('params', {}).get('fall_detection'))
@@ -739,6 +759,9 @@ class PatrolFallObserver:
                     await asyncio.sleep(1.)
         finally:
             permitted = False
+            if self.monitor_worker is worker:
+                self.monitor_worker = None
+            await self.restricted.close()
             self.display_overlay(status='PAUSED')
             await capture.set_enabled(False)
             if self.work is not None and not self.work.done():

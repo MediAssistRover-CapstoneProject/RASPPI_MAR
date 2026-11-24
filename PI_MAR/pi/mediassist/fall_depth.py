@@ -158,3 +158,19 @@ def project_person(measurement, transform, floor_z, *, end_on=False, max_height=
     return dict(xM=round(float(location[0]), 4), yM=round(float(location[1]), 4),
                 rangeM=round(float(optical_depth), 4),
                 depthSkewMs=round(skew_ns / 1e6, 3), floorHeightM=round(float(height_m), 4))
+
+
+def project_ground(measurement, transform, floor_z):
+    """Two observed ankles locate a standing person, independently of fall posture rules."""
+    import numpy as np
+    points, skew = measurement
+    rotation, offset = camera_transform(transform)
+    ground = [rotation @ point + offset for point in points]
+    heights = [float(point[2]-floor_z) for point in ground]
+    if (not np.isfinite(ground).all() or any(not -.15 <= z <= .30 for z in heights)
+            or math.hypot(*(ground[0]-ground[1])[:2]) > 1.2):
+        return None
+    anchor = (ground[0]+ground[1])/2
+    return dict(xM=round(float(anchor[0]),4), yM=round(float(anchor[1]),4),
+                rangeM=round(float((points[0][2]+points[1][2])/2),4),
+                depthSkewMs=round(skew/1e6,3), floorHeightM=round(max(heights),4))

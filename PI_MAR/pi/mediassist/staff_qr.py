@@ -30,8 +30,9 @@ QR_HINTS = {
 
 
 def guidance_configuration(worker):
+    from .speech import playback_volume
     defaults = dict(enabled=True, language_code='vi', delay_sec=2.5, repeat_sec=7.,
-                    min_code_fraction=.15, edge_fraction=.05, volume=70, messages={})
+                    min_code_fraction=.15, edge_fraction=.05, volume=playback_volume(worker.get('speech',{})), messages={})
     raw = worker.get('staff_qr_guidance', {})
     if not isinstance(raw, dict) or set(raw) - set(defaults):
         raise StepError('INVALID_STAFF_QR_GUIDANCE')

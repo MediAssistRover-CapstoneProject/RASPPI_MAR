@@ -570,6 +570,14 @@ Sau khi deploy BE tương ứng, ADMIN/STAFF đọc
 có điện áp, %, độ mới và phương pháp ước tính; dữ liệu cũ không được trình bày
 như số đo hiện tại. Pi tiếp tục dùng device token riêng và MQTT đã cấu hình.
 
+## Âm lượng và kết nối lại
+
+`speech.default_volume` trong worker config nhận số nguyên 0–100, mặc định 100. Hội thoại AI dùng cùng mức này cho stream PCM, WAV có sẵn và fallback; hướng dẫn QR/face cũng dùng mặc định này. `staff_qr_guidance.volume` và `data.volume` của step vẫn có thể chọn mức riêng, kể cả 0 để tắt tiếng. ALSA Speaker là tầng âm lượng riêng, không thay bằng việc tăng microphone gain. Không bật lại đọc path trong MOVE.
+
+Ngày 23/11/2026 đã cài 6 file production âm thanh/worker lên Pi 192.168.1.154, đặt default/QR 100 và xác nhận ALSA Speaker 100%, không mute; giữ stack dừng, không cài file test. Bản trước nằm tại `pi/state/backups/audio-queue-20261123T132049Z/`. Đã giữ các nhánh hỏi ca trực đang có trên Pi khi đồng bộ source voice về laptop.
+
+HELLO hợp lệ đặt lại thời gian chờ reconnect về 1 giây; các lần HELLO/kết nối lỗi liên tiếp vẫn tăng dần tới 30 giây. Pi lưu kết quả từng step và hủy operation; BE giữ hàng đợi job. Lỗi MOVE đã xác nhận dừng không tự đóng phiên navigation dùng chung. `RECOVERY_REQUIRED` hoặc motion chưa xác minh vẫn chặn nhận operation tiếp theo.
+
 ## Kiểm thử offline
 
 Chạy từ thư mục `PI_MAR`, với Python đã cài các dependency trong

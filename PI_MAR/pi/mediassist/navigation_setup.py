@@ -23,6 +23,7 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
         raise ValueError('Regulated path tracking requires forward MOVE with a separate arrival phase')
     if full_footprint_search and (not footprint_planner or fast_mapping):
         raise ValueError('Full footprint search requires saved-map footprint planning')
+    forward_pivot=full_footprint_search and mecanum and path_tracking
     limit = 1.00 if (fast_mapping or fast_navigation) and mecanum else .25
     yaw_limit = 2. if mecanum and fast_navigation else (1.2 if mecanum and fast_mapping else (.8 if mecanum else .6))
     if not 0 < speed <= limit or not 0 < angular <= yaw_limit:
@@ -173,6 +174,21 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
                     # Preserve the grid's straight segments through narrow bends.
                     result['planner_server']['ros__parameters']['GridBased']['smoother'].update(
                         max_iterations=0,do_refinement=False)
+            if forward_pivot:
+                # The M1 faces each straight segment and pivots where the entire
+                # padded rectangle can turn. A Dubins radius cannot model this.
+                result['planner_server']['ros__parameters']['GridBased']={
+                    'plugin':'mar_navigation::ForwardPivotPlanner','max_planning_time':2.,
+                    'max_iterations':200000,'rotation_cost':.10,'cost_penalty':.8,'pivot_penalty':.08,
+                    'goal_tolerance':.025,'direct_cost_threshold':200.,
+                    'respect_goal_heading':False}
+            if forward_pivot:
+                # The native controller owns the actual remaining turn sweep.
+                # Its local view must include saved walls as well as live sensors.
+                local=result['local_costmap']['local_costmap']['ros__parameters']
+                local['plugins']=list(dict.fromkeys(['static_layer',*local.get('plugins',[])]))
+                local.setdefault('static_layer',{}).update(plugin='nav2_costmap_2d::StaticLayer',
+                    enabled=True,map_topic='/map',map_subscribe_transient_local=True)
             result['global_costmap']['global_costmap']['ros__parameters'].update(rolling_window=False,track_unknown_space=True)
             for name in ('global_costmap','local_costmap'):
                 costmap=result[name][name]['ros__parameters']
@@ -247,6 +263,15 @@ def nav2_params(base, controller, footprint, speed=0.05, angular=0.3, mecanum=Fa
             'inflation_cost_scaling_factor':3.,'use_collision_detection':True,
             'max_allowed_time_to_collision_up_to_carrot':1.,
             'max_robot_pose_search_dist':2.}
+        if forward_pivot:
+            # A blocked pivot should hand off to local replanning promptly,
+            # inside the worker's unchanged 3 s command freshness watchdog.
+            ctl['failure_tolerance']=.35
+            ctl['FollowPath'].update(plugin='mar_navigation::ForwardPivotController',
+                pivot_xy_tolerance=.015,pivot_heading_tolerance=.04,pivot_linear_deceleration=.6,
+                path_entry_heading_tolerance=.12,approach_velocity_scaling_dist=.15,
+                use_rotate_to_heading=False,pivot_heading_gain=1.8,pivot_heading_damping=.3,
+                pivot_settle_heading_tolerance=.10,pivot_reanchor_tolerance=.06)
         # Align decisively before forward travel; preserve smooth curvature
         # corrections while moving. Do not increase exploration spin speed.
         smoother=result['velocity_smoother']['ros__parameters']
@@ -272,3 +297,32 @@ def add_group(cfg, group_id, endpoint_ids, revision=1):
         raise ValueError('Group contains an endpoint absent from this map')
     cfg['endpoint_groups'][group_id] = {'map_id': cfg['map_id'], 'revision': revision, 'endpoint_ids': endpoint_ids}
     return validate_config(cfg)
+
+
+def native_turn_authority(runtime, hardware):
+    """Verify one collision-check owner before disabling the legacy turn predictor."""
+    if runtime.get('native_turn_checked') is not True:
+        return False
+    from pathlib import Path
+    import yaml
+    from .contracts import StepError
+    try:
+        params=yaml.safe_load(Path(runtime['nav2_params']).read_text())
+        controller=params['controller_server']['ros__parameters']['FollowPath']
+        if (runtime.get('controller')!='REGULATED_PURSUIT' or not runtime.get('full_footprint_search')
+                or controller.get('plugin')!='mar_navigation::ForwardPivotController'):
+            raise ValueError()
+        expected=footprint_rectangle(**hardware['motion']['lidar_braking']['footprint'])
+        for name in ('global_costmap','local_costmap'):
+            layer=params[name][name]['ros__parameters']
+            if (json.loads(layer['footprint'])!=expected
+                    or abs(layer['footprint_padding']-NAVIGATION_PADDING_M)>1e-8):
+                raise ValueError()
+        local=params['local_costmap']['local_costmap']['ros__parameters']
+        static=local['static_layer']
+        if ('static_layer' not in local['plugins'] or static.get('enabled',True) is not True
+                or static.get('plugin') not in ('nav2_costmap_2d::StaticLayer','nav2_costmap_2d/StaticLayer')):
+            raise ValueError()
+        return True
+    except (OSError,ValueError,KeyError,TypeError):
+        raise StepError('NATIVE_TURN_COSTMAP_NOT_CONFIGURED') from None

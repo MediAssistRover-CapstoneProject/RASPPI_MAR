@@ -34,6 +34,36 @@ def blocked_motion_reason(state):
     return reason if all(type(v) in (int,float) and abs(v)<.005 for v in applied) else None
 
 
+def live_route_blocker(grid,pose,target,extent,points):
+    """A cluster newly occupying mapped free floor on the approach to the goal.
+
+    This is passive failure evidence only, never permission to issue velocity.
+    Existing map walls and isolated scan noise do not establish a closed approach.
+    """
+    dx,dy=target['x_m']-pose['x_m'],target['y_m']-pose['y_m']
+    length=math.hypot(dx,dy)
+    if not .05<length<=2.:return False
+    ux,uy=dx/length,dy/length
+    c,s=math.cos(pose['yaw_rad']),math.sin(pose['yaw_rad'])
+    ox,oy,angle=grid['origin'];gc,gs=math.cos(angle),math.sin(angle)
+    resolution=grid['resolution'];w,h=grid['width'],grid['height'];raw=grid['data']
+    margin=max(1,math.ceil(.05/resolution));hits=[]
+    half_width=max(extent['left'],extent['right'])+.01
+    for x,y in points:
+        if not math.isfinite(x) or not math.isfinite(y):continue
+        wx,wy=pose['x_m']+c*x-s*y,pose['y_m']+s*x+c*y
+        rx,ry=wx-pose['x_m'],wy-pose['y_m'];along=rx*ux+ry*uy;across=-rx*uy+ry*ux
+        if not .05<along<min(1.2,length) or abs(across)>half_width:continue
+        gx,gy=math.floor((gc*(wx-ox)+gs*(wy-oy))/resolution),math.floor((-gs*(wx-ox)+gc*(wy-oy))/resolution)
+        if not (margin<=gx<w-margin and margin<=gy<h-margin):continue
+        if any(not 0<=raw[j*w+i]<=25 for j in range(gy-margin,gy+margin+1) for i in range(gx-margin,gx+margin+1)):continue
+        hits.append((along,across))
+    for along,_ in hits:
+        cluster=[across for distance,across in hits if abs(distance-along)<=.10]
+        if len(cluster)>=3 and max(cluster)-min(cluster)>=.04:return True
+    return False
+
+
 def maneuver_points(origin,distance,yaw,lateral=0.,turn_delta=None,extended=False):
     max_axis,max_length=(.200000001,.200000001) if extended else (.100000001,.141422)
     if not (abs(distance)<=max_axis and abs(lateral)<=max_axis and math.hypot(distance,lateral)<=max_length):
@@ -257,6 +287,74 @@ class CargoRecovery:
             lambda:self._move_with_path_recovery_once(p,endpoint_id,meta),p,endpoint_id,meta,replan=True)
 
     async def _move_with_path_recovery_once(self,p,endpoint_id,meta):
+        observed={}
+        try:
+            return await self._move_with_path_recovery_attempts(p,endpoint_id,meta,observed)
+        except StepError as exc:
+            # Collision prediction can abort Nav2 before the physical gate
+            # blocks velocity. An exhausted abort still needs a fresh, live
+            # obstacle on mapped free floor; the abort alone is not evidence.
+            if exc.code=='NAV_ABORTED':
+                failure=self._live_route_navigation_failure(endpoint_id)
+            elif exc.code in ('PATH_UNAVAILABLE','NAV_GATE_BLOCKED') and observed:
+                failure=self._blocked_navigation_failure(endpoint_id,observed['reason'])
+            else:raise
+            if failure is None:raise
+            details={**(exc.details if isinstance(exc.details,dict) else {}),
+                     'code':'PATH_UNAVAILABLE','causeCode':exc.code,'navigationFailure':failure}
+            raise StepError('PATH_UNAVAILABLE',str(exc),details=details) from exc
+
+    def _blocked_navigation_failure(self,endpoint_id,reason):
+        """Describe an exhausted obstacle failure without relaxing any motion gate."""
+        if reason not in ('NAV_GATE_BLOCKED','BRAKING_OBSTACLE','LIDAR_BRAKING_STOP',
+                          'TURN_ENVELOPE_BLOCKED','REAR_OBSTACLE','LIVE_ROUTE_OBSTACLE'):
+            return None
+        try:
+            if not getattr(self,'worker',{}).get('navigation_session'):return None
+            state=self.telemetry()
+            if self._navigation_context(state=state) is not True:return None
+            if self.health(state).get('sensors_ready') is not True:return None
+            pose=state.get('map_pose',{});scan=state.get('scan',{})
+            pose_age,scan_age=pose.get('age_sec'),scan.get('age_sec')
+            if (pose.get('fresh') is not True or type(pose_age) not in (int,float)
+                    or not math.isfinite(pose_age) or not 0<=pose_age<=1.
+                    or scan.get('value') is not True or type(scan_age) not in (int,float)
+                    or not math.isfinite(scan_age)
+                    or not 0<=scan_age<=self.cfg['motion']['sensor_max_age_sec']):
+                return None
+            actual=pose['value'];target=self.cfg['endpoints'][endpoint_id]
+            if actual.get('map_id')!=self.cfg['map_id'] or target.get('map_id')!=self.cfg['map_id']:
+                return None
+            if any(type(actual.get(k)) not in (int,float) or not math.isfinite(actual[k])
+                   for k in ('x_m','y_m','yaw_rad')):return None
+            # telemetry.map_pose is derived from fresh live map->base TF;
+            # localized sessions additionally require matching quality evidence.
+            failure={'category':'OBSTACLE_BLOCKED','endpointId':endpoint_id,'recoveryExhausted':True,
+                     'obstacleReason':reason,
+                     'pose':{'xM':actual['x_m'],'yM':actual['y_m'],'yawRad':actual['yaw_rad']},
+                     'poseFresh':True,'scanFresh':True,'tfFresh':True}
+            distance=math.hypot(actual['x_m']-target['x_m'],actual['y_m']-target['y_m'])
+            if math.isfinite(distance):failure['distanceToTargetM']=distance
+            return failure
+        except (StepError,KeyError,TypeError,ValueError):
+            # Preserve the original terminal cause if fresh evidence is unavailable.
+            return None
+
+    def _live_route_navigation_failure(self,endpoint_id):
+        """Corroborate an exhausted failure with fresh mapped-floor scan hits."""
+        failure=self._blocked_navigation_failure(endpoint_id,'LIVE_ROUTE_OBSTACLE')
+        if failure is None:return None
+        try:
+            grid=self._cargo_saved_grid();extent=self.worker['mapping']['autonomy']['footprint']
+            _,_,view,_,_=self._cargo_scan_view()
+            pose=failure['pose'];origin={'x_m':pose['xM'],'y_m':pose['yM'],'yaw_rad':pose['yawRad']}
+            if live_route_blocker(grid,origin,self.cfg['endpoints'][endpoint_id],extent,view['obstacle_points']):
+                return failure
+        except (KeyError,TypeError,ValueError,StepError,ImportError,OSError):
+            pass
+        return None
+
+    async def _move_with_path_recovery_attempts(self,p,endpoint_id,meta,observed):
         """Bounded local retries for obstacles and one small arrival correction.
 
         Cancellation, sensor loss and an unconfirmed stop never enter the
@@ -268,6 +366,11 @@ class CargoRecovery:
         while True:
             try:return await self._move_one(p,endpoint_id)
             except StepError as exc:
+                if exc.code=='NAV_GATE_BLOCKED':
+                    details=exc.details if isinstance(exc.details,dict) else {}
+                    observed['reason']=details.get('obstacleReason','NAV_GATE_BLOCKED')
+                else:
+                    observed.clear()
                 if exc.code not in ('NAV_ABORTED','NAV_GATE_BLOCKED','NAV2_COMMAND_STALE',
                                     'ENDPOINT_POSITION_NOT_CONFIRMED','CARGO_REVERSE_BLOCKED'):raise
                 failure_code=exc.code
@@ -556,8 +659,18 @@ class CargoRecovery:
             if not await self.stop():raise StepError('GOAL_STOP_UNCONFIRMED')
 
     async def _plan_with_cargo_recovery(self,p,endpoint_id,meta,force_escape=False):
-        return await self._retry_localization(
-            lambda:self._plan_with_cargo_recovery_once(p,endpoint_id,meta,force_escape),p,endpoint_id,meta)
+        try:
+            return await self._retry_localization(
+                lambda:self._plan_with_cargo_recovery_once(p,endpoint_id,meta,force_escape),p,endpoint_id,meta)
+        except StepError as exc:
+            if exc.code!='PATH_UNAVAILABLE':raise
+            # A closed door can prevent planning before any velocity reaches the
+            # motion gate. Require a real live obstacle on previously free floor
+            # after all existing planning/reposition attempts have failed.
+            failure=self._live_route_navigation_failure(endpoint_id)
+            if failure is None:raise
+            raise StepError('PATH_UNAVAILABLE',str(exc),details={'code':'PATH_UNAVAILABLE',
+                'causeCode':exc.code,'navigationFailure':failure}) from exc
 
     async def _plan_with_cargo_recovery_once(self,p,endpoint_id,meta,force_escape=False):
         runtime=getattr(self,'worker',{}).get('navigation_runtime',{})

@@ -8,8 +8,9 @@ if [[ "$build_testing" != ON && "$build_testing" != OFF ]]; then
     echo 'MAR_BUILD_TESTING must be ON or OFF' >&2
     exit 1
 fi
-cmake -S "$task_root/pi/native/navigation_bt" -B "$task_root/pi/native/navigation_bt/build" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING="$build_testing"
+cmake -S "$task_root/pi/native/navigation_bt" -B "$task_root/pi/native/navigation_bt/build" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING="$build_testing" -DCMAKE_INSTALL_PREFIX="$task_root/pi/native/navigation_bt/build/install"
 cmake --build "$task_root/pi/native/navigation_bt/build" --parallel 1
+cmake --install "$task_root/pi/native/navigation_bt/build"
 if [[ "$build_testing" == ON ]]; then
     ctest --test-dir "$task_root/pi/native/navigation_bt/build" --output-on-failure
 fi

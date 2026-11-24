@@ -10,13 +10,36 @@ from types import SimpleNamespace as N
 from contextlib import nullcontext
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from mediassist.speech import SpeechPlayer,audio_device
+from mediassist.speech import SpeechPlayer,audio_device,playback_volume
 from mediassist.contracts import StepError
 from mediassist.step_contract import validate_step,validate_result,validate_command
 
 PARAMS={'prompt_key':'DEMO_SPEAK','action':'SPEAK','data':{'text':'Xin chào. Robot đã nhận lệnh.','language_code':'vi'}}
 
 class SpeechTests(unittest.IsolatedAsyncioTestCase):
+    async def test_default_full_volume_preserves_pcm_and_explicit_volume_remains_configurable(self):
+        import io,struct,wave
+        audio=io.BytesIO()
+        with wave.open(audio,'wb') as target:
+            target.setparams((1,2,16000,0,'NONE','not compressed'))
+            target.writeframes(struct.pack('<hh',12000,-12000))
+        player=SpeechPlayer({'enabled':True,'device':'plughw:CARD=Device,DEV=0'})
+        player.process=AsyncMock()
+        with patch('mediassist.speech.shutil.which',return_value='/usr/bin/aplay'):
+            await player.play_wav(audio.getvalue())
+            with wave.open(io.BytesIO(player.process.call_args.args[1]),'rb') as source:
+                self.assertEqual(struct.unpack('<hh',source.readframes(2)),(12000,-12000))
+            player.cfg['default_volume']=50
+            await player.play_wav(audio.getvalue())
+            with wave.open(io.BytesIO(player.process.call_args.args[1]),'rb') as source:
+                self.assertEqual(struct.unpack('<hh',source.readframes(2)),(6000,-6000))
+            await player.play_wav(audio.getvalue(),volume=0)
+            with wave.open(io.BytesIO(player.process.call_args.args[1]),'rb') as source:
+                self.assertEqual(struct.unpack('<hh',source.readframes(2)),(0,0))
+        for invalid in (-1,101,True,70.5):
+            with self.subTest(value=invalid),self.assertRaises(StepError):
+                playback_volume({'default_volume':invalid})
+
     def test_contract_rejects_commands_and_unbounded_text(self):
         import copy
         cfg={'enabled_step_types':['INTERACT'],'speech':{'enabled':True}}
@@ -229,6 +252,15 @@ class ManagedVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await asyncio.wait_for(task,1),(False,None))
         self.assertTrue(released.is_set())
 
+    async def test_patrol_wake_permission_does_not_authorize_busy_conversation(self):
+        import time
+        runtime,state=self.runtime();state['status']='BUSY'
+        runtime.wake_admission=dict(wakeAllowed=True,conversationReady=False,patrolJobId='patrol')
+        runtime.admission_at=time.monotonic()
+        self.assertTrue(runtime.available(wake=True));self.assertFalse(runtime.available())
+        runtime.wake_admission['patrolJobId']=None
+        self.assertFalse(runtime.available(wake=True))
+
     async def test_confirmed_handoff_can_complete_but_disconnect_still_preempts(self):
         runtime,state=self.runtime();rejected=runtime.submitting();state['status']='BUSY'
         self.assertEqual(await runtime.guarded(asyncio.sleep(0,result='receipt')),(True,'receipt'))
@@ -258,11 +290,15 @@ class ManagedVoiceTests(unittest.IsolatedAsyncioTestCase):
         runtime.worker['navigation_session']={'session_id':'same'}
         with tempfile.TemporaryDirectory() as folder:
             config=Path(folder)/'ai.json';config.write_text('{}');runtime.options['config_file']=str(config)
+            be=N(availability=Mock(return_value=dict(wakeAllowed=True,conversationReady=True,patrolJobId=None)),
+                 interaction_heartbeat=Mock(return_value=dict(active=True,leaseSeconds=45)),close=Mock())
+            history=Mock();history.start.return_value='session';history.state={'id':'session'}
             with patch('mediassist.voice_chat.controller_lock',return_value=nullcontext()),\
-                 patch('mediassist.voice_chat.AiClient',return_value=N(config={})),\
+                 patch('mediassist.voice_chat.AiClient',return_value=N(config={},marker=config.parent/'history.json')),\
+                 patch('mediassist.voice_chat.History',return_value=history),\
                  patch('mediassist.voice_chat.wait_for_wake',side_effect=wake),\
                  patch('mediassist.voice_chat.conversation',new=AsyncMock(return_value=False)) as chat,\
-                 patch('mediassist.voice_client.VoiceClient'),\
+                 patch('mediassist.voice_client.VoiceClient',return_value=be),\
                  patch('mediassist.voice_actions.VoiceActions',return_value=N(catalog=catalog)):
                 task=asyncio.create_task(runtime.run())
                 try:

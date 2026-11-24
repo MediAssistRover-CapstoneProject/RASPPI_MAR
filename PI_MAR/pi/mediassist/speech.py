@@ -9,6 +9,13 @@ from .contracts import StepError
 from .store import utcnow
 
 
+def playback_volume(config, requested=None):
+    value = config.get('default_volume', 100) if requested is None else requested
+    if type(value) is not int or not 0 <= value <= 100:
+        raise StepError('INVALID_SPEECH_VOLUME')
+    return value
+
+
 def audio_device(config, cards_file=Path('/proc/asound/cards')):
     configured = config.get('device', 'auto')
     if configured != 'auto':
@@ -64,14 +71,14 @@ class SpeechPlayer:
                             pass
                         await process.wait()
 
-    async def play_wav(self, raw, volume=100, playback_guard=None, on_playback_start=None):
+    async def play_wav(self, raw, volume=None, playback_guard=None, on_playback_start=None):
         if not self.cfg.get('enabled'):
             raise StepError('SPEECH_NOT_ENABLED')
         player = shutil.which('aplay')
         if not player:
             raise StepError('SPEECH_DEPENDENCY_MISSING', 'Install alsa-utils inside MentorPi')
         from .cloud_speech import volume_wav
-        raw = await asyncio.to_thread(volume_wav, raw, volume)
+        raw = await asyncio.to_thread(volume_wav, raw, playback_volume(self.cfg, volume))
         device = audio_device(self.cfg)
         async with self.lock:
             if playback_guard is not None and not playback_guard():
@@ -89,6 +96,7 @@ class SpeechPlayer:
             raise StepError('SPEECH_DEPENDENCY_MISSING', 'Install espeak-ng and alsa-utils inside MentorPi')
         device = audio_device(self.cfg)
         data = params['data']
+        volume = playback_volume(self.cfg, data.get('volume'))
         async with self.lock:
             if playback_guard is not None and not playback_guard():
                 raise StepError('NAVIGATION_GUIDANCE_EXPIRED')
@@ -97,11 +105,11 @@ class SpeechPlayer:
                 if engine == 'be-tts':
                     from .cloud_speech import download, volume_wav
                     raw = await download(self.cfg, data)
-                    raw = await asyncio.to_thread(volume_wav, raw, data.get('volume', 70))
+                    raw = await asyncio.to_thread(volume_wav, raw, volume)
                     Path(wav).write_bytes(raw)
                 elif engine == 'espeak-ng':
                     await self.process([synth, '-v', data.get('language_code', 'vi'),
-                        '-s', str(data.get('speed_wpm', 150)), '-a', str(data.get('volume', 70)),
+                        '-s', str(data.get('speed_wpm', 150)), '-a', str(volume),
                         '-w', wav, '--stdin'], data['text'].encode('utf-8'))
                 else:
                     raise StepError('INVALID_SPEECH_ENGINE')

@@ -10,9 +10,10 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 
 class StepError(Exception):
-    def __init__(self, code, message="", retryable=False):
+    def __init__(self, code, message="", retryable=False, details=None):
         super().__init__(message or code)
         self.code, self.retryable = code, retryable
+        self.details = details
 
 
 def parse_timestamp(value):

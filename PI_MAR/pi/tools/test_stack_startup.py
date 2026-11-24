@@ -1,6 +1,7 @@
 """Offline regression tests; no ROS connection, signals, GPIO or motor commands."""
 import copy
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import signal
@@ -54,6 +55,64 @@ class GraphTests(unittest.TestCase):
 
 
 class ProcessTests(unittest.TestCase):
+    def stop_fixture(self, directory):
+        root = Path(directory)
+        config = root / 'pi/config/mqtt.worker.json'
+        config.parent.mkdir(parents=True)
+        state = root / 'pi/state/stack'
+        state.mkdir(parents=True)
+        config.write_text(json.dumps({'stack_state_dir': str(state)}))
+        navigation = root / 'pi/state/navigation-sessions/old/session/worker.json'
+        identity = {'pid': 40000, 'ppid': 1, 'ticks': '10', 'config': str(navigation),
+                    'argv': ['python3', str(Path(stack.__file__).resolve()), 'run',
+                             '--config', str(navigation), '--mode', 'navigation']}
+        return root, config, state, identity
+
+    def run_stop(self, root, state, identity, arguments=(), current=None):
+        (state / 'supervisor.json').write_text(json.dumps(identity))
+        with patch.object(stack, 'ROOT', root), patch.object(stack.sys, 'platform', 'linux'), \
+                patch.object(stack.sys, 'argv', ['robot_stack.py', 'stop', *arguments]), \
+                patch.object(Path, 'is_dir', return_value=True), \
+                patch.object(stack, 'proc', return_value=identity if current is None else current), \
+                patch.object(stack.os, 'kill') as kill, patch.object(stack, 'say'):
+            stack.main()
+        return kill
+
+    def test_default_stop_accepts_navigation_owner_without_loading_old_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, _, state, identity = self.stop_fixture(directory)
+            self.assertFalse(Path(identity['config']).exists())
+            kill = self.run_stop(root, state, identity)
+            kill.assert_called_once_with(identity['pid'], signal.SIGTERM)
+
+    def test_explicit_stop_keeps_config_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, base, state, identity = self.stop_fixture(directory)
+            with self.assertRaisesRegex(RuntimeError, 'SUPERVISOR_IDENTITY_MISMATCH'):
+                self.run_stop(root, state, identity, ['--config', str(base)])
+            navigation = Path(identity['config'])
+            navigation.parent.mkdir(parents=True)
+            navigation.write_text(base.read_text())
+            kill = self.run_stop(root, state, identity, ['--config', str(navigation)])
+            kill.assert_called_once_with(identity['pid'], signal.SIGTERM)
+
+    def test_default_stop_rejects_foreign_script_and_invalid_recorded_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, _, state, identity = self.stop_fixture(directory)
+            for change in ({'argv': ['python3', '/other/robot_stack.py', 'run']},
+                           {'config': 'relative/worker.json'}, {'config': None}):
+                with self.subTest(change=change), \
+                        self.assertRaisesRegex(RuntimeError, 'SUPERVISOR_IDENTITY_MISMATCH'):
+                    self.run_stop(root, state, {**identity, **change})
+
+    def test_default_stop_never_signals_changed_start_ticks_or_argv(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, _, state, identity = self.stop_fixture(directory)
+            for change in ({'ticks': '11'}, {'argv': [*identity['argv'], '--changed']}):
+                with self.subTest(change=change):
+                    kill = self.run_stop(root, state, identity, current={**identity, **change})
+                    kill.assert_not_called()
+
     def test_optional_video_failure_does_not_stop_motion_stack(self):
         with tempfile.TemporaryDirectory() as directory:
             supervisor=stack.Supervisor(Path(directory))

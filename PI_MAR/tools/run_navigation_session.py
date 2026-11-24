@@ -13,14 +13,19 @@ from mediassist.worker_config import load
 from configure_mapping import stopped_configuration
 from configure_localization import nav_parameters
 
-def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profile=None,voice_chat=None,patrol_fall=None,fall_monitor=None,travel_policy='FORWARD_PATH'):
+def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profile=None,voice_chat=None,patrol_fall=None,fall_monitor=None,travel_policy='FORWARD_PATH',restricted_monitor=None):
     if arrival_mode not in ('POSITION_ONLY','POSITION_THEN_SPIN'):raise ValueError('Unsupported arrival mode')
     if travel_policy not in ('FORWARD_PATH','HOLONOMIC'):raise ValueError('Unsupported travel policy')
     position_only=arrival_mode=='POSITION_ONLY'
     native=ROOT/'pi/native/navigation_bt/build'
     if not (native/'libmar_commit_navigation_path_bt_node.so').is_file():
         raise RuntimeError('BUILD_NAVIGATION_BT_FIRST: bash tools/build_navigation_bt.sh')
+    prefix=native/'install'
+    if (travel_policy=='FORWARD_PATH' and (not (native/'libmar_forward_pivot_navigation.so').is_file()
+            or not (prefix/'share/ament_index/resource_index/packages/mar_navigation_bt').is_file())):
+        raise RuntimeError('BUILD_FORWARD_PIVOT_NAVIGATION_FIRST: bash tools/build_navigation_bt.sh')
     os.environ['LD_LIBRARY_PATH']=str(native)+os.pathsep+os.environ.get('LD_LIBRARY_PATH','')
+    os.environ['AMENT_PREFIX_PATH']=str(prefix)+os.pathsep+os.environ.get('AMENT_PREFIX_PATH','')
     cfg,hw=load(config)
     if voice_chat is not None:cfg['voice_chat']['enabled']=voice_chat
     if patrol_fall is not None:
@@ -31,6 +36,10 @@ def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profil
         settings=cfg['ai'].setdefault('patrol_fall', {})
         settings['enabled']=fall_monitor
         if fall_monitor:settings['mode']='CONTINUOUS'
+    if restricted_monitor is not None:
+        settings=cfg['ai'].setdefault('patrol_fall',{})
+        settings.setdefault('restricted_monitor',{})['enabled']=restricted_monitor
+        if restricted_monitor:settings.update(enabled=True,mode='CONTINUOUS')
     if cfg.get('ai', {}).get('patrol_fall', {}).get('enabled'):
         from mediassist.patrol_fall import configuration as fall_configuration, read_token
         settings = fall_configuration(cfg['ai'], cfg['mapping']['camera'])
@@ -74,6 +83,12 @@ def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profil
         position_only=position_only,path_tracking=not holonomic,
         full_footprint_search=not holonomic and (mecanum or geometry['profile']=='cargo'),
         holonomic_move=holonomic,reverse_limit=reverse),hardware)
+    if not holonomic and mecanum:
+        # Retain the saved map's door detail in the footprint planner rather
+        # than quantizing a 2.5 cm survey into the vendor's 5 cm default grid.
+        resolution=float(meta['resolution_m_per_pixel'])
+        for name in ('global_costmap','local_costmap'):
+            params[name][name]['ros__parameters']['resolution']=resolution
     (root/'nav2.yaml').write_text(yaml.safe_dump(params,sort_keys=False),encoding='utf-8')
     write_private(root/'hardware.json',json.dumps(hardware,indent=2))
     runtime=copy.deepcopy(cfg);runtime['hardware_profile']=str(root/'hardware.json');runtime['navigation_session']=context
@@ -82,11 +97,16 @@ def prepare(config,session_id=None,arrival_mode='POSITION_THEN_SPIN',load_profil
         arrival_mode=arrival_mode,travel_policy=travel_policy,controller='HOLONOMIC_DWB' if holonomic else 'REGULATED_PURSUIT',
         footprint_planner=True,forward_only=not holonomic,preserve_path_on_replan=True,geometry=geometry,
         full_footprint_search=not holonomic and (mecanum or geometry['profile']=='cargo'))
+    runtime['navigation_runtime'].update(native_turn_checked=not holonomic and mecanum)
     runtime['navigation_runtime'].update(obstacle_wait_sec=15.,obstacle_retry_interval_sec=1.)
     runtime['navigation_runtime'].update(localization_wait_sec=30.,localization_retry_count=2)
+    status_root=Path('/dev/shm')/('mar-localization-'+str(os.getuid()))
+    if status_root.is_symlink() or (status_root.exists() and (not status_root.is_dir() or status_root.stat().st_uid!=os.getuid())):
+        raise RuntimeError('LOCALIZATION_RAM_OWNER_MISMATCH')
+    status_root.mkdir(mode=0o700,exist_ok=True)
     runtime['localization']={**runtime.get('localization',{}),
         'enabled':True,'mode':'manual','map_id':map_id,
-        'map_asset_hash':meta['asset_hash'],'status_file':str(root/'localization.json')}
+        'map_asset_hash':meta['asset_hash'],'status_file':str(status_root/(session_id+'-'+root.name+'.json'))}
     runtime['mapping']['enabled']=False
     runtime['enabled_step_types']=list(dict.fromkeys([*runtime['enabled_step_types'],'MOVE']))
     # Reuse the durable operation journal; old operations must still be reconciled.
@@ -106,10 +126,12 @@ def main():
                    help='Enable or disable stationary fall observation for patrol checkpoints in this session')
     p.add_argument('--fall-monitor',action=argparse.BooleanOptionalAction,default=None,
                    help='Enable or disable background fall observation during MOVE/IDLE for this session')
+    p.add_argument('--restricted-monitor',action=argparse.BooleanOptionalAction,default=None,
+                   help='Reuse EC2 pose results and registered depth for patrol KEEP_OUT monitoring; requires the updated BE/AI')
     a=p.parse_args()
     if a.patrol_fall is not None and a.fall_monitor is not None:
         p.error('Choose either --patrol-fall or --fall-monitor')
-    with stopped_configuration(a.config):root,client,descriptor=prepare(a.config,a.session_id,a.arrival_mode,a.load_profile,a.voice_chat,a.patrol_fall,a.fall_monitor,a.travel_policy)
+    with stopped_configuration(a.config):root,client,descriptor=prepare(a.config,a.session_id,a.arrival_mode,a.load_profile,a.voice_chat,a.patrol_fall,a.fall_monitor,a.travel_policy,a.restricted_monitor)
     print('NAVIGATION_SESSION:',descriptor['sessionId'],'MAP:',descriptor['mapId'])
     print('Base configuration preserved. Waiting for initial pose/global localization from the map UI; no goal sent.')
     navigation=json.loads((root/'worker.json').read_text())['navigation_runtime']

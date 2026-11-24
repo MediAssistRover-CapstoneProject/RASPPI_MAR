@@ -220,6 +220,28 @@ class VoiceClient:
             raise StepError('VOICE_STAFF_QUESTION_INVALID_RESPONSE')
         return value
 
+    def availability(self,interaction_id=None):
+        path='/api/v1/pi/voice/availability'
+        if interaction_id is not None:
+            path+='?voiceInteractionId='+str(uuid.UUID(interaction_id))
+        _,_,raw=self.request(path,timeout=2)
+        value=self.value(raw)
+        if (not isinstance(value,dict) or type(value.get('wakeAllowed')) is not bool
+                or type(value.get('conversationReady')) is not bool
+                or value.get('patrolJobId') is not None and not isinstance(value['patrolJobId'],str)):
+            raise StepError('VOICE_AVAILABILITY_INVALID')
+        return value
+
+    def interaction_heartbeat(self,interaction_id):
+        path='/api/v1/pi/voice/interactions/'+str(uuid.UUID(interaction_id))+'/heartbeat'
+        _,_,raw=self.request(path,b'{}','application/json',timeout=3)
+        value=self.value(raw)
+        if (not isinstance(value,dict) or type(value.get('active')) is not bool
+                or type(value.get('leaseSeconds')) not in (int,float)
+                or not math.isfinite(value['leaseSeconds']) or not 3<=value['leaseSeconds']<=300):
+            raise StepError('VOICE_LEASE_INVALID')
+        return value
+
     def speech_profile(self):
         headers = {'If-None-Match': '"'+self.profile['revision']+'"'} if self.profile else None
         status, _, raw = self.request('/api/v1/pi/speech/profile',timeout=8,headers=headers)

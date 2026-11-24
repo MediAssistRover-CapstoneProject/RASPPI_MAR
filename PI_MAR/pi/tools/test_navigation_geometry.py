@@ -142,12 +142,30 @@ class CargoGeometryTests(unittest.TestCase):
                        footprint_planner=True, forward_only=True, path_tracking=True)
         params = nav2_params(base, controller, polygon, .6, .8, **options, full_footprint_search=True)
         self.assertEqual(params['planner_server']['ros__parameters']['GridBased']['plugin'],
-                         'nav2_smac_planner/SmacPlannerHybrid')
-        self.assertEqual(params['planner_server']['ros__parameters']['GridBased']['minimum_turning_radius'],.05)
+                         'mar_navigation::ForwardPivotPlanner')
+        self.assertFalse(params['planner_server']['ros__parameters']['GridBased']['respect_goal_heading'])
         follow=params['controller_server']['ros__parameters']['FollowPath']
+        self.assertEqual(follow['plugin'],'mar_navigation::ForwardPivotController')
         self.assertGreaterEqual(follow['min_lookahead_dist'],.25)
         self.assertLessEqual(follow['max_lookahead_dist'],.5)
         self.assertTrue(follow['use_collision_detection'])
+        self.assertFalse(follow['use_rotate_to_heading'])
+        self.assertIn('static_layer',params['local_costmap']['local_costmap']['ros__parameters']['plugins'])
+        from mediassist.navigation_setup import native_turn_authority
+        with tempfile.TemporaryDirectory() as folder:
+            target=Path(folder)/'nav2.yaml'
+            import json
+            target.write_text(json.dumps(params))
+            runtime=dict(native_turn_checked=True,controller='REGULATED_PURSUIT',
+                         full_footprint_search=True,nav2_params=str(target))
+            hardware=copy.deepcopy(hw)
+            hardware['motion']['lidar_braking']['footprint']=extent
+            self.assertTrue(native_turn_authority(runtime,hardware))
+            broken=copy.deepcopy(params)
+            broken['local_costmap']['local_costmap']['ros__parameters']['plugins']=[]
+            target.write_text(json.dumps(broken))
+            with self.assertRaises(StepError):native_turn_authority(runtime,hardware)
+            self.assertFalse(native_turn_authority({**runtime,'native_turn_checked':False},hardware))
         bare_params = nav2_params(base, controller, footprint_rectangle(**BARE), .6, .8, **options)
         self.assertEqual(bare_params['planner_server']['ros__parameters']['GridBased']['plugin'],
                          'nav2_smac_planner/SmacPlanner2D')
@@ -221,7 +239,7 @@ class CargoGeometryTests(unittest.TestCase):
             with self.subTest(policy=policy), tempfile.TemporaryDirectory() as folder, patch.dict(os.environ):
                 with patch.object(runner, 'ROOT', Path(folder)), patch.object(runner, 'load', return_value=(configured, hw)), \
                      patch.object(runner, 'SessionClient', return_value=client), \
-                     patch.object(runner, 'verify_bundle', return_value=({'map.yaml': b'image: map.pgm\n'}, {'asset_hash': 'a'*64, 'frame_id': 'map'})), \
+                     patch.object(runner, 'verify_bundle', return_value=({'map.yaml': b'image: map.pgm\n'}, {'asset_hash': 'a'*64, 'frame_id': 'map', 'resolution_m_per_pixel': .025})), \
                      patch.object(runner, 'validate_profile', return_value={'endpoints': {}}), \
                      patch.object(runner, 'nav_parameters', side_effect=lambda params, hardware: params), \
                      patch.object(Path, 'is_file', return_value=True), patch.object(Path, 'read_text', new=read):
@@ -239,9 +257,9 @@ class CargoGeometryTests(unittest.TestCase):
                 self.assertEqual(nav['forward_only'], forward)
                 follow = params['controller_server']['ros__parameters']['FollowPath']
                 if forward:
-                    self.assertEqual(follow['plugin'], 'nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController')
+                    self.assertEqual(follow['plugin'], 'mar_navigation::ForwardPivotController')
                     self.assertFalse(follow['allow_reversing'])
-                    self.assertTrue(follow['use_rotate_to_heading'])
+                    self.assertFalse(follow['use_rotate_to_heading'])
                     self.assertTrue(follow['use_collision_detection'])
                     self.assertEqual(follow['desired_linear_vel'], .4)
                 else:

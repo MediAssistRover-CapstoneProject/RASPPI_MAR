@@ -451,7 +451,7 @@ class Supervisor:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('inspect', 'prepare', 'bench', 'bench-test', 'enable-mapping', 'run', 'stop'))
-    parser.add_argument('--config', type=Path, default=ROOT / 'pi/config/mqtt.worker.json')
+    parser.add_argument('--config', type=Path)
     parser.add_argument('--ready-timeout', type=int, default=90)
     parser.add_argument('--mode', choices=('mapping','navigation'), default='mapping')
     parser.add_argument('--nav2-params', type=Path)
@@ -470,7 +470,7 @@ def main():
     if not 15 <= args.ready_timeout <= 180:
         raise ValueError('ready-timeout must be 15..180 seconds')
     os.umask(0o077)
-    config = args.config.resolve(strict=True)
+    config = (args.config or ROOT / 'pi/config/mqtt.worker.json').resolve(strict=True)
     descriptor=json.loads(config.read_text(encoding='utf-8-sig'))
     state_dir = Path(descriptor.get('stack_state_dir',str(config.parent.parent / 'state/stack')))
     if not state_dir.is_absolute():raise RuntimeError('ABSOLUTE_STACK_STATE_DIR_REQUIRED')
@@ -486,7 +486,13 @@ def main():
         if not record.exists():
             say('STACK_NOT_RUNNING'); return
         identity = json.loads(record.read_text())
-        if identity.get('config') != str(config) or str(Path(__file__).resolve()) not in identity.get('argv', []):
+        # A navigation run owns a generated worker config in this same state
+        # directory. Default stop targets that verified owner; an explicit
+        # --config still scopes the request to precisely that configuration.
+        recorded_config = identity.get('config')
+        if (not isinstance(recorded_config, str) or not Path(recorded_config).is_absolute()
+                or args.config is not None and recorded_config != str(config)
+                or str(Path(__file__).resolve()) not in identity.get('argv', [])):
             raise RuntimeError('SUPERVISOR_IDENTITY_MISMATCH')
         if not still_same(identity):
             say('STALE_RECORD: no process signaled'); return

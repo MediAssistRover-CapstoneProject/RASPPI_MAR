@@ -31,7 +31,8 @@ class StaffFaceScanner(StaffQrScanner):
         self.client = SessionClient(worker.cfg)
         self.preview = None
         self.hint_task = None
-        self.guidance = {'messages': MESSAGES, 'language_code': 'vi', 'volume': 80}
+        from .speech import playback_volume
+        self.guidance = {'messages': MESSAGES, 'language_code': 'vi', 'volume': playback_volume(worker.cfg.get('speech',{}))}
 
     def window(self, session):
         value = getattr(session, 'staff_face_scan', None)

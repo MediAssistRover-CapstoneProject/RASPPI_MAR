@@ -1,0 +1,8 @@
+<library path="mar_forward_pivot_navigation">
+  <class name="mar_navigation::ForwardPivotPlanner" type="mar_navigation::ForwardPivotPlanner" base_class_type="nav2_core::GlobalPlanner">
+    <description>Forward translation and collision checked in-place rotation over the live padded costmap.</description>
+  </class>
+  <class name="mar_navigation::ForwardPivotController" type="mar_navigation::ForwardPivotController" base_class_type="nav2_core::Controller">
+    <description>Regulated forward tracking that completes each planned pivot before continuing.</description>
+  </class>
+</library>

@@ -85,7 +85,7 @@ class TestWait : public BT::StatefulActionNode {
       : BT::StatefulActionNode(name, config), scenario_(scenario) {}
   static BT::PortsList providedPorts() { return {BT::InputPort<double>("wait_duration")}; }
   BT::NodeStatus onStart() override {
-    double duration=0.; require(static_cast<bool>(getInput("wait_duration", duration)) && duration==1.);
+    double duration=0.; require(static_cast<bool>(getInput("wait_duration", duration)) && duration==.25);
     require(!scenario_.planning); ++scenario_.waits; return BT::NodeStatus::RUNNING;
   }
   BT::NodeStatus onRunning() override { return BT::NodeStatus::SUCCESS; }

@@ -127,6 +127,9 @@ def load(path):
         or len(speech["device"])>160 or speech["device"].startswith("-")):
         raise StepError("INVALID_SPEECH_CONFIG")
     if speech.get('engine') == 'fpt-be': speech['engine'] = 'be-tts'
+    from .speech import playback_volume
+    speech.setdefault('default_volume', 100)
+    playback_volume(speech)
     if speech.get('engine', 'espeak-ng') not in ('espeak-ng', 'be-tts'):
         raise StepError('INVALID_SPEECH_ENGINE')
     if speech.get('engine') == 'be-tts':

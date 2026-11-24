@@ -41,6 +41,17 @@ def validate_credentials(value,worker,session):
     return value
 
 
+def monitoring_viewer(identity,session):
+    if identity=='staff-'+str(session['staffAccountId']):return True
+    if not isinstance(identity,str) or not identity.startswith('viewer-'):return False
+    parts=identity.removeprefix('viewer-').split('-')
+    if len(parts)!=10:return False
+    try:
+        UUID('-'.join(parts[:5]));UUID('-'.join(parts[5:]))
+        return True
+    except ValueError:return False
+
+
 class CameraSource:
     def __init__(self,worker,hardware):
         import rclpy
@@ -288,7 +299,9 @@ class Bridge:
             deadline=time.monotonic()+max(1.,min(1800.,(parse_time(credentials['expiresAt'])-time.time())))
             while time.monotonic()<deadline:
                 now = time.monotonic()
-                if 'staff-'+str(session['staffAccountId']) in room.remote_participants:staff_seen=now
+                present=(('staff-'+str(session['staffAccountId'])) in room.remote_participants if assist
+                         else any(monitoring_viewer(identity,session) for identity in room.remote_participants))
+                if present:staff_seen=now
                 elif now-staff_seen>30:raise RuntimeError('MEDIA_STAFF_DISCONNECTED')
                 if report_task is not None and report_task.done():
                     value = report_task.result()

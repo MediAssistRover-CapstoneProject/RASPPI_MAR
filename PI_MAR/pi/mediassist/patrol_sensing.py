@@ -225,6 +225,24 @@ def zone_coverage_points(polygon, floor):
     return vertices
 
 
+def zone_visible(pair, transform, coverage, config):
+    """A negative shared observation is valid only if the whole zone floor is visible."""
+    import cv2
+    import numpy as np
+    if coverage is None:return False
+    rgb,depth,info,_=pair
+    values=depth_image(depth,rgb,rgb.header.frame_id)
+    matrix,distortion=calibration(info,rgb,config['rgb_rectified'])
+    rotation,offset=camera_transform(transform)
+    points=(np.asarray(coverage)-offset)@rotation
+    if (points[:,2]<.2).any() or (points[:,2]>4.).any():return False
+    pixels=cv2.projectPoints(points,np.zeros(3),np.zeros(3),matrix,distortion)[0].reshape(-1,2)
+    for (u,v),point in zip(pixels,points):
+        depth=depth_at(values,u,v)
+        if depth is None or abs(depth-point[2])>.18:return False
+    return True
+
+
 def classify(detector, rgb, depth, info, transform, polygon, coverage, config):
     import cv2
     import numpy as np

@@ -23,6 +23,7 @@ class LocalizationNode:
         from rcl_interfaces.srv import GetParameters
         from std_srvs.srv import Empty
         from rclpy.qos import QoSProfile,DurabilityPolicy,ReliabilityPolicy,qos_profile_sensor_data
+        from rclpy.callback_groups import ReentrantCallbackGroup
         from tf2_ros import Buffer,TransformListener
         self.rclpy=rclpy;self.node=rclpy.create_node('mediassist_localization')
         self.cfg=cfg['localization'];self.hw=hardware;self.gate=QualityGate(self.cfg);self.grid_topic=cfg['mapping']['map_topic']
@@ -51,8 +52,12 @@ class LocalizationNode:
         self.node.create_subscription(PoseWithCovarianceStamped,'/amcl_pose',self.on_pose,qos)
         self.node.create_subscription(ParticleCloud,'/particle_cloud',self.on_particles,qos_profile_sensor_data)
         self.node.create_subscription(PoseWithCovarianceStamped,'/initialpose',self.on_initial,10)
-        self.node.create_subscription(LaserScan,hardware['ros']['scan'],self.on_scan,qos_profile_sensor_data)
-        self.node.create_subscription(Odometry,hardware['ros']['odom'],lambda m:setattr(self,'odom',m),qos_profile_sensor_data)
+        # Latest sensor data can be delivered while the quality timer computes a
+        # grid score or writes its status. TF uses its own reentrant group.
+        self.sensor_callbacks=ReentrantCallbackGroup()
+        latest_sensor=QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT)
+        self.node.create_subscription(LaserScan,hardware['ros']['scan'],self.on_scan,latest_sensor,callback_group=self.sensor_callbacks)
+        self.node.create_subscription(Odometry,hardware['ros']['odom'],lambda m:setattr(self,'odom',m),latest_sensor,callback_group=self.sensor_callbacks)
         self.states={name:self.node.create_client(GetState,'/'+name+'/get_state') for name in ('amcl','map_server')}
         self.parameters=self.node.create_client(GetParameters,'/map_server/get_parameters')
         self.global_reset=self.node.create_client(Empty,'/reinitialize_global_localization')
@@ -230,7 +235,7 @@ class LocalizationNode:
         s['particle_support']=particle_support(self.particles,s.get('amcl_pose',s.get('pose',{}))) if s.get('amcl_pose') else 0.
         # Latest scan often arrives before its matching odom TF. Use the newest
         # transformable scan in a bounded queue, never Time() for a past scan.
-        for scan in reversed(self.scans):
+        for scan in reversed(tuple(self.scans)):
             age=ros-self.seconds(scan.header.stamp)
             if not 0<=age<=self.cfg['max_sensor_age_sec']:continue
             try:
@@ -299,10 +304,13 @@ def main():
     if cfg['localization']['map_id']!=hardware['map_id'] or cfg['localization']['map_asset_hash']!=hardware['map_asset_sha256']:
         raise RuntimeError('LOCALIZATION_MAP_BINDING_MISMATCH')
     rclpy.init();guard=LocalizationNode(cfg,hardware,rclpy)
-    try:rclpy.spin(guard.node)
+    from rclpy.executors import MultiThreadedExecutor
+    executor=MultiThreadedExecutor(num_threads=2);executor.add_node(guard.node)
+    try:executor.spin()
     except KeyboardInterrupt:pass
     finally:
         if guard.session_poller:guard.session_poller.close()
+        executor.shutdown()
         guard.node.destroy_node()
         if rclpy.ok():rclpy.shutdown()
 

@@ -27,6 +27,22 @@ class TrackingTests(unittest.TestCase):
         for i in range(15):s['scan_sequence']=i;self.assertFalse(g.update(i*.5,s)['ready'])
 
 class RuntimeTests(unittest.TestCase):
+    def test_verified_native_turn_does_not_invoke_legacy_predictor(self):
+        a=RosAdapter.__new__(RosAdapter)
+        a.worker={'navigation_runtime':{'controller':'REGULATED_PURSUIT','forward_only':True,'geometry':{'profile':'cargo'}}}
+        a.cfg={'max_speed_mps':.35,'motion':{'max_angular_speed_rps':.8}}
+        a.navigation_velocity=lambda:((0.,0.,.3),True)
+        a.navigation_velocity_output=Mock();a.node=Mock()
+        a._cargo_map_allows_turn=Mock(return_value=False)
+        state={'map_pose':{'fresh':True,'value':dict(x_m=0.,y_m=0.,yaw_rad=0.)}}
+        with patch.dict(sys.modules,{'geometry_msgs.msg':N(Twist=lambda:N(linear=N(x=0.,y=0.),angular=N(z=0.)))}):
+            a.native_turn_checked=False
+            with self.assertRaises(StepError):a.publish_navigation_velocity(.2,state=state)
+            a._cargo_map_allows_turn.reset_mock();a.native_turn_checked=True
+            self.assertTrue(a.publish_navigation_velocity(.2,state=state))
+            a._cargo_map_allows_turn.assert_not_called()
+            self.assertGreater(a.navigation_velocity_output.publish.call_args.args[0].angular.z,0.)
+
     def test_resume_ramp_preserves_pursuit_curvature_and_never_delays_braking(self):
         a=RosAdapter.__new__(RosAdapter);a.worker={'navigation_runtime':{'controller':'REGULATED_PURSUIT','forward_only':True}}
         a.cfg={'max_speed_mps':.8,'motion':{'max_angular_speed_rps':1.2}}

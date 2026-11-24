@@ -36,9 +36,13 @@ class RosAdapter(CargoRecovery):
         self.rclpy, self.cfg, self.remote = rclpy, config, remote
         from .configuration import validate_config
         validate_config(config)
+        from .navigation_setup import native_turn_authority
+        self.native_turn_checked=native_turn_authority(getattr(self,'worker',{}).get('navigation_runtime',{}),config)
         from rclpy.signals import SignalHandlerOptions
         rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
         self.node = Node("mediassist_runtime")
+        if self.native_turn_checked:
+            self.node.get_logger().info("NATIVE_TURN_CHECK_OWNER local_static_map=True legacy_prediction=False")
         from .navigation_zones import NavigationZones
         self.zones=NavigationZones(self.node,config['ros']['map_frame'],config['motion']['lidar_braking']['footprint']) if config['motion'].get('lidar_braking') else None
         self.tf_buffer = Buffer()
@@ -230,7 +234,8 @@ class RosAdapter(CargoRecovery):
         else:
             lower=0. if runtime.get('forward_only',False) else -speed
             msg.linear.x=max(lower,min(msg.linear.x,speed))
-        if (not rotation_only and runtime.get('geometry',{}).get('profile')=='cargo'
+        if (not rotation_only and not getattr(self,'native_turn_checked',False)
+                and runtime.get('geometry',{}).get('profile')=='cargo'
                 and math.hypot(msg.linear.x,msg.linear.y)<=.01 and msg.angular.z):
             pose=(state or {}).get('map_pose',{})
             if pose.get('fresh') and not self._cargo_map_allows_turn(pose['value'],msg.angular.z):
@@ -353,7 +358,8 @@ class RosAdapter(CargoRecovery):
                 terminal = await self.future(result, timeout=3)
                 if terminal.status not in (4, 5, 6): raise StepError("ACTION_NOT_TERMINAL")
                 setattr(self, attr, None)
-            except Exception:
+            except Exception as exc:
+                self.node.get_logger().warning('STOP_CONFIRMATION_PENDING action='+attr+' code='+str(getattr(exc,'code',type(exc).__name__)))
                 confirmed = False
         if not confirmed: self.motion_uncertain = True
         return confirmed
@@ -632,13 +638,17 @@ class RosAdapter(CargoRecovery):
                 self.plan_goal = await self.future(sent)
                 received = True
                 if not self.plan_goal.accepted: raise StepError("PLAN_GOAL_REJECTED")
-                try:result = await self.future(self.plan_goal.get_result_async(), .75 if probe else self.cfg["navigation"]["planning_timeout_sec"])
+                try:result = await self.future(self.plan_goal.get_result_async(), 2.5 if probe else self.cfg["navigation"]["planning_timeout_sec"])
                 except StepError as exc:
                     if probe and exc.code=='ROS_RESPONSE_TIMEOUT':raise StepError('PATH_UNAVAILABLE') from exc
                     raise
                 self.plan_goal = None
                 unavailable=result.status == 6 or (result.status == 4 and not result.result.path.poses)
                 if not unavailable:break
+                self.node.get_logger().warning('PLAN_UNAVAILABLE endpoint='+endpoint_id+
+                    ' status='+str(result.status)+' attempt='+str(attempt+1)+
+                    ' error_code='+str(getattr(result.result,'error_code','not_provided'))+
+                    ' elapsed_ms='+str(round((time.monotonic()-plan_started)*1000)))
                 if alternative_heading:
                     # A wall beside the endpoint may require a different final
                     # approach. Prefer the direct bearing, but retain the known
@@ -917,7 +927,7 @@ class RosAdapter(CargoRecovery):
                         self.navigation_obstacle_wait=dict(since=gate_blocked_at,reason=blocked)
                     if time.monotonic()-gate_blocked_at>=3.:
                         self.node.get_logger().warning('NAV_GATE_BLOCKED reason='+blocked+'; stop and choose another maneuver')
-                        raise StepError('NAV_GATE_BLOCKED')
+                        raise StepError('NAV_GATE_BLOCKED', details={'obstacleReason':blocked})
                 else:
                     if gate_blocked_at is not None:self.navigation_obstacle_wait=None
                     gate_blocked_at=None

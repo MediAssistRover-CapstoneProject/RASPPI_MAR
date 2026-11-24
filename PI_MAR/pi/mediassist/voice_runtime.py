@@ -1,4 +1,4 @@
-"""Managed wake/chat companion. No ROS node, MQTT client, audio archive or DB polling."""
+"""Managed wake/chat companion; BE arbitrates patrol interruption and motion."""
 import asyncio
 import json
 import logging
@@ -13,13 +13,15 @@ from .contracts import StepError
 def configuration(worker):
     value=worker.setdefault('voice_chat',{})
     for key,default in dict(enabled=False,config_file='/home/ubuntu/mar-secrets/voice-ai.json',
-                            idle_settle_sec=2.,start_timeout_sec=12,confirmation_timeout_sec=20,max_turns=10).items():
+                            idle_settle_sec=2.,start_timeout_sec=12,confirmation_timeout_sec=20,max_turns=10,
+                            patrol_pause_timeout_sec=20.).items():
         value.setdefault(key,default)
     if type(value['enabled']) is not bool:raise StepError('INVALID_VOICE_CHAT_CONFIG')
     if not isinstance(value['config_file'],str) or not (Path(value['config_file']).is_absolute()
                                                         or PurePosixPath(value['config_file']).is_absolute()):
         raise StepError('INVALID_VOICE_CHAT_CONFIG','absolute config_file required')
-    for key,low,high in (('idle_settle_sec',.5,5),('start_timeout_sec',5,30),('confirmation_timeout_sec',10,30),('max_turns',1,20)):
+    for key,low,high in (('idle_settle_sec',.5,5),('start_timeout_sec',5,30),('confirmation_timeout_sec',10,30),
+                         ('max_turns',1,20),('patrol_pause_timeout_sec',5,60)):
         v=value[key]
         if type(v) not in (int,float) or not low<=v<=high or (key=='max_turns' and type(v) is not int):
             raise StepError('INVALID_VOICE_CHAT_CONFIG',key)
@@ -85,17 +87,75 @@ class VoiceRuntime:
     def __init__(self,worker,reader=None):
         self.worker=worker;self.options=configuration(worker)
         self.reader=reader or StateReader(worker);self.handoff=False;self.last_state=None
+        self.wake_admission={};self.admission_at=0.;self.admission_checked_at=-float('inf')
+        self.admission_interaction=None
+        self.lease_task=None
 
     def report(self,state):
         if state!=self.last_state:
             logging.info('VOICE_STATE %s',state);self.last_state=state
 
-    def available(self):
+    def available(self,wake=False):
         from .media_runtime import audio_reserved
         if audio_reserved():return False
         value=self.reader.read()
+        patrol_wake=(wake and time.monotonic()-self.admission_at<3.
+                     and self.wake_admission.get('wakeAllowed') is True
+                     and bool(self.wake_admission.get('patrolJobId')))
         return bool(value.get('connected') and (value.get('status')=='IDLE'
-                    or self.handoff and value.get('status')=='BUSY'))
+                    or (self.handoff or patrol_wake) and value.get('status')=='BUSY'))
+
+    async def refresh_availability(self,interaction_id=None):
+        """At most one admission GET per second; only the BE admits a patrol wake."""
+        now=time.monotonic()
+        if now-self.admission_checked_at<1.:
+            return self.wake_admission
+        self.admission_checked_at=now
+        try:
+            value=await asyncio.to_thread(self.be_client.availability,interaction_id)
+        except (StepError,OSError,ValueError):
+            self.wake_admission={};self.admission_at=0.
+            return {}
+        self.wake_admission=value;self.admission_at=time.monotonic();self.admission_interaction=interaction_id
+        return value
+
+    async def keep_interaction(self,interaction_id,ready):
+        """Lease failure yields the microphone; the BE expires an abandoned hold."""
+        deadline=None
+        while True:
+            try:
+                value=await asyncio.to_thread(self.be_client.interaction_heartbeat,interaction_id)
+                if value.get('active') is not True:raise StepError('VOICE_INTERACTION_NO_LONGER_ACTIVE')
+                lease=value['leaseSeconds'];deadline=time.monotonic()+lease
+                ready.set()
+            except (OSError,StepError) as error:
+                if (getattr(error,'code',None)=='VOICE_INTERACTION_NO_LONGER_ACTIVE'
+                        or deadline is None or time.monotonic()+3.>=deadline):
+                    raise
+                logging.info('VOICE_LEASE_RETRY code=%s',getattr(error,'code',type(error).__name__))
+                await asyncio.sleep(2.);continue
+            await asyncio.sleep(min(10.,lease/3.))
+
+    def check_lease(self):
+        if self.lease_task is not None and self.lease_task.done():
+            self.lease_task.result()
+            raise StepError('VOICE_INTERACTION_LEASE_ENDED')
+
+    async def await_conversation_ready(self,interaction_id):
+        deadline=time.monotonic()+self.options['patrol_pause_timeout_sec']
+        while time.monotonic()<deadline:
+            from .media_runtime import audio_reserved
+            self.check_lease()
+            if not self.reader.read().get('connected') or audio_reserved():return False
+            view=await self.refresh_availability(interaction_id)
+            # A pre-start admission cannot authorize a conversation. Only an
+            # exact interaction query after START and local stop can do so.
+            if (self.admission_interaction==interaction_id and view.get('conversationReady') is True
+                    and self.available()):return True
+            if view and view.get('wakeAllowed') is False and view.get('state') not in ('WAITING_FOR_STOP','PATROL_STOPPING'):
+                logging.info('VOICE_ADMISSION_WAIT state=%s reason=%s',view.get('state'),view.get('reason'))
+            await asyncio.sleep(.1)
+        raise StepError('VOICE_PATROL_STOP_TIMEOUT')
 
     def submitting(self):
         # The confirmed HTTP request may create a job before its reply returns.
@@ -107,11 +167,20 @@ class VoiceRuntime:
             self.handoff=False;self.report('CHATTING')
         return rejected
 
-    async def guarded(self,operation):
+    async def guarded(self,operation,wake=False):
         task=asyncio.create_task(operation)
         try:
             while not task.done():
-                if not self.available():
+                if wake and self.reader.read().get('status')=='BUSY':
+                    await self.refresh_availability()
+                elif not wake and self.lease_task is not None and not self.handoff and self.admission_interaction:
+                    view=await self.refresh_availability(self.admission_interaction)
+                    if view.get('conversationReady') is not True:
+                        self.report('YIELD_TO_PRIORITY')
+                        task.cancel();await asyncio.gather(task,return_exceptions=True)
+                        return False,None
+                self.check_lease()
+                if not self.available(wake):
                     self.report('YIELD_TO_WORKFLOW')
                     task.cancel();await asyncio.gather(task,return_exceptions=True)
                     return False,None
@@ -153,7 +222,7 @@ class VoiceRuntime:
             logging.info('VOICE_PREWARM_DEFERRED code=%s',getattr(error,'code',type(error).__name__))
 
     async def run_available(self,config):
-        from .voice_chat import wait_for_wake,conversation,AiClient
+        from .voice_chat import wait_for_wake,conversation,AiClient,History
         from .voice_actions import VoiceActions
         from .voice_client import VoiceClient
         idle_since=None
@@ -161,7 +230,11 @@ class VoiceRuntime:
             while True:
                 try:
                     self.handoff=False
-                    if not self.available():
+                    if self.be_client is None:self.be_client=VoiceClient(self.worker)
+                    state=self.reader.read()
+                    if state.get('connected') and state.get('status')=='BUSY':
+                        await self.refresh_availability()
+                    if not self.available(wake=True):
                         idle_since=None;self.report('WAIT_ROBOT_IDLE');await asyncio.sleep(.25);continue
                     if idle_since is None:idle_since=time.monotonic()
                     if time.monotonic()-idle_since<self.options['idle_settle_sec']:
@@ -174,12 +247,11 @@ class VoiceRuntime:
                         if self.ai_client is not None:self.ai_client.close()
                         self.ai_client=AiClient(config);self.config_revision=revision
                         self.prewarm_task=None
-                    if self.be_client is None:self.be_client=VoiceClient(self.worker)
                     ai=self.ai_client;settings=ai.config
                     if self.prewarm_task is None:
                         self.prewarm_task=asyncio.create_task(self.prepare_audio(ai,self.be_client))
                     self.report('WAIT_WAKE')
-                    woke,_=await self.guarded(wait_for_wake(self.worker,ai))
+                    woke,_=await self.guarded(wait_for_wake(self.worker,ai),wake=True)
                     idle_since=None
                     if not woke:continue
                     # The live catalog supplies the current profile. An older
@@ -189,19 +261,51 @@ class VoiceRuntime:
                         self.prewarm_task.cancel()
                         await asyncio.gather(self.prewarm_task,return_exceptions=True)
                     self.report('CHECK_WAKE')
-                    actions=VoiceActions(self.be_client,settings,config.parent/'voice-chat-session.json')
-                    checked,catalog=await self.guarded(asyncio.to_thread(actions.catalog))
-                    if not checked:continue
-                    # Check the whole BE job, not only the currently active Pi
-                    # step: server-side WAIT/branches and inter-step gaps matter.
-                    if catalog.get('robotAvailable') is not True:
-                        self.report('WAIT_BE_JOB');await asyncio.sleep(1);continue
-                    if catalog.get('navigationSession',{}).get('sessionId')!=self.worker['navigation_session']['session_id']:
-                        raise StepError('VOICE_SESSION_CHANGED')
-                    self.report('CHATTING')
-                    await self.guarded(conversation(self.worker,config,max_turns=self.options['max_turns'],
-                        initial_catalog=catalog,before_dispatch=self.submitting,log_transcripts=False,
-                        start_timeout=self.options['start_timeout_sec'],ai_client=ai,be_client=self.be_client))
+                    history=History(self.be_client,ai.marker)
+                    history_status='FAILED';start_task=None
+                    try:
+                        await asyncio.to_thread(history.recover)
+                        start_task=asyncio.create_task(asyncio.to_thread(history.start,lease_supported=True))
+                        sid=await asyncio.shield(start_task)
+                        ready=asyncio.Event()
+                        self.lease_task=asyncio.create_task(self.keep_interaction(sid,ready))
+                        first=asyncio.create_task(ready.wait())
+                        try:
+                            await asyncio.wait({first,self.lease_task},return_when=asyncio.FIRST_COMPLETED)
+                            self.check_lease()
+                        finally:
+                            first.cancel();await asyncio.gather(first,return_exceptions=True)
+                        self.report('WAIT_PATROL_STOP')
+                        if not await self.await_conversation_ready(sid):continue
+                        actions=VoiceActions(self.be_client,settings,config.parent/'voice-chat-session.json')
+                        checked,catalog=await self.guarded(asyncio.to_thread(actions.catalog))
+                        if not checked:continue
+                        if catalog.get('robotAvailable') is not True:
+                            self.report('WAIT_BE_JOB');continue
+                        if catalog.get('navigationSession',{}).get('sessionId')!=self.worker['navigation_session']['session_id']:
+                            raise StepError('VOICE_SESSION_CHANGED')
+                        self.report('CHATTING')
+                        completed,_=await self.guarded(conversation(self.worker,config,max_turns=self.options['max_turns'],
+                            initial_catalog=catalog,before_dispatch=self.submitting,log_transcripts=False,
+                            start_timeout=self.options['start_timeout_sec'],ai_client=ai,be_client=self.be_client,
+                            history=history))
+                        history_status='COMPLETED' if completed else 'CANCELLED'
+                    except asyncio.CancelledError:
+                        history_status='CANCELLED';raise
+                    finally:
+                        # A cancelled await cannot cancel an in-flight START POST.
+                        # Join it before completion so a late success cannot leak
+                        # an ACTIVE hold after the local cleanup has finished.
+                        if start_task is not None:
+                            try:await asyncio.shield(start_task)
+                            except Exception:pass
+                        if self.lease_task is not None:
+                            self.lease_task.cancel();await asyncio.gather(self.lease_task,return_exceptions=True)
+                            self.lease_task=None
+                        try:await asyncio.shield(asyncio.to_thread(history.close,history_status))
+                        except Exception as error:
+                            logging.warning('VOICE_HISTORY_CLOSE_PENDING code=%s',getattr(error,'code',type(error).__name__))
+                        self.wake_admission={};self.admission_at=0.
                     self.report('WAIT_ROBOT_IDLE');await asyncio.sleep(1)
                 except asyncio.CancelledError:raise
                 except Exception as error:

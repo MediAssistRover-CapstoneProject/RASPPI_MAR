@@ -106,6 +106,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_repeated_hello_ack_keeps_receiver_and_commands_alive(self):
         worker=self.hello_worker()
+        worker.reconnect_delay_sec=30
         class Session:
             def __init__(self):self.queue=asyncio.Queue();self.sent=[]
             async def send(self,raw):self.sent.append(json.loads(raw))
@@ -121,6 +122,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(received.wait(),1)
             self.assertFalse(task.done())
             self.assertTrue(worker.connection_ready)
+            self.assertEqual(worker.reconnect_delay_sec,1)
             worker.command.assert_awaited_once()
             self.assertEqual(len(session.sent),1) # No new HELLO / repeated physical action.
         finally:
@@ -138,6 +140,17 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(StepError) as caught:
                     await worker.connected(session)
                 self.assertEqual(caught.exception.code,'HELLO_REJECTED')
+
+    async def test_rejected_initial_hello_does_not_reset_connection_backoff(self):
+        worker=self.hello_worker();worker.reconnect_delay_sec=30
+        class Session:
+            async def send(self,raw):pass
+            async def recv(inner):return json.dumps(self.hello_ack(accepted=False))
+        with self.assertRaises(StepError) as caught:
+            await worker.connected(Session())
+        self.assertEqual(caught.exception.code,'HELLO_REJECTED')
+        self.assertFalse(worker.connection_ready)
+        self.assertEqual(worker.reconnect_delay_sec,30)
 
     async def test_unrecognized_message_still_fails_closed(self):
         worker=self.hello_worker()
