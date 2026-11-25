@@ -1,5 +1,6 @@
 """Face scan scope and camera lifecycle tests; no ROS, motors or network."""
 import asyncio
+import tempfile
 import sys
 import time
 import unittest
@@ -11,6 +12,7 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from mediassist.staff_face import StaffFaceScanner
+from mediassist.face_guide import current_state
 
 
 class FaceScannerTests(unittest.IsolatedAsyncioTestCase):
@@ -42,6 +44,16 @@ class FaceScannerTests(unittest.IsolatedAsyncioTestCase):
         self.session.staff_qr_scan = self.session.staff_face_scan
         self.session.staff_face_scan = None
         self.assertIsNone(self.scanner.window(self.session))
+
+    def test_guide_uses_current_face_window_only(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.scanner.guide_path = Path(folder) / 'face-guide.json'
+            self.scanner.guide(self.session, 'FACE_OUTSIDE_FRAME')
+            self.assertEqual(current_state(self.scanner.guide_path),
+                             {'active': True, 'reason': 'FACE_OUTSIDE_FRAME'})
+            self.scanner.guide(self.session, 'IDLE')
+            self.assertEqual(current_state(self.scanner.guide_path),
+                             {'active': False, 'reason': 'IDLE'})
 
     async def exercise(self, result, seconds=.3, encode_failure=False, open_failure=False):
         scanner = self.scanner

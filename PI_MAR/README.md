@@ -1,5 +1,7 @@
 # Runtime robot MentorPi
 
+Khung hướng dẫn xác thực khuôn mặt trên màn gắn Pi: xem [FACE_GUIDE.md](FACE_GUIDE.md).
+
 Code Python/ROS 2 Humble chạy trong container `MentorPi`. Thư mục dự án đang
 dùng trên Pi: `/home/ubuntu/mediassist-mqtt-2026-10-08`. Trong repo Git,
 thư mục tương ứng là `PI_MAR`.

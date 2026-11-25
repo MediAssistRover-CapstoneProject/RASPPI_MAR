@@ -227,7 +227,7 @@ def locked(state_dir, config):
 
 COMPONENT_LOGS = (
     'watchdog', 'gate', 'us100', 'slam', 'navigation', 'localization',
-    'gamepad', 'camera', 'worker', 'media', 'voice',
+    'gamepad', 'camera', 'face-guide', 'worker', 'media', 'voice',
 )
 LOG_RETENTION_SEC = 12 * 3600
 LOG_SEGMENT_SEC = 15 * 60
@@ -644,6 +644,9 @@ def main():
                     say('CAMERA_STREAM_REQUESTED: backend=' + camera['stream_backend'] + ' HTTP port=' + str(camera['stream_port']) + '; see camera.log')
                     say('CAMERA_URL: http://<PI_IP>:' + str(camera['stream_port']) + stream_path(camera))
                 supervisor.start('worker', [python, '-m', 'mediassist.worker_cli', 'run', '--config', str(config)])
+                if args.mode == 'navigation' and cfg.get('staff_face_enabled') and camera['enabled'] and camera['stream_enabled']:
+                    supervisor.start('face-guide', [python, '-m', 'mediassist.face_guide', '--config', str(config)], required=False)
+                    say('FACE_GUIDE: open http://127.0.0.1:8096/ on the robot display; see face-guide.log')
                 if cfg.get('media',{}).get('enabled'):
                     supervisor.start('media',[python,'-m','mediassist.media_bridge','--config',str(config)],required=False)
                     say('MEDIA: managed WebRTC camera/SOS; see media.log')
