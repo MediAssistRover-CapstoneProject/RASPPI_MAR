@@ -603,6 +603,10 @@ class RosAdapter(CargoRecovery):
             except StepError as exc:
                 if exc.code=='NAVIGATION_PATH_INTERSECTS_KEEPOUT':raise StepError('ENDPOINT_IN_RESTRICTED_ZONE') from exc
                 raise
+        budget=getattr(self,'path_search_budget',None)
+        if budget is not None:
+            budget.infrastructure_pending=True
+            if not probe:budget.no_path=False
         await self._wait_navigation_server(self.planner,'PLANNER_UNAVAILABLE')
         await self._prerequisites(p)
         self.approach_headings={}
@@ -635,6 +639,7 @@ class RosAdapter(CargoRecovery):
         received = False
         try:
             for attempt in range(attempts):
+                if budget is not None:budget.infrastructure_pending=True
                 self.plan_goal = await self.future(sent)
                 received = True
                 if not self.plan_goal.accepted: raise StepError("PLAN_GOAL_REJECTED")
@@ -643,8 +648,26 @@ class RosAdapter(CargoRecovery):
                     if probe and exc.code=='ROS_RESPONSE_TIMEOUT':raise StepError('PATH_UNAVAILABLE') from exc
                     raise
                 self.plan_goal = None
+                if budget is not None:budget.infrastructure_pending=False
+                # Some Humble exports lack error_code. If a newer server does
+                # provide it, explicit infrastructure errors never authorize
+                # changing a room destination, even when LiDAR sees an obstacle.
+                planner_error=getattr(result.result,'error_code',None)
+                for name in ('UNKNOWN','INVALID_PLANNER','TF_ERROR','TIMEOUT',
+                             'START_OUTSIDE_MAP','GOAL_OUTSIDE_MAP'):
+                    constant=getattr(result.result,name,None)
+                    if constant is not None and planner_error==constant:
+                        raise StepError('PLANNER_'+name)
                 unavailable=result.status == 6 or (result.status == 4 and not result.result.path.poses)
                 if not unavailable:break
+                budget=getattr(self,'path_search_budget',None)
+                if budget is not None and not probe:
+                    code=getattr(result.result,'error_code',None)
+                    path_errors={getattr(result.result,name,None) for name in
+                                 ('NO_VALID_PATH','START_OCCUPIED','GOAL_OCCUPIED')}
+                    path_errors.discard(None)
+                    if (result.status==4 and not result.result.path.poses) or code in path_errors:
+                        budget.no_path=True
                 self.node.get_logger().warning('PLAN_UNAVAILABLE endpoint='+endpoint_id+
                     ' status='+str(result.status)+' attempt='+str(attempt+1)+
                     ' error_code='+str(getattr(result.result,'error_code','not_provided'))+
@@ -658,6 +681,7 @@ class RosAdapter(CargoRecovery):
                     goal.goal=self._pose(endpoint_id)
                     if not probe:self.node.get_logger().warning('PATH_REPLAN_ALTERNATE_APPROACH')
                     sent=self.planner.send_goal_async(goal);received=False
+                    if budget is not None:budget.infrastructure_pending=True
                     continue
                 # Wait for a new costmap update once. Never clear obstacles or
                 # remove a keepout merely to manufacture a successful route.
@@ -666,6 +690,7 @@ class RosAdapter(CargoRecovery):
                 await asyncio.sleep(1.)
                 await self._prerequisites(p)
                 sent=self.planner.send_goal_async(goal);received=False
+                if budget is not None:budget.infrastructure_pending=True
             if result.status != 4: raise StepError("PLAN_CANCELLED")
             path=result.result.path
             if path.header.frame_id!=self.cfg['ros']['map_frame']:raise StepError('NAVIGATION_PLAN_FRAME_MISMATCH')
@@ -709,6 +734,8 @@ class RosAdapter(CargoRecovery):
                 import logging
                 logging.info('NAV_PLAN_TIMING endpoint=%s compute_ms=%d reporting=ASYNC',endpoint_id,
                              round((time.monotonic()-plan_started)*1000))
+            budget=getattr(self,'path_search_budget',None)
+            if budget is not None and not probe:budget.no_path=False
         finally:
             if not received: sent.add_done_callback(self._late_cancel)
             if not await self.stop(): raise StepError("GOAL_STOP_UNCONFIRMED")
@@ -888,6 +915,8 @@ class RosAdapter(CargoRecovery):
             result_future = self.goal.get_result_async()
             accepted_at=time.monotonic()
             localization_pause=None;velocity_pause=None;gate_blocked_at=None
+            budget=getattr(self,'path_search_budget',None)
+            budget_gate=False
             while not result_future.done():
                 self._check_graph()
                 if time.monotonic()-path_reported_at>=.5:
@@ -907,6 +936,8 @@ class RosAdapter(CargoRecovery):
                 self._localization_progress(state,time.monotonic())
                 self.navigation_diagnostic(state,'TRACKING' if context_ready and state['map_pose']['fresh'] else 'HOLD_LOCALIZATION')
                 if getattr(self,'localization_required',False) and (not context_ready or not state['map_pose']['fresh']):
+                    if budget_gate:
+                        budget.leave();budget_gate=False;gate_blocked_at=None
                     self.hold_navigation_velocity()
                     if localization_pause is None:
                         import logging
@@ -925,10 +956,12 @@ class RosAdapter(CargoRecovery):
                     if gate_blocked_at is None:
                         gate_blocked_at=time.monotonic()
                         self.navigation_obstacle_wait=dict(since=gate_blocked_at,reason=blocked)
-                    if time.monotonic()-gate_blocked_at>=3.:
+                        if budget is not None:budget.enter();budget_gate=True
+                    if time.monotonic()-gate_blocked_at>=3. or budget is not None and budget.remaining<=0:
                         self.node.get_logger().warning('NAV_GATE_BLOCKED reason='+blocked+'; stop and choose another maneuver')
                         raise StepError('NAV_GATE_BLOCKED', details={'obstacleReason':blocked})
                 else:
+                    if budget_gate:budget.leave();budget_gate=False
                     if gate_blocked_at is not None:self.navigation_obstacle_wait=None
                     gate_blocked_at=None
                 if getattr(self,'worker',{}).get('navigation_runtime') and not self.publish_navigation_velocity(p['max_speed_mps'],state=state):
@@ -968,6 +1001,7 @@ class RosAdapter(CargoRecovery):
             if yaw_error is not None:output['yaw_error_rad']=yaw_error
             return output
         finally:
+            if locals().get('budget_gate',False):budget.leave()
             self.lease_message(False)
             self.navigation_guidance_tracking = False
             self.navigation_guidance_path = None
@@ -999,8 +1033,13 @@ class RosAdapter(CargoRecovery):
         def report(data):
             if self.event_sink:
                 self.event_sink(meta["job_id"], "ENDPOINT_ATTEMPT", {**meta, **data})
-        return await select_and_move(p, self.cfg,
-            lambda eid: self._plan_with_cargo_recovery(p, eid, meta), lambda eid: self._move_with_path_recovery(p, eid, meta), report)
+        from .path_search import PathSearchBudget, policy
+        search=policy(p.get('path_search'))
+        self.path_search_budget=PathSearchBudget(search,getattr(self,'path_budget_store',None)) if search else None
+        try:
+            return await select_and_move(p, self.cfg,
+                lambda eid: self._plan_with_cargo_recovery(p, eid, meta), lambda eid: self._move_with_path_recovery(p, eid, meta), report)
+        finally:self.path_search_budget=None
 
     def health(self, data=None):
         if data is None: data = self.telemetry()

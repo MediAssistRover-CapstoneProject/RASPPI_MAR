@@ -21,6 +21,7 @@ class ManualDrive:
         self.value=(0.,0.,0.)
         self.at=None
         self.owned=False
+        self.battery_stopped=False
 
     @property
     def source_name(self):
@@ -63,11 +64,36 @@ class ManualDrive:
     def reset(self):
         self.value=(0.,0.,0.);self.at=None;self.owned=False
 
+    def battery_allowed(self, adapter):
+        """Inhibit only manual input; backend MOVE still owns charger return.
+
+        A stale/unavailable estimate cannot trip or release the latch. Once
+        tripped, fresh recovery and the existing neutral gate are both required.
+        Read the estimator directly, including when MQTT telemetry is offline.
+        """
+        estimator=getattr(adapter,'battery',None)
+        profile=getattr(estimator,'profile',None)
+        if profile is None:
+            return not self.battery_stopped
+        sample=estimator.snapshot() or {}
+        percent,age=sample.get('percent'),sample.get('age_sec')
+        if (sample.get('estimate_status')=='ESTIMATED'
+                and type(percent) in (int,float) and math.isfinite(percent) and 0<=percent<=100
+                and type(age) in (int,float) and math.isfinite(age) and 0<=age<=profile['stale_after_sec']):
+            if percent<=profile['manual_critical_stop_percent']:
+                self.battery_stopped=True
+            elif percent>=profile['manual_rearm_percent']:
+                self.battery_stopped=False
+        return not self.battery_stopped
+
     def busy(self, pad, now=None):
         now=time.monotonic() if now is None else now
         selected = self.select(pad, now)
         if self.owned or self.handoff_pending:
             return True
+        # A stopped critical-battery stick cannot hold backend charger return.
+        if self.battery_stopped:
+            return False
         if not selected:
             return False
         with pad.lock:
@@ -128,11 +154,13 @@ class ManualDrive:
             pad.reject('JOY_DISCONNECTED')
             self.reset();self._report(manager,(0.,0.,0.),active,local,now)
             return False
-        allowed=bool(idle and not adapter.motion_uncertain and not getattr(manager,'manual_inhibited',False)
+        battery_allowed=self.battery_allowed(adapter)
+        allowed=bool(battery_allowed and idle and not adapter.motion_uncertain and not getattr(manager,'manual_inhibited',False)
                      and manager.state.get('state')!='RECOVERY_REQUIRED'
                      and (active or getattr(manager, 'manual_scope', None) or local and not manager.active)
                      and (ready or local))
-        reason='WORKFLOW_OWNS_CONTROL' if not idle else 'WAIT_READY'
+        reason=('BATTERY_CRITICAL_RETURN_NEUTRAL' if idle and not battery_allowed else
+                'WORKFLOW_OWNS_CONTROL' if not idle else 'WAIT_READY')
         if allowed:
             publishers=adapter.node.get_publishers_info_by_topic(self.cfg['topic'])
             allowed=len(publishers)==1 and publishers[0].node_name=='mediassist_gamepad_joy'

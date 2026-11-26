@@ -175,6 +175,29 @@ def padding_escape_clear(grid,points,extent,obstacles,zones=None,*,padding=None)
 
 
 class CargoRecovery:
+    async def _path_work(self, action):
+        budget = getattr(self, 'path_search_budget', None)
+        return await budget.run(action) if budget is not None else await action()
+
+    def _path_search_failure(self, endpoint_id, error):
+        budget = getattr(self, 'path_search_budget', None)
+        if budget is not None and budget.infrastructure_pending:
+            # A request that never produced a planner result is not evidence
+            # that this destination is unreachable, even with a nearby obstacle.
+            return StepError('PATH_SEARCH_TIMEOUT')
+        failure = self._live_route_navigation_failure(endpoint_id)
+        if failure is None and budget is not None and budget.no_path:
+            failure = self._blocked_navigation_failure(endpoint_id, 'PLANNER_NO_PATH')
+            if failure is not None:
+                failure['category'] = 'PATH_UNAVAILABLE'
+        if failure is None:
+            return StepError('PATH_SEARCH_TIMEOUT') if error.code == 'PATH_SEARCH_BUDGET_EXHAUSTED' else error
+        if budget is not None:
+            failure.update(pathSearchUsedSec=round(budget.used, 3),
+                           selectionId=budget.selection_id, pathSearchBudgetSec=budget.limit)
+        return StepError('PATH_UNAVAILABLE', details={
+            'code': 'PATH_UNAVAILABLE', 'causeCode': error.code, 'navigationFailure': failure})
+
     def _localization_progress(self,state,now):
         """Reset consecutive recovery attempts only after verified, sustained travel."""
         quality=state.get('localization',{})
@@ -231,7 +254,7 @@ class CargoRecovery:
         needs_plan=False
         while True:
             try:
-                if needs_plan:await self._plan_with_cargo_recovery_once(p,endpoint_id,meta)
+                if needs_plan:await self._path_work(lambda:self._plan_with_cargo_recovery_once(p,endpoint_id,meta))
                 return await action()
             except StepError as exc:
                 if exc.code not in ('LOCALIZATION_LOST','LOCALIZATION_LOST_AT_GOAL',
@@ -247,6 +270,9 @@ class CargoRecovery:
                 needs_plan=replan
 
     async def _wait_obstacle_path(self,p,endpoint_id,meta,blocked=False):
+        return await self._path_work(lambda:self._wait_obstacle_path_once(p,endpoint_id,meta,blocked))
+
+    async def _wait_obstacle_path_once(self,p,endpoint_id,meta,blocked=False):
         """Wait/replan on live RAM costmaps inside the original MOVE deadline."""
         runtime=getattr(self,'worker',{}).get('navigation_runtime',{})
         seconds=runtime.get('obstacle_wait_sec',15.)
@@ -291,6 +317,10 @@ class CargoRecovery:
         try:
             return await self._move_with_path_recovery_attempts(p,endpoint_id,meta,observed)
         except StepError as exc:
+            budget=getattr(self,'path_search_budget',None)
+            if (budget is not None and budget.infrastructure_pending
+                    and exc.code in ('PATH_UNAVAILABLE','PATH_SEARCH_BUDGET_EXHAUSTED')):
+                raise StepError('PATH_SEARCH_TIMEOUT') from exc
             # Collision prediction can abort Nav2 before the physical gate
             # blocks velocity. An exhausted abort still needs a fresh, live
             # obstacle on mapped free floor; the abort alone is not evidence.
@@ -298,7 +328,11 @@ class CargoRecovery:
                 failure=self._live_route_navigation_failure(endpoint_id)
             elif exc.code in ('PATH_UNAVAILABLE','NAV_GATE_BLOCKED') and observed:
                 failure=self._blocked_navigation_failure(endpoint_id,observed['reason'])
+            elif exc.code in ('PATH_UNAVAILABLE','PATH_SEARCH_BUDGET_EXHAUSTED'):
+                raise self._path_search_failure(endpoint_id, exc) from exc
             else:raise
+            if failure is None and exc.code == 'PATH_UNAVAILABLE':
+                raise self._path_search_failure(endpoint_id, exc) from exc
             if failure is None:raise
             details={**(exc.details if isinstance(exc.details,dict) else {}),
                      'code':'PATH_UNAVAILABLE','causeCode':exc.code,'navigationFailure':failure}
@@ -307,7 +341,7 @@ class CargoRecovery:
     def _blocked_navigation_failure(self,endpoint_id,reason):
         """Describe an exhausted obstacle failure without relaxing any motion gate."""
         if reason not in ('NAV_GATE_BLOCKED','BRAKING_OBSTACLE','LIDAR_BRAKING_STOP',
-                          'TURN_ENVELOPE_BLOCKED','REAR_OBSTACLE','LIVE_ROUTE_OBSTACLE'):
+                          'TURN_ENVELOPE_BLOCKED','REAR_OBSTACLE','LIVE_ROUTE_OBSTACLE','PLANNER_NO_PATH'):
             return None
         try:
             if not getattr(self,'worker',{}).get('navigation_session'):return None
@@ -369,8 +403,11 @@ class CargoRecovery:
                 if exc.code=='NAV_GATE_BLOCKED':
                     details=exc.details if isinstance(exc.details,dict) else {}
                     observed['reason']=details.get('obstacleReason','NAV_GATE_BLOCKED')
-                else:
-                    observed.clear()
+                elif exc.code == 'NAV_ABORTED':
+                    # Nav2 can abort before the velocity gate blocks. Keep any
+                    # previous corroborated obstacle while trying a new route.
+                    live = self._live_route_navigation_failure(endpoint_id)
+                    if live is not None:observed['reason'] = live['obstacleReason']
                 if exc.code not in ('NAV_ABORTED','NAV_GATE_BLOCKED','NAV2_COMMAND_STALE',
                                     'ENDPOINT_POSITION_NOT_CONFIRMED','CARGO_REVERSE_BLOCKED'):raise
                 failure_code=exc.code
@@ -379,7 +416,11 @@ class CargoRecovery:
                     if arrival_corrected:raise
                     arrival_corrected=True
                 else:
-                    if obstacle_retries>=2:raise
+                    budget=getattr(self,'path_search_budget',None)
+                    if budget is not None:
+                        if not budget.recover():
+                            raise self._path_search_failure(endpoint_id, exc) from exc
+                    elif obstacle_retries>=2:raise
                     obstacle_retries+=1
             await self._wait_stationary()
             state=self.telemetry()
@@ -419,9 +460,9 @@ class CargoRecovery:
                     # update. Never force a maneuver merely to avoid failure.
                     self.node.get_logger().warning(error.code+'; replan without repositioning')
                     if error.code=='CARGO_REVERSE_BLOCKED':await self._wait_stationary()
-                    await self._wait_obstacle_path(p,endpoint_id,meta,blocked=True)
+                    await self._path_work(lambda:self._wait_obstacle_path(p,endpoint_id,meta,blocked=True))
             else:
-                try:await self._wait_obstacle_path(p,endpoint_id,meta,blocked=True)
+                try:await self._path_work(lambda:self._wait_obstacle_path(p,endpoint_id,meta,blocked=True))
                 except StepError as error:
                     if error.code!='PATH_UNAVAILABLE' or not escape:raise
                     await self._plan_with_cargo_recovery(p,endpoint_id,meta,force_escape=True)
@@ -661,16 +702,13 @@ class CargoRecovery:
     async def _plan_with_cargo_recovery(self,p,endpoint_id,meta,force_escape=False):
         try:
             return await self._retry_localization(
-                lambda:self._plan_with_cargo_recovery_once(p,endpoint_id,meta,force_escape),p,endpoint_id,meta)
+                lambda:self._path_work(lambda:self._plan_with_cargo_recovery_once(p,endpoint_id,meta,force_escape)),p,endpoint_id,meta)
         except StepError as exc:
-            if exc.code!='PATH_UNAVAILABLE':raise
+            if exc.code not in ('PATH_UNAVAILABLE','PATH_SEARCH_BUDGET_EXHAUSTED'):raise
             # A closed door can prevent planning before any velocity reaches the
             # motion gate. Require a real live obstacle on previously free floor
             # after all existing planning/reposition attempts have failed.
-            failure=self._live_route_navigation_failure(endpoint_id)
-            if failure is None:raise
-            raise StepError('PATH_UNAVAILABLE',str(exc),details={'code':'PATH_UNAVAILABLE',
-                'causeCode':exc.code,'navigationFailure':failure}) from exc
+            raise self._path_search_failure(endpoint_id, exc) from exc
 
     async def _plan_with_cargo_recovery_once(self,p,endpoint_id,meta,force_escape=False):
         runtime=getattr(self,'worker',{}).get('navigation_runtime',{})
@@ -689,6 +727,11 @@ class CargoRecovery:
         if getattr(self,'cargo_escape_used',False):
             if extended and not force_escape:return await self._wait_obstacle_path(p,endpoint_id,meta,blocked=True)
             raise StepError('CARGO_ESCAPE_LIMIT_REACHED')
+        budget=getattr(self,'path_search_budget',None)
+        if budget is not None and not force_escape and not budget.recover():
+            # Initial planning can also invoke a physical reposition. Charge it
+            # to the same durable recovery allowance as an in-motion blockage.
+            raise StepError('PATH_UNAVAILABLE')
         await self._wait_stationary()
         _,origin=self._cargo_pose();target=self.cfg['endpoints'][endpoint_id]
         bearing=math.atan2(target['y_m']-origin['y_m'],target['x_m']-origin['x_m'])

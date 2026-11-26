@@ -43,6 +43,10 @@ PARAMS = {
         "duration_sec": {"type": "number", "minimum": 1, "maximum": 3600},
         "event_type": text(), "correlation_key": text()}, ["wait_type"]),
 }
+PARAMS['MOVE']['properties']['path_search'] = obj({
+    'budget_sec': {'type': 'number', 'minimum': 5, 'maximum': 30},
+    'max_recovery_attempts': {'type': 'integer', 'minimum': 0, 'maximum': 1},
+    'selection_id': UUID_SCHEMA, 'fallback_trigger': {'const': 'ON_PATH_UNAVAILABLE'}})
 SENSING_BASE = PARAMS["EXECUTE_SENSING"]
 MAPPING_PARAMS = {
     "oneOf": [obj({"sensing_type":{"const":"MAPPING"},"action":{"const":"START"},
@@ -165,6 +169,11 @@ def validate_step(step, cfg, hardware):
         if step["timeoutSec"] < 5:
             raise StepError("TIMEOUT_TOO_SHORT")
     if kind == "MOVE":
+        if 'path_search' in p:
+            from .path_search import policy
+            policy(p['path_search'])
+            if step['timeoutSec'] < p['path_search']['budget_sec'] + 5:
+                raise StepError('PATH_SEARCH_STOP_RESERVE_REQUIRED')
         if "nav2" not in hardware["capabilities"]:
             raise StepError("CAPABILITY_MISSING", "nav2")
         if p["map_id"] != hardware["map_id"] or p["endpoint_id"] not in hardware["endpoints"]:

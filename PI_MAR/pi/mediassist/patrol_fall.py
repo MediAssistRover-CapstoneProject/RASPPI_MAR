@@ -54,6 +54,8 @@ def configuration(ai, camera):
     memory = config.get('min_available_memory_mb', 512)
     cooldown = config.get('cooldown_sec', 60)
     request_timeout = config.get('request_timeout_sec', 1.5)
+    if type(config.get('observation_pause_enabled', True)) is not bool:
+        raise StepError('INVALID_PATROL_FALL_CONFIG', 'observation_pause_enabled')
     if type(memory) is not int or not 128 <= memory <= 4096:
         raise StepError('INVALID_PATROL_FALL_CONFIG', 'min_available_memory_mb')
     if type(cooldown) not in (int, float) or not math.isfinite(cooldown) or not 20 <= cooldown <= 600:
@@ -198,6 +200,8 @@ class PatrolFallObserver:
         from .restricted_monitor import SharedRestrictedMonitor
         self.restricted=SharedRestrictedMonitor(self)
         self.restricted_enabled=self.restricted.enabled
+        from .fall_observation import FallObservation
+        self.observation = FallObservation(self)
 
     def display_overlay(self, result=None, status='OK'):
         """Latest-only ROS metadata. No network await or image conversion here."""
@@ -601,13 +605,15 @@ class PatrolFallObserver:
                      json.dumps(getattr(self,'location_diagnostics',{}),separators=(',',':')))
 
     async def monitor(self, worker):
-        """Optional task; failures/reporting never become a MOVE result or stop wheels."""
+        """Shared inference; only BE's scoped lease may suspend a patrol MOVE."""
         self.monitor_worker = worker
         session = self.monitoring_session
         permitted = False
         capture = Capture(self, lambda: permitted)
         memory_ok = True
-        next_memory = next_sample = cooldown_until = 0.
+        next_memory = next_sample = 0.
+        cooldowns = {}
+        pending_key = None
         revision = object()
         first_frame_after = time.monotonic()
         pending = None
@@ -636,16 +642,18 @@ class PatrolFallObserver:
                     if now >= pending_deadline:
                         logging.warning('FALL_MONITOR_REPORT_EXPIRED event=%s attempts=%d last_code=%s',
                                         pending['eventId'], report_attempts, report_error)
+                        self.observation.report_finished(pending.get('observationId'), False)
                         pending = None
-                        cooldown_until = now + self.config['cooldown_sec']
+                        if pending_key is not None:cooldowns[pending_key] = now + 2.
                     elif worker.connection_ready and now >= next_report:
                         report_attempts += 1
                         try:
-                            await asyncio.to_thread(self.be.request, '/api/v1/pi/fall-events', pending)
+                            await asyncio.to_thread(self.be.request, '/api/v1/pi/fall-events', pending, timeout=2.)
                             logging.warning('FALL_MONITOR_REVIEW_REQUESTED event=%s kind=%s attempts=%d',
                                             pending['eventId'], pending['detectionKind'], report_attempts)
+                            self.observation.report_finished(pending.get('observationId'), True)
                             pending = None
-                            cooldown_until = time.monotonic() + self.config['cooldown_sec']
+                            if pending_key is not None:cooldowns[pending_key] = time.monotonic() + self.config['cooldown_sec']
                         except (StepError, OSError, ValueError) as error:
                             # Only internal codes and local evidence flags: never
                             # log an HTTP response body, token or exception text.
@@ -703,6 +711,9 @@ class PatrolFallObserver:
                         continue
                     self.provider_outcome(started, result=result)
                     self.display_overlay(result)
+                    # No depth/TF/localization prerequisite for a short observation
+                    # request. Full incident evidence remains below, separately.
+                    self.observation.offer(worker, result, sample[-2], sample[-1], session)
                     if self.restricted_enabled and time.monotonic()-sample[-1]<=1.5:
                         try:self.restricted.update(worker,result,pair,size,sample[-2],live)
                         except (StepError,ValueError,TypeError) as error:
@@ -712,10 +723,13 @@ class PatrolFallObserver:
                     qr = getattr(worker, 'staff_qr', None)
                     checkpoint = bool(worker.active and worker.active.get('stepType') == 'EXECUTE_SENSING'
                                       and worker.active.get('params', {}).get('fall_detection'))
+                    from .fall_observation import report_identity
+                    report_key=report_identity(result,session)
+                    cooldowns={key:until for key,until in cooldowns.items() if until>time.monotonic()}
                     if (not result or not (result['suspected_fall'] or isinstance(result.get('floor_candidate'),dict))
                             or self.current_revision() not in (None, revision)
                             or time.monotonic() - sample[-1] > 2.5
-                            or time.monotonic() < cooldown_until or pending is not None
+                            or time.monotonic() < cooldowns.get(report_key, 0.) or pending is not None
                             or not worker.connection_ready or worker.shutting_down or worker.session_fault
                             or checkpoint or qr is not None and qr.preview is not None):
                         if result and result.get('suspected_fall'):
@@ -742,6 +756,9 @@ class PatrolFallObserver:
                     pending = dict(eventId=str(uuid4()), monitoringSessionId=self.monitoring_session,
                                    detectedAt=sample[-2], confidence=result['confidence'], algorithm=result['algorithm'],
                                    detectionKind=result.get('detection_kind', 'FALL_TRANSITION'))
+                    observation_id=self.observation.report_id(result, sample[-1])
+                    if observation_id is not None:pending['observationId']=observation_id
+                    pending_key=report_key
                     if position is not None:
                         pending['patientLocation'] = position
                     if visual_review:
@@ -762,6 +779,7 @@ class PatrolFallObserver:
             if self.monitor_worker is worker:
                 self.monitor_worker = None
             await self.restricted.close()
+            await self.observation.close()
             self.display_overlay(status='PAUSED')
             await capture.set_enabled(False)
             if self.work is not None and not self.work.done():

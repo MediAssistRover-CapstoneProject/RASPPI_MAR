@@ -18,7 +18,8 @@ def configuration(value):
                'nominal_cell_voltage_v', 'nominal_cell_capacity_mah', 'voltage_gain',
                'voltage_offset_v', 'valid_min_cell_v', 'valid_max_cell_v',
                'stale_after_sec', 'median_samples', 'minimum_samples',
-               'filter_time_constant_sec', 'curve_calibrated', 'cell_voltage_curve'}
+               'filter_time_constant_sec', 'curve_calibrated', 'cell_voltage_curve',
+               'manual_critical_stop_percent', 'manual_rearm_percent'}
     if set(value) - allowed:
         raise StepError('INVALID_CONFIG', 'battery unknown field')
     if not value['enabled']:
@@ -26,7 +27,8 @@ def configuration(value):
     result = dict(value)
     defaults = dict(voltage_gain=1., voltage_offset_v=0., valid_min_cell_v=2.5,
                     valid_max_cell_v=4.3, stale_after_sec=60., median_samples=5,
-                    minimum_samples=3, filter_time_constant_sec=15., curve_calibrated=False)
+                    minimum_samples=3, filter_time_constant_sec=15., curve_calibrated=False,
+                    manual_critical_stop_percent=5., manual_rearm_percent=8.)
     for key, default in defaults.items():
         result.setdefault(key, default)
 
@@ -45,8 +47,11 @@ def configuration(value):
     for key, low, high in (('nominal_cell_voltage_v', 2., 5.), ('voltage_gain', .8, 1.2),
                            ('voltage_offset_v', -1., 1.), ('valid_min_cell_v', 1., 4.),
                            ('valid_max_cell_v', 3., 5.), ('stale_after_sec', 5., 60.),
-                           ('filter_time_constant_sec', .5, 120.)):
+                           ('filter_time_constant_sec', .5, 120.),
+                           ('manual_critical_stop_percent', 0., 20.), ('manual_rearm_percent', 1., 100.)):
         number(key, low, high)
+    if result['manual_rearm_percent'] <= result['manual_critical_stop_percent']:
+        raise StepError('INVALID_CONFIG', 'battery.manual_rearm_percent must exceed stop percent')
     if result['median_samples'] % 2 != 1 or type(result['curve_calibrated']) is not bool:
         raise StepError('INVALID_CONFIG', 'battery filter/calibration')
     curve = result.get('cell_voltage_curve')

@@ -20,6 +20,8 @@
     "minimum_samples": 3,
     "filter_time_constant_sec": 15,
     "curve_calibrated": false,
+    "manual_critical_stop_percent": 5,
+    "manual_rearm_percent": 8,
     "cell_voltage_curve": [
       [
         3,

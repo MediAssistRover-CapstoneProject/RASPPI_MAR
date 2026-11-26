@@ -521,15 +521,21 @@ mức âm nền, ngưỡng, độ dài và dấu hiệu vỡ tiếng; không ghi
 dùng. Cấu hình cũ không có `wake.mode` vẫn nhận sự kiện từ firmware WonderEcho
 qua `/dev/wonderecho`.
 
-Voice chỉ nhận khi robot IDLE. Khi có tín hiệu đánh thức, BE kiểm tra còn job
-đang chạy hay cần recovery không, kể cả bước chờ do server xử lý. Admin vẫn dùng
-workflow/API hiện có trên cùng map. Khi Pi nhận step mới, voice nhường micro/loa;
-không đổi trạng thái job hoặc hủy MOVE vì kết thúc hội thoại. Sau job, listener
-tự trở lại. Nói “tạm biệt”, “không cần nữa”, “goodbye” hoặc im lặng 12 giây để
+Voice chờ gọi khi robot IDLE; trong tuần tra, chỉ nghe gọi khi BE cho phép.
+Sau tín hiệu đánh thức, Pi mở interaction có lease và chờ BE cho phép trò chuyện
+cùng trạng thái dừng IDLE tại Pi. BE kiểm tra job và recovery, kể cả bước chờ do
+server xử lý; tuần tra phải dừng trước khi hội thoại bắt đầu. Admin vẫn dùng
+workflow/API hiện có trên cùng map. Khi có workflow ưu tiên, voice nhường micro/loa.
+Với yêu cầu dẫn đường đã xác nhận, voice chờ phản hồi HTTP trước khi bàn giao cho job.
+Kết thúc hội thoại không hủy MOVE. Sau job, listener tự trở lại.
+Nói “tạm biệt”, “không cần nữa”, “goodbye” hoặc im lặng 12 giây để
 đóng hội thoại. Phiên map/AMCL được giữ nguyên. Dẫn đường cần xác nhận và vẫn dùng
 workflow MOVE → SPEAK đã publish.
 
-Trạng thái worker trao đổi trong `/dev/shm` (RAM), không đọc DB trong vòng chờ.
+Trạng thái worker trao đổi trong `/dev/shm` (RAM). Khi xét quyền đánh thức lúc
+BUSY và trong hội thoại, Pi gọi `GET /api/v1/pi/voice/availability` tối đa một
+lần mỗi giây; mỗi interaction có lease được duy trì bằng
+`POST /api/v1/pi/voice/interactions/{id}/heartbeat`. BE cần hỗ trợ cả hai endpoint.
 Không ghi transcript vào log voice của stack, không giữ file thu âm của người
 dùng. Lịch sử văn bản tiếp tục về BE. Lỗi AI/micro không dừng stack di chuyển.
 Chưa có phiên map thì chức năng thường trực này không tự bật; CLI thu/phát/chat
@@ -592,3 +598,41 @@ Test không gửi lệnh tới động cơ hay sửa DNS thật. Một số bài
 fixture xuất từ BE hoặc môi trường PYTHONPATH đầy đủ sẽ được skip nếu thiếu.
 Kiểm thử offline
 không thay cho test cảm biến, phanh/dừng và truyền map thực tế trên Pi.
+
+## Chuyển điểm dự phòng và quan sát nghi té ngã
+
+BE quản lý endpoint group. Nhóm chọn `fallbackTrigger=ON_PATH_UNAVAILABLE`
+và `pathSearchBudgetSec=10` gửi một endpoint cụ thể kèm metadata `path_search`.
+Pi công bố capability `group-path-budget-v1`, giới hạn một lần phục hồi và
+lưu thời gian tìm đường theo `selection_id` trong journal. Thời gian đi trên
+path hợp lệ hoặc tạm ngưng tuần tra không tính vào ngân sách này. Khi tiếp tục
+cùng selection, thời gian/lần phục hồi đã dùng được giữ lại. MOVE phải chừa
+ít nhất 5 giây ngoài ngân sách cho dừng/báo cáo. Lỗi planner không phản hồi,
+scan/TF/định vị không được coi là cửa bị chặn. Chỉ BE chọn điểm kế tiếp sau
+`PATH_UNAVAILABLE` có bằng chứng và xác nhận dừng. Không đổi tốc độ, footprint
+hoặc inflation của MOVE.
+
+AI v1 bổ sung `observation_candidate` sau một giây tư thế nghi ngờ. Với
+`ai.patrol_fall.mode=CONTINUOUS`, `observation_pause_enabled` mặc định `true`;
+đặt `false` để tắt riêng cơ chế dừng quan sát. Pi công bố `fall-observation-v1`,
+gửi ứng viên bất đồng bộ, không chờ depth/TF/LOCALIZED và không điều khiển bánh
+từ task AI. BE tạm ngưng đúng MOVE tuần tra qua MQTT, Pi xác nhận dừng rồi chờ
+ổn định 0,5 giây và quan sát liên tục 3 giây. Chuyển động mới làm bắt đầu lại
+cửa sổ trong lease hữu hạn, không tự gia hạn. Job giao hàng/dẫn đường không
+nhận cơ chế tạm dừng quan sát này.
+
+API Device: `POST /api/v1/pi/fall-observations`,
+`GET /api/v1/pi/fall-observations/{id}`,
+`POST /api/v1/pi/fall-observations/{id}/complete`.
+Sự kiện đủ bằng chứng vẫn đi qua `POST /api/v1/pi/fall-events`, có thể kèm
+`observationId` để BE đổi hold sang incident trong cùng giao dịch. Depth/TF
+phục vụ xác minh gần sàn và vị trí người; không được trình bày vị trí robot
+thành vị trí bệnh nhân. Cooldown gắn người phát sinh sự kiện, không gắn một
+ứng viên khác trong ảnh. Lỗi gửi không tạo cooldown chung cho mọi người.
+
+Triển khai BE với migration V70/V71 trước, sau đó AI và Pi khi stack dừng.
+Nhóm cũ giữ `NEAR_DOOR_OBSTRUCTION`; chỉ bật chính sách mới bằng API cập nhật
+nhóm sau khi BE đã deploy. Mẫu tuần tra V2 mới bỏ checkpoint `BLOCKED` khi
+hết thành viên; workflow V1 đã phát hành giữ nguyên định nghĩa cũ. Không chạy
+`tools/export_contract.py` để thay catalog đã pin chỉ vì hai capability này;
+`path_search` là extension có thương lượng, không đổi MAR-STEP-2.

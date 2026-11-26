@@ -29,6 +29,9 @@ class StepStore:
           CREATE TABLE IF NOT EXISTS worker_outbox(
             seq INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT UNIQUE NOT NULL,
             body TEXT NOT NULL, acked INTEGER NOT NULL DEFAULT 0);
+          CREATE TABLE IF NOT EXISTS path_search_budgets(
+            selection_id TEXT PRIMARY KEY, used_sec REAL NOT NULL,
+            recovery_used INTEGER NOT NULL, updated_at TEXT NOT NULL);
         """)
         columns = {r[1] for r in self.db.execute("PRAGMA table_info(worker_outbox)")}
         if "superseded_by" not in columns:
@@ -49,6 +52,23 @@ class StepStore:
             self.emit("STEP_ERROR", {"status":"RECOVERY_REQUIRED", "errorCode":"PROCESS_RESTART",
                       "retryable":False, "details":{"code":"PROCESS_RESTART"}},
                       step, str(uuid.uuid4()))
+
+    def path_search_state(self, selection_id):
+        row = self.db.execute('SELECT used_sec,recovery_used FROM path_search_budgets WHERE selection_id=?',
+                              (selection_id,)).fetchone()
+        return (float(row[0]), int(row[1])) if row else (0., 0)
+
+    def charge_path_search(self, selection_id, used_sec, recovery_used):
+        with self.db:
+            self.db.execute('INSERT INTO path_search_budgets VALUES(?,?,?,?) '
+                            'ON CONFLICT(selection_id) DO UPDATE SET '
+                            'used_sec=MAX(used_sec,excluded.used_sec),'
+                            'recovery_used=MAX(recovery_used,excluded.recovery_used),updated_at=excluded.updated_at',
+                            (selection_id, used_sec, recovery_used, utcnow()))
+            # A selected destination has its own UUID. Retain enough recent
+            # selections for reconnection without growing the SD journal forever.
+            self.db.execute('DELETE FROM path_search_budgets WHERE selection_id IN '
+                            '(SELECT selection_id FROM path_search_budgets ORDER BY updated_at DESC LIMIT -1 OFFSET 2048)')
 
     def guidance_start(self, step, cue):
         with self.db:

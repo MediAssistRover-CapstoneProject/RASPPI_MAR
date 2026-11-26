@@ -175,7 +175,8 @@ class VoiceRuntime:
                     await self.refresh_availability()
                 elif not wake and self.lease_task is not None and not self.handoff and self.admission_interaction:
                     view=await self.refresh_availability(self.admission_interaction)
-                    if view.get('conversationReady') is not True:
+                    # A confirmed dispatch may begin while admission is in flight.
+                    if not self.handoff and not task.done() and view.get('conversationReady') is not True:
                         self.report('YIELD_TO_PRIORITY')
                         task.cancel();await asyncio.gather(task,return_exceptions=True)
                         return False,None

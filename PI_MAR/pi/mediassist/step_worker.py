@@ -14,6 +14,7 @@ from .worker_config import device_token, tls
 class StepWorker:
     def __init__(self, cfg, hardware, store, adapter):
         self.cfg, self.hardware, self.store, self.adapter = cfg, hardware, store, adapter
+        self.adapter.path_budget_store = store
         self.task, self.active, self.last_result = None, None, None
         self.connection_ready = False
         self.reconnect_delay_sec = 1
@@ -42,11 +43,13 @@ class StepWorker:
     def advertised_capabilities(self):
         from .staff_qr import CAPABILITIES
         values=[value for value in self.hardware['capabilities']
-                if value not in CAPABILITIES and value not in (COMMISSIONING_UNLOCK_CAPABILITY, 'PATROL_FALL', 'continuous-fall-v1', 'continuous-restricted-v1', 'staff-face-verify-v1')]
+                if value not in CAPABILITIES and value not in (COMMISSIONING_UNLOCK_CAPABILITY, 'PATROL_FALL', 'continuous-fall-v1', 'continuous-restricted-v1', 'staff-face-verify-v1', 'fall-observation-v1', 'group-path-budget-v1')]
         if self.cfg.get('allow_commissioning_unlock') is True:
             values.append(COMMISSIONING_UNLOCK_CAPABILITY)
         if self.cfg.get('navigation_session') and 'MOVE' in self.cfg.get('enabled_step_types',[]) and 'move-start-commit-v1' not in values:
             values.append('move-start-commit-v1')
+        if self.cfg.get('navigation_session') and 'MOVE' in self.cfg.get('enabled_step_types', []):
+            values.append('group-path-budget-v1')
         if self.staff_qr is not None:
             values.extend(CAPABILITIES)
         if getattr(self, 'staff_face', None) is not None:
@@ -57,6 +60,8 @@ class StepWorker:
             values.append('PATROL_FALL')
             if observer.config.get('mode') == 'CONTINUOUS':
                 values.append('continuous-fall-v1')
+                if observer.config.get('observation_pause_enabled', True):
+                    values.append('fall-observation-v1')
                 if getattr(observer,'restricted_enabled',False):values.append('continuous-restricted-v1')
         return values
 
